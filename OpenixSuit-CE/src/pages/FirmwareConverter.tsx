@@ -27,8 +27,9 @@ export function FirmwareConverter({
   const { t } = useTranslation();
   const [target, setTarget] = useState<TargetKind>("sdcard");
   const [logicOffset, setLogicOffset] = useState(40960);
-  const [sizeMode, setSizeMode] = useState<"auto" | "manual">("auto");
-  const [manualSectors, setManualSectors] = useState(16777216);
+  const [norSize, setNorSize] = useState(16);
+  const [ubootStart, setUbootStart] = useState("");
+  const [storageSize, setStorageSize] = useState("auto");
   const [progress, setProgress] = useState(0);
   const [converting, setConverting] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -55,13 +56,20 @@ export function FirmwareConverter({
       if (!outputPath) return;
       setConverting(true);
       setProgress(0);
-      await invoke("convert_firmware", {
+      const parsedUbootStart =
+        target === "spinor" && ubootStart.trim() !== "" && Number.isFinite(Number(ubootStart))
+          ? Number(ubootStart)
+          : null;
+      const res = await invoke<string | void>("convert_firmware", {
         firmwarePath,
         target,
         logicOffset,
-        manualSectors: sizeMode === "manual" ? manualSectors : null,
+        ubootStart: parsedUbootStart,
+        norSize,
+        storageSize: storageSize.trim() || "auto",
         outputPath,
       });
+      if (typeof res === "string" && res) pushLog(res);
       pushLog(`转换完成 -> ${outputPath}`);
     } catch (err) {
       pushLog(String(err));
@@ -112,25 +120,47 @@ export function FirmwareConverter({
             </div>
             <div>
               <div className="mb-1 text-slate-500">{t("converter.storageSize")}</div>
-              <div className="flex items-center gap-3 py-1.5">
-                <label className="flex items-center gap-1">
-                  <input type="radio" checked={sizeMode === "auto"} onChange={() => setSizeMode("auto")} />
-                  {t("converter.auto")}
-                </label>
-                <label className="flex items-center gap-1">
-                  <input type="radio" checked={sizeMode === "manual"} onChange={() => setSizeMode("manual")} />
-                  {t("converter.manual")}
-                </label>
-                {sizeMode === "manual" && (
+              <input
+                type="text"
+                list="converter-storage-presets"
+                value={storageSize}
+                onChange={(e) => setStorageSize(e.target.value)}
+                placeholder="auto / 8GB / 512MB"
+                className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 font-mono dark:border-slate-700 dark:bg-slate-950"
+              />
+              <datalist id="converter-storage-presets">
+                <option value="auto" />
+                <option value="512MB" />
+                <option value="1GB" />
+                <option value="4GB" />
+                <option value="8GB" />
+                <option value="16GB" />
+              </datalist>
+            </div>
+            {target === "spinor" && (
+              <>
+                <div>
+                  <div className="mb-1 text-slate-500">{t("converter.norSize")}</div>
                   <input
                     type="number"
-                    value={manualSectors}
-                    onChange={(e) => setManualSectors(Number(e.target.value))}
-                    className="w-28 rounded border border-slate-300 bg-white px-2 py-0.5 dark:border-slate-700 dark:bg-slate-950"
+                    min={1}
+                    value={norSize}
+                    onChange={(e) => setNorSize(Number(e.target.value))}
+                    className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 dark:border-slate-700 dark:bg-slate-950"
                   />
-                )}
-              </div>
-            </div>
+                </div>
+                <div>
+                  <div className="mb-1 text-slate-500">{t("converter.ubootStart")}</div>
+                  <input
+                    type="number"
+                    value={ubootStart}
+                    onChange={(e) => setUbootStart(e.target.value)}
+                    placeholder={t("converter.ubootStartPlaceholder")}
+                    className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 dark:border-slate-700 dark:bg-slate-950"
+                  />
+                </div>
+              </>
+            )}
           </div>
 
           <div className="h-2 w-full overflow-hidden rounded bg-slate-200 dark:bg-slate-800">

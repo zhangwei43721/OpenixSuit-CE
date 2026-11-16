@@ -74,15 +74,20 @@ export function GenericFlash({
   };
 
   const startFlash = async () => {
-    if (!genericImage) return;
+    if (!bootImage || !genericImage) return;
     onFlashingChange(true);
     pushLog(`Raw flash: ${mode}, ${storageType}, offset=${logicOffset}`);
     try {
-      await invoke("fes_download_partition", {
-        partition: "raw",
-        filePath: genericImage,
-        verify: false,
+      const res = await invoke<string | void>("raw_flash_image", {
+        bootFirmware: bootImage,
+        rawImage: genericImage,
+        mode,
+        storage: storageType,
+        logicOffset,
+        bus: null,
+        port: null,
       });
+      if (typeof res === "string" && res) pushLog(res);
       pushLog("Raw flash completed");
     } catch (err) {
       pushLog(String(err));
@@ -152,7 +157,7 @@ export function GenericFlash({
         </div>
 
         <button
-          disabled={isFlashing || !genericImage}
+          disabled={isFlashing || !bootImage || !genericImage}
           onClick={startFlash}
           className="w-full rounded bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
         >

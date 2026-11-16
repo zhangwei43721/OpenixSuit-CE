@@ -3,6 +3,7 @@ mod disasm;
 mod efex;
 mod gpio;
 mod hotplug;
+mod ipc_server;
 mod packer;
 mod state;
 mod system;
@@ -23,6 +24,7 @@ pub fn run() {
                 }
             }
             hotplug::watcher::start_hotplug_watcher(app.handle().clone());
+            ipc_server::start_ipc_server(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -37,6 +39,8 @@ pub fn run() {
             efex::fes_query_storage,
             efex::fes_tool_mode,
             efex::fes_download_partition,
+            efex::flash_firmware_full,
+            efex::raw_flash_image,
             efex::cancel_flash,
             // packer
             packer::inspect_image,
@@ -44,6 +48,7 @@ pub fn run() {
             packer::export_mbr_binary,
             packer::read_partition_table,
             packer::convert_firmware,
+            packer::unpack_firmware,
             packer::dtb_to_dts,
             // disasm
             disasm::disassemble_bytes,

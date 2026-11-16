@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import Editor from "@monaco-editor/react";
 import {
@@ -107,6 +108,8 @@ export function AdbExplorer({
   const [editingFile, setEditingFile] = useState<{ path: string; content: string } | null>(null);
   const [modal, setModal] = useState<PromptModal>(null);
   const reqIdRef = useRef(0);
+  const serialRef = useRef(serial);
+  const currentPathRef = useRef(currentPath);
 
   const loadDir = async (targetSerial: string, path: string, fallbackToRoot = false) => {
     if (!targetSerial) return;
@@ -136,6 +139,25 @@ export function AdbExplorer({
       if (reqId === reqIdRef.current) setLoading(false);
     }
   };
+
+  const loadDirRef = useRef(loadDir);
+  serialRef.current = serial;
+  currentPathRef.current = currentPath;
+  loadDirRef.current = loadDir;
+
+  useEffect(() => {
+    const unlisten = listen<{ serial: string; action: string }>("adb-sync", (event) => {
+      const activeSerial = serialRef.current;
+      const activePath = currentPathRef.current;
+      if (!activeSerial) return;
+      if (event.payload.serial === activeSerial || event.payload.serial === "") {
+        loadDirRef.current(activeSerial, activePath);
+      }
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   useEffect(() => {
     setShellOutput("");

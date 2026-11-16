@@ -16,6 +16,7 @@ export function FirmwareInspector({
   const { t } = useTranslation();
   const [dtsOutput, setDtsOutput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [unpacking, setUnpacking] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const extractItem = async (partition: string) => {
@@ -34,6 +35,46 @@ export function FirmwareInspector({
       const msg = String(err);
       setErrorMsg(msg);
       onLog(msg);
+    }
+  };
+
+  const unpackAll = async () => {
+    if (!firmwarePath) return;
+    setErrorMsg(null);
+    try {
+      const outDir = await open({ directory: true });
+      if (typeof outDir !== "string") return;
+      setUnpacking(true);
+      const res = await invoke<unknown>("unpack_firmware", {
+        firmwarePath,
+        outDir,
+      });
+      let count: number | null = null;
+      if (typeof res === "number") {
+        count = res;
+      } else if (Array.isArray(res)) {
+        count = res.length;
+      } else if (
+        res &&
+        typeof res === "object" &&
+        "count" in res &&
+        typeof (res as { count: unknown }).count === "number"
+      ) {
+        count = (res as { count: number }).count;
+      }
+      if (count !== null) {
+        onLog(`全部解包完成: 提取了 ${count} 个文件 -> ${outDir}`);
+      } else if (typeof res === "string" && res) {
+        onLog(`${res} -> ${outDir}`);
+      } else {
+        onLog(`全部解包完成: 提取了 ${inspectInfo?.files.length ?? 0} 个文件 -> ${outDir}`);
+      }
+    } catch (err) {
+      const msg = String(err);
+      setErrorMsg(msg);
+      onLog(msg);
+    } finally {
+      setUnpacking(false);
     }
   };
 
@@ -76,7 +117,16 @@ export function FirmwareInspector({
           )}
 
           <div className="rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-2 font-semibold text-blue-500">{t("parser.filesTitle")}</div>
+            <div className="mb-2 flex items-center justify-between">
+              <span className="font-semibold text-blue-500">{t("parser.filesTitle")}</span>
+              <button
+                disabled={unpacking || !firmwarePath}
+                onClick={unpackAll}
+                className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
+              >
+                {unpacking ? t("parser.unpacking") : t("parser.unpackAll")}
+              </button>
+            </div>
             <div className="max-h-48 overflow-y-auto">
               <table className="w-full text-left">
                 <thead className="text-slate-500">

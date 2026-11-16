@@ -3,10 +3,19 @@ name = "openixsuit-ce"
 version = "0.1.0"
 edition = "2021"
 description = "Cross-platform Allwinner firmware flashing and debugging tool"
+default-run = "openixsuit-ce"
 
 [lib]
 name = "openixsuit_ce_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "openixsuit-ce"
+path = "src/main.rs"
+
+[[bin]]
+name = "openixsuit-ai"
+path = "src/bin/openixsuit-ai.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -31,3 +40,4 @@ gptman = "1"
 mbrman = "0.5"
 dirs = "5"
 crc32fast = "1.5"
+clap = { version = "4", features = ["derive"] }

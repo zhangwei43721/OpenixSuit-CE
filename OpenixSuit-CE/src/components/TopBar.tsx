@@ -16,6 +16,7 @@ interface TopBarProps {
   felDevices: FelDevice[];
   adbDevices: AdbDevice[];
   selectedAdbSerial: string;
+  aiSyncStatus?: string | null;
   onSelectAdbSerial: (serial: string) => void;
   onRefreshDevices: () => void;
   onAdbRoot: () => void;
@@ -26,6 +27,7 @@ export function TopBar({
   felDevices,
   adbDevices,
   selectedAdbSerial,
+  aiSyncStatus,
   onSelectAdbSerial,
   onRefreshDevices,
   onAdbRoot,
@@ -56,6 +58,15 @@ export function TopBar({
         <span className={`whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ${leftBadge.cls}`}>
           {leftBadge.text}
         </span>
+        {aiSyncStatus && (
+          <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-purple-500/40 bg-purple-500/15 px-2.5 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-300">
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-purple-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-purple-500" />
+            </span>
+            {t("status.aiSyncing", { action: aiSyncStatus })}
+          </span>
+        )}
       </div>
 
       {/* 全局设备控制条：统一管理 ADB 设备选择、刷新、Root、切烧录模式 */}

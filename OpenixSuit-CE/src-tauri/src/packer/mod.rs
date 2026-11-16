@@ -1,7 +1,12 @@
+pub mod convert;
+pub mod imagewty;
+
+use crate::state::emit_ai_sync;
+use imagewty::{OpenixPacker, OpenixPartition, SunxiMbr};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -538,58 +543,220 @@ pub fn read_partition_table(disk_image_path: String) -> Result<GenericImageInfo,
     })
 }
 
+pub fn convert_firmware_sync(
+    app: &AppHandle,
+    firmware_path: String,
+    target: String,
+    logic_offset: Option<u64>,
+    uboot_start: Option<u64>,
+    nor_size: u64,
+    storage_size: String,
+    output_path: String,
+) -> Result<String, String> {
+    let target_enum = convert::ConvertTarget::parse(&target)?;
+    let out_str = output_path.clone();
+    let app_clone = app.clone();
+    convert::run_convert(
+        convert::ConvertOptions {
+            firmware_path: PathBuf::from(firmware_path),
+            output_path: PathBuf::from(output_path),
+            target: target_enum,
+            logic_offset,
+            uboot_start,
+            nor_size,
+            storage_size,
+        },
+        move |percent, message| {
+            let _ = app_clone.emit(
+                "convert-progress",
+                ConvertProgressPayload { percent, message },
+            );
+        },
+    )?;
+    Ok(out_str)
+}
+
 #[tauri::command]
 pub async fn convert_firmware(
     app: AppHandle,
     firmware_path: String,
     target: String,
-    logic_offset: u64,
-    manual_sectors: Option<u64>,
+    logic_offset: Option<u64>,
+    uboot_start: Option<u64>,
+    nor_size: u64,
+    storage_size: String,
     output_path: String,
 ) -> Result<String, String> {
-    let mut file = File::open(&firmware_path).map_err(|e| e.to_string())?;
-    let file_size = file.metadata().map_err(|e| e.to_string())?.len();
-    let (_, _, items) = parse_imagewty_items(&mut file, file_size)?;
-    let _ = app.emit(
-        "convert-progress",
-        ConvertProgressPayload {
-            percent: 10.0,
-            message: format!("已解析 {} 个固件内部文件，开始按 {} 布局转换...", items.len(), target),
-        },
+    emit_ai_sync(
+        &app,
+        "gui",
+        "convert",
+        "started",
+        format!("Converting {} -> {}", firmware_path, output_path),
     );
+    let app_for_task = app.clone();
+    let res = tokio::task::spawn_blocking(move || {
+        convert_firmware_sync(
+            &app_for_task,
+            firmware_path,
+            target,
+            logic_offset,
+            uboot_start,
+            nor_size,
+            storage_size,
+            output_path,
+        )
+    })
+    .await
+    .map_err(|e| format!("转换任务异常: {}", e))?;
 
-    let total_sectors = manual_sectors.unwrap_or_else(|| {
-        let sum_bytes: u64 = items.iter().fold(0u64, |acc, i| acc.saturating_add(i.size));
-        logic_offset.saturating_add(sum_bytes / 512).saturating_add(4096)
-    });
-    let mut out = File::create(&output_path).map_err(|e| e.to_string())?;
-    let write_cap = total_sectors.saturating_mul(512).min(512 * 1024 * 1024);
-    out.set_len(write_cap).map_err(|e| e.to_string())?;
+    match &res {
+        Ok(out) => emit_ai_sync(&app, "gui", "convert", "completed", format!("Converted -> {}", out)),
+        Err(err) => emit_ai_sync(&app, "gui", "convert", "error", err.clone()),
+    }
+    res
+}
 
-    let mut cursor = logic_offset.saturating_mul(512);
-    let total_items = items.len().max(1);
-    for (idx, item) in items.iter().enumerate() {
-        if cursor.saturating_add(item.size) <= write_cap {
-            let mut buf = vec![0u8; item.size.min(4 * 1024 * 1024) as usize];
-            if file.seek(SeekFrom::Start(item.offset)).is_ok()
-                && file.read(&mut buf).is_ok()
-                && out.seek(SeekFrom::Start(cursor)).is_ok()
-            {
-                let _ = out.write_all(&buf);
-            }
-            cursor = cursor.saturating_add((item.size.saturating_add(511) / 512).saturating_mul(512));
+fn sanitize_unpack_filename(s: &str) -> String {
+    let trimmed = s.trim_matches(|c: char| c == '.' || c.is_whitespace());
+    let cleaned: String = trimmed
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | ' ' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let result = cleaned
+        .trim_matches(|c: char| c == '.' || c.is_whitespace())
+        .to_string();
+    if result.is_empty() {
+        "unnamed.bin".to_string()
+    } else {
+        result
+    }
+}
+
+fn stream_packer_entry(
+    packer: &mut OpenixPacker,
+    maintype: &str,
+    subtype: &str,
+    total: u64,
+    out_path: &Path,
+) -> Result<(), String> {
+    const CHUNK_SIZE: u64 = 4 * 1024 * 1024;
+    let mut file = File::create(out_path).map_err(|e| e.to_string())?;
+    let mut written = 0u64;
+    while written < total {
+        let len = (total - written).min(CHUNK_SIZE);
+        let data = packer
+            .get_file_data_range_by_maintype_subtype(maintype, subtype, written, len)
+            .map_err(|e| e.to_string())?;
+        file.write_all(&data).map_err(|e| e.to_string())?;
+        written += len;
+    }
+    file.flush().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn unpack_firmware_sync(firmware_path: &str, out_dir: &str) -> Result<usize, String> {
+    let fw_path = Path::new(firmware_path);
+    if !fw_path.exists() {
+        return Err(format!("Firmware file not found: {}", firmware_path));
+    }
+    let out_base = Path::new(out_dir);
+    let files_dir = out_base.join("files");
+    let parts_dir = out_base.join("partitions");
+    fs::create_dir_all(&files_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&parts_dir).map_err(|e| e.to_string())?;
+
+    let mut packer = OpenixPacker::new();
+    packer.load(fw_path).map_err(|e| e.to_string())?;
+    let info = packer.get_image_info();
+
+    let mut count = 0usize;
+    for f in &info.files {
+        let file_name = sanitize_unpack_filename(&f.filename);
+        let out_path = files_dir.join(&file_name);
+        let len = if f.original_length > 0 {
+            f.original_length
+        } else {
+            f.stored_length
+        };
+        if stream_packer_entry(&mut packer, &f.maintype, &f.subtype, len, &out_path).is_ok() {
+            count += 1;
         }
-        let percent = 10.0 + ((idx + 1) as f64 / total_items as f64) * 90.0;
-        let _ = app.emit(
-            "convert-progress",
-            ConvertProgressPayload {
-                percent,
-                message: format!("写入 {}...", item.name),
-            },
-        );
     }
 
-    Ok(output_path)
+    let mut cfg = OpenixPartition::new();
+    if let Ok(data) = packer.get_sys_partition() {
+        cfg.parse_from_data(&data);
+    }
+    let configs = cfg.get_partitions();
+
+    if let Ok(mbr_data) = packer.get_mbr() {
+        if let Ok(mbr) = SunxiMbr::parse(&mbr_data) {
+            for p in &mbr.partitions {
+                let Some(dl) = configs
+                    .iter()
+                    .find(|c| c.name == p.name)
+                    .map(|c| c.downloadfile.clone())
+                    .filter(|s| !s.is_empty())
+                else {
+                    continue;
+                };
+                let subtype = packer.build_subtype_by_filename(&dl);
+                let resolved = packer
+                    .get_file_info_by_maintype_subtype("RFSFAT16", &subtype)
+                    .map(|(_, len)| ("RFSFAT16", len))
+                    .or_else(|| {
+                        packer
+                            .get_file_info_by_maintype_subtype("12345678", &subtype)
+                            .map(|(_, len)| ("12345678", len))
+                    });
+                let Some((maintype, length)) = resolved else {
+                    continue;
+                };
+                let out_path = parts_dir.join(format!("{}.img", sanitize_unpack_filename(&p.name)));
+                if stream_packer_entry(&mut packer, maintype, &subtype, length, &out_path).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    Ok(count)
+}
+
+#[tauri::command]
+pub async fn unpack_firmware(
+    app: AppHandle,
+    firmware_path: String,
+    out_dir: String,
+) -> Result<usize, String> {
+    emit_ai_sync(
+        &app,
+        "gui",
+        "unpack",
+        "started",
+        format!("Unpacking {} -> {}", firmware_path, out_dir),
+    );
+    let fw = firmware_path.clone();
+    let od = out_dir.clone();
+    let res = tokio::task::spawn_blocking(move || unpack_firmware_sync(&fw, &od))
+        .await
+        .map_err(|e| format!("解包任务异常: {}", e))?;
+    match &res {
+        Ok(cnt) => emit_ai_sync(
+            &app,
+            "gui",
+            "unpack",
+            "completed",
+            format!("Unpacked {} files -> {}", cnt, out_dir),
+        ),
+        Err(err) => emit_ai_sync(&app, "gui", "unpack", "error", err.clone()),
+    }
+    res
 }
 
 #[tauri::command]

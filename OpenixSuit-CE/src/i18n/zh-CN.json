@@ -6,7 +6,8 @@
     "disconnected": "未连接 FEL/ADB 设备",
     "envCheck": "环境自检",
     "noAdb": "无 ADB 设备",
-    "switchEfex": "切烧录模式"
+    "switchEfex": "切烧录模式",
+    "aiSyncing": "AI 同步执行中: {{action}}"
   },
   "nav": {
     "collapse": "收起侧边栏",
@@ -92,7 +93,10 @@
   "converter": {
     "tools": "转换目标",
     "logicOffset": "逻辑偏移 (扇区)",
-    "storageSize": "存储容量",
+    "storageSize": "存储容量 (如 auto / 8GB / 512MB)",
+    "norSize": "SPI NOR 容量 (MiB)",
+    "ubootStart": "U-Boot 起始扇区 (可选)",
+    "ubootStartPlaceholder": "留空使用默认布局",
     "auto": "自动",
     "manual": "手动",
     "start": "开始转换",
@@ -134,6 +138,8 @@
     "boot0Info": "Boot0 信息",
     "filesTitle": "内部文件与分区",
     "extract": "提取",
+    "unpackAll": "全部解包 (Unpack All)",
+    "unpacking": "解包中...",
     "dtbPlaceholder": "// 请选择 .dtb 文件以查看反编译后的 DTS 源码"
   },
   "adb": {
@@ -185,6 +191,9 @@
     "usb": "USB 驱动后端",
     "usbDesc": "Windows 默认 WinUSB，Linux/macOS 默认 libusb",
     "version": "应用版本",
-    "latest": "已是最新架构"
+    "latest": "已是最新架构",
+    "aiTitle": "AI 本地控制接口 (CLI 同步)",
+    "aiDesc": "供外部 AI Agent / openixsuit-ai CLI 实时协同并同步状态到界面",
+    "aiExamples": "调用示例命令"
   }
 }

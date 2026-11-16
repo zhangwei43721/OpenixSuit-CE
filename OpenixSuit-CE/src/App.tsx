@@ -29,6 +29,13 @@ function applyTheme(mode: ThemeMode): "dark" | "light" {
   return effective;
 }
 
+interface AiSyncEventPayload {
+  source: string;
+  action: string;
+  status: "started" | "completed" | "error";
+  message: string;
+}
+
 export default function App() {
   const { i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabKey>("firmware");
@@ -41,6 +48,7 @@ export default function App() {
   });
   const [collapsed, setCollapsed] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
+  const [aiSyncStatus, setAiSyncStatus] = useState<string | null>(null);
   const [felDevices, setFelDevices] = useState<FelDevice[]>([]);
   const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([]);
   const [selectedAdbSerial, setSelectedAdbSerial] = useState(
@@ -127,6 +135,22 @@ export default function App() {
       refreshAllDevices();
     });
 
+    const unlistenAiSync = listen<AiSyncEventPayload>("ai-sync-event", (event) => {
+      const { action, status, message } = event.payload;
+      appendLog(`[AI] ${action}: ${message}`);
+      if (status === "started") {
+        setAiSyncStatus(action);
+        if (action === "flash" || action === "raw") {
+          setIsFlashing(true);
+        }
+      } else if (status === "completed" || status === "error") {
+        setAiSyncStatus(null);
+        if (action === "flash" || action === "raw") {
+          setIsFlashing(false);
+        }
+      }
+    });
+
     const adbTimer = setInterval(() => {
       invoke<AdbDevice[]>("adb_list_devices")
         .then((adbList) => {
@@ -151,6 +175,7 @@ export default function App() {
       clearTimeout(initScanTimer);
       clearInterval(adbTimer);
       unlisten.then((fn) => fn());
+      unlistenAiSync.then((fn) => fn());
     };
   }, [i18n]);
 
@@ -203,6 +228,7 @@ export default function App() {
         felDevices={felDevices}
         adbDevices={adbDevices}
         selectedAdbSerial={selectedAdbSerial}
+        aiSyncStatus={aiSyncStatus}
         onSelectAdbSerial={handleSelectAdbSerial}
         onRefreshDevices={refreshAllDevices}
         onAdbRoot={handleAdbRoot}

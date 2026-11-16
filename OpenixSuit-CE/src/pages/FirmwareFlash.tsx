@@ -55,21 +55,22 @@ export function FirmwareFlash({
   }, []);
 
   const startFlash = async () => {
-    if (!firmwarePath || selected.length === 0) return;
+    if (!firmwarePath) return;
+    if ((mode === "partition" || mode === "partition_erase") && selected.length === 0) return;
     onFlashingChange(true);
     setErrorMsg(null);
     pushLog(`Flash started: ${mode}`);
     try {
-      for (const part of selected) {
-        await invoke("fes_download_partition", {
-          partition: part,
-          filePath: firmwarePath,
-          verify,
-        });
-      }
-      if (postAction !== "keep") {
-        await invoke("fes_tool_mode", { action: postAction });
-      }
+      const res = await invoke<string | void>("flash_firmware_full", {
+        firmwarePath,
+        mode,
+        partitions: selected,
+        verify,
+        postAction,
+        bus: null,
+        port: null,
+      });
+      if (typeof res === "string" && res) pushLog(res);
       pushLog("Flash completed");
     } catch (err) {
       const msg = String(err);

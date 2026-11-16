@@ -1,7 +1,9 @@
 use crate::adb::adb_exec_shell;
-use crate::efex::{fel_read_mem, fel_write_mem};
+use crate::efex::{efel_read_sync, efel_write_sync};
+use crate::state::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
+use tauri::State;
 
 #[derive(Serialize)]
 pub struct PioPinState {
@@ -41,9 +43,15 @@ fn write_u32_le(buf: &mut [u8], offset: usize, val: u32) {
 }
 
 #[tauri::command]
-pub fn read_pio_port(base_addr: u32, port_index: u8, port_name: String) -> Result<Vec<PioPinState>, String> {
+pub fn read_pio_port(
+    state: State<'_, AppState>,
+    base_addr: u32,
+    port_index: u8,
+    port_name: String,
+) -> Result<Vec<PioPinState>, String> {
+    let _busy = state.try_acquire_busy("read_pio_port")?;
     let port_addr = base_addr.saturating_add((port_index as u32) * 0x24);
-    let regs = fel_read_mem(port_addr, 36)?;
+    let regs = efel_read_sync(port_addr, 36)?;
     if regs.len() < 36 {
         return Err("PIO 寄存器读取长度不足 36 字节".into());
     }
@@ -81,6 +89,7 @@ pub fn read_pio_port(base_addr: u32, port_index: u8, port_name: String) -> Resul
 
 #[tauri::command]
 pub fn write_pio_pin(
+    state: State<'_, AppState>,
     base_addr: u32,
     port_index: u8,
     pin_index: u8,
@@ -91,8 +100,9 @@ pub fn write_pio_pin(
     if pin_index >= 32 {
         return Err("引脚编号超出范围 (0~31)".into());
     }
+    let _busy = state.try_acquire_busy("write_pio_pin")?;
     let port_addr = base_addr.saturating_add((port_index as u32) * 0x24);
-    let mut regs = fel_read_mem(port_addr, 36)?;
+    let mut regs = efel_read_sync(port_addr, 36)?;
 
     let cfg_off = ((pin_index / 8) as usize) * 4;
     let cfg_shift = (pin_index % 8) * 4;
@@ -112,7 +122,7 @@ pub fn write_pio_pin(
     pul_val = (pul_val & !(0x03 << pul_shift)) | (((pull & 0x03) as u32) << pul_shift);
     write_u32_le(&mut regs, pul_off, pul_val);
 
-    fel_write_mem(port_addr, regs)
+    efel_write_sync(port_addr, regs)
 }
 
 #[tauri::command]

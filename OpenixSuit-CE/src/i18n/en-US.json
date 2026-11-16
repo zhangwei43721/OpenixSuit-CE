@@ -6,7 +6,8 @@
     "disconnected": "No FEL/ADB Device",
     "envCheck": "Env Check",
     "noAdb": "No ADB Device",
-    "switchEfex": "To EFEX"
+    "switchEfex": "To EFEX",
+    "aiSyncing": "AI Syncing: {{action}}"
   },
   "nav": {
     "collapse": "Collapse",
@@ -92,7 +93,10 @@
   "converter": {
     "tools": "Tools",
     "logicOffset": "Logic Offset (sectors)",
-    "storageSize": "Storage Size",
+    "storageSize": "Storage Size (e.g. auto / 8GB / 512MB)",
+    "norSize": "SPI NOR Size (MiB)",
+    "ubootStart": "U-Boot Start Sector (optional)",
+    "ubootStartPlaceholder": "Leave empty for default layout",
     "auto": "Auto",
     "manual": "Manual",
     "start": "Start Convert",
@@ -134,6 +138,8 @@
     "boot0Info": "Boot0 Information",
     "filesTitle": "Embedded Files & Partitions",
     "extract": "Extract",
+    "unpackAll": "Unpack All",
+    "unpacking": "Unpacking...",
     "dtbPlaceholder": "// Select a .dtb file to view decompiled DTS source"
   },
   "adb": {
@@ -185,6 +191,9 @@
     "usb": "USB Backend",
     "usbDesc": "WinUSB default on Windows, libusb on Linux/macOS",
     "version": "Version",
-    "latest": "Up to date"
+    "latest": "Up to date",
+    "aiTitle": "AI Local Control API (CLI Sync)",
+    "aiDesc": "Endpoint for external AI agents / openixsuit-ai CLI to sync actions with the GUI",
+    "aiExamples": "Example Commands"
   }
 }

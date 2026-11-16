@@ -1,0 +1,801 @@
+use crate::adb;
+use crate::efex;
+use crate::packer;
+use crate::state::{emit_ai_sync, AppState, UsbBackend};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+pub const IPC_LISTEN_ADDR: &str = "127.0.0.1:28765";
+
+#[derive(Clone, Serialize)]
+struct AdbSyncPayload {
+    serial: String,
+    local_path: String,
+    remote_path: String,
+}
+
+#[derive(Deserialize)]
+struct AdbShellReq {
+    #[serde(default)]
+    serial: String,
+    command: String,
+}
+
+#[derive(Deserialize)]
+struct AdbPushReq {
+    #[serde(default)]
+    serial: String,
+    local_path: String,
+    remote_path: String,
+}
+
+#[derive(Deserialize)]
+struct AdbPullReq {
+    #[serde(default)]
+    serial: String,
+    remote_path: String,
+    local_path: String,
+}
+
+#[derive(Deserialize)]
+struct AdbSerialReq {
+    #[serde(default)]
+    serial: String,
+}
+
+#[derive(Deserialize)]
+struct InspectReq {
+    firmware_path: String,
+}
+
+#[derive(Deserialize)]
+struct UnpackReq {
+    firmware_path: String,
+    out_dir: String,
+}
+
+#[derive(Deserialize)]
+struct ConvertReq {
+    firmware_path: String,
+    #[serde(default = "default_target")]
+    target: String,
+    output_path: String,
+    #[serde(default)]
+    logic_offset: Option<u64>,
+    #[serde(default)]
+    uboot_start: Option<u64>,
+    #[serde(default = "default_nor_size")]
+    nor_size: u64,
+    #[serde(default = "default_storage_size")]
+    storage_size: String,
+}
+
+fn default_target() -> String {
+    "emmc".to_string()
+}
+fn default_nor_size() -> u64 {
+    16
+}
+fn default_storage_size() -> String {
+    "auto".to_string()
+}
+
+#[derive(Deserialize)]
+struct FlashReq {
+    firmware_path: String,
+    #[serde(default = "default_flash_mode")]
+    mode: String,
+    #[serde(default)]
+    partitions: Vec<String>,
+    #[serde(default = "default_true")]
+    verify: bool,
+    #[serde(default = "default_post_action")]
+    post_action: String,
+    #[serde(default)]
+    bus: Option<u8>,
+    #[serde(default)]
+    port: Option<u8>,
+}
+
+fn default_flash_mode() -> String {
+    "full_erase".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_post_action() -> String {
+    "reboot".to_string()
+}
+
+#[derive(Deserialize)]
+struct RawReq {
+    boot_firmware: String,
+    raw_image: String,
+    #[serde(default = "default_raw_mode")]
+    mode: String,
+    #[serde(default = "default_raw_storage")]
+    storage: String,
+    #[serde(default)]
+    logic_offset: Option<u64>,
+    #[serde(default)]
+    bus: Option<u8>,
+    #[serde(default)]
+    port: Option<u8>,
+}
+
+fn default_raw_mode() -> String {
+    "logic-offset".to_string()
+}
+fn default_raw_storage() -> String {
+    "sdmmc".to_string()
+}
+
+#[derive(Deserialize)]
+struct EfelReadReq {
+    address: u32,
+    #[serde(default = "default_efel_len")]
+    length: usize,
+}
+
+fn default_efel_len() -> usize {
+    64
+}
+
+#[derive(Deserialize)]
+struct EfelWriteReq {
+    address: u32,
+    data: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+struct EfelExecReq {
+    address: u32,
+}
+
+pub fn start_ipc_server(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let listener = match TcpListener::bind(IPC_LISTEN_ADDR).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("[ipc_server] Failed to bind {}: {}", IPC_LISTEN_ADDR, e);
+                return;
+            }
+        };
+
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        handle_connection(stream, app_clone).await;
+                    });
+                }
+                Err(e) => {
+                    eprintln!("[ipc_server] Accept error: {}", e);
+                }
+            }
+        }
+    });
+}
+
+struct HttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, (u16, String)> {
+    const MAX_HEADER_BYTES: usize = 64 * 1024;
+    const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 2048];
+    let header_end;
+
+    loop {
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            header_end = pos;
+            break;
+        }
+        if buf.len() > MAX_HEADER_BYTES {
+            return Err((400, "HTTP header too large".to_string()));
+        }
+        let n = stream
+            .read(&mut tmp)
+            .await
+            .map_err(|e| (400, format!("Read error: {}", e)))?;
+        if n == 0 {
+            return Err((400, "Empty HTTP request".to_string()));
+        }
+        buf.extend_from_slice(&tmp[..n]);
+    }
+
+    let header_str = std::str::from_utf8(&buf[..header_end])
+        .map_err(|_| (400, "Invalid UTF-8 in HTTP headers".to_string()))?;
+    let mut lines = header_str.split("\r\n");
+    let request_line = lines
+        .next()
+        .ok_or_else(|| (400, "Missing HTTP request line".to_string()))?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| (400, "Missing HTTP method".to_string()))?
+        .to_ascii_uppercase();
+    let raw_target = parts
+        .next()
+        .ok_or_else(|| (400, "Missing HTTP path".to_string()))?;
+    let path = raw_target
+        .split('?')
+        .next()
+        .unwrap_or(raw_target)
+        .to_string();
+
+    let mut content_length: usize = 0;
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("content-length") {
+                content_length = v
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| (400, "Invalid Content-Length".to_string()))?;
+            }
+        }
+    }
+
+    if content_length > MAX_BODY_BYTES {
+        return Err((400, "Request body too large".to_string()));
+    }
+
+    let body_start = header_end + 4;
+    let mut body = buf[body_start..].to_vec();
+    while body.len() < content_length {
+        let n = stream
+            .read(&mut tmp)
+            .await
+            .map_err(|e| (400, format!("Body read error: {}", e)))?;
+        if n == 0 {
+            return Err((400, "Unexpected EOF while reading body".to_string()));
+        }
+        body.extend_from_slice(&tmp[..n]);
+    }
+    body.truncate(content_length);
+
+    Ok(HttpRequest { method, path, body })
+}
+
+async fn write_json_response(stream: &mut TcpStream, status: u16, payload: Value) {
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        409 => "Conflict",
+        _ => "Internal Server Error",
+    };
+    let body = serde_json::to_vec(&payload)
+        .unwrap_or_else(|_| b"{\"ok\":false,\"error\":\"json encode failed\"}".to_vec());
+    let header = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        status,
+        reason,
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes()).await;
+    let _ = stream.write_all(&body).await;
+    let _ = stream.flush().await;
+}
+
+fn parse_json<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, (u16, String)> {
+    serde_json::from_slice(body).map_err(|e| (400, format!("Invalid JSON payload: {}", e)))
+}
+
+fn map_op_error(err: String) -> (u16, String) {
+    if err.starts_with("Device busy:") {
+        (409, err)
+    } else {
+        (500, err)
+    }
+}
+
+async fn run_blocking<F, T>(f: F) -> Result<T, (u16, String)>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| (500, format!("Task join error: {}", e)))?
+        .map_err(map_op_error)
+}
+
+async fn handle_connection(mut stream: TcpStream, app: AppHandle) {
+    let req = match read_http_request(&mut stream).await {
+        Ok(r) => r,
+        Err((code, msg)) => {
+            write_json_response(&mut stream, code, json!({ "ok": false, "error": msg })).await;
+            return;
+        }
+    };
+
+    let (status, payload) = dispatch(&app, req).await;
+    write_json_response(&mut stream, status, payload).await;
+}
+
+async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
+    let state = app.state::<AppState>();
+
+    match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/api/status") => {
+            emit_ai_sync(app, "ai", "status", "started", "Querying device status");
+            let backend = state
+                .usb_backend
+                .lock()
+                .map(|g| g.clone())
+                .unwrap_or(UsbBackend::Auto);
+            let busy = state.current_busy();
+
+            let res = run_blocking(move || {
+                let fel_devices = efex::scan_devices_with_backend(&backend);
+                let adb_devices = adb::adb_list_devices().unwrap_or_default();
+                Ok(json!({
+                    "ok": true,
+                    "fel_devices": fel_devices,
+                    "adb_devices": adb_devices,
+                    "busy": busy,
+                }))
+            })
+            .await;
+
+            match res {
+                Ok(val) => {
+                    emit_ai_sync(app, "ai", "status", "completed", "Status queried");
+                    (200, val)
+                }
+                Err((code, err)) => {
+                    emit_ai_sync(app, "ai", "status", "error", err.clone());
+                    (code, json!({ "ok": false, "error": err }))
+                }
+            }
+        }
+
+        ("POST", "/api/adb/shell") => {
+            let body: AdbShellReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            emit_ai_sync(
+                app,
+                "ai",
+                "adb-shell",
+                "started",
+                format!("adb shell: {}", body.command),
+            );
+            let res =
+                run_blocking(move || adb::adb_exec_shell(body.serial, body.command)).await;
+            match res {
+                Ok(output) => {
+                    emit_ai_sync(app, "ai", "adb-shell", "completed", "adb shell completed");
+                    (200, json!({ "ok": true, "output": output }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "adb-shell", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/adb/push") => {
+            let body: AdbPushReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let serial = body.serial.clone();
+            let local_path = body.local_path.clone();
+            let remote_path = body.remote_path.clone();
+            emit_ai_sync(
+                app,
+                "ai",
+                "adb-push",
+                "started",
+                format!("adb push {} -> {}", local_path, remote_path),
+            );
+            let res = run_blocking(move || {
+                adb::adb_push_file(body.serial, body.local_path, body.remote_path)
+            })
+            .await;
+            match res {
+                Ok(()) => {
+                    let _ = app.emit(
+                        "adb-sync",
+                        AdbSyncPayload {
+                            serial,
+                            local_path: local_path.clone(),
+                            remote_path: remote_path.clone(),
+                        },
+                    );
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "adb-push",
+                        "completed",
+                        format!("Pushed {} -> {}", local_path, remote_path),
+                    );
+                    (200, json!({ "ok": true }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "adb-push", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/adb/pull") => {
+            let body: AdbPullReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let remote_path = body.remote_path.clone();
+            let local_path = body.local_path.clone();
+            emit_ai_sync(
+                app,
+                "ai",
+                "adb-pull",
+                "started",
+                format!("adb pull {} -> {}", remote_path, local_path),
+            );
+            let res = run_blocking(move || {
+                adb::adb_pull_file(body.serial, body.remote_path, body.local_path)
+            })
+            .await;
+            match res {
+                Ok(()) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "adb-pull",
+                        "completed",
+                        format!("Pulled {} -> {}", remote_path, local_path),
+                    );
+                    (200, json!({ "ok": true }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "adb-pull", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/adb/reboot-efex") => {
+            let body: AdbSerialReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            emit_ai_sync(app, "ai", "reboot-efex", "started", "Rebooting to EFEX/FEL");
+            let res = run_blocking(move || adb::adb_reboot_efex(body.serial)).await;
+            match res {
+                Ok(msg) => {
+                    emit_ai_sync(app, "ai", "reboot-efex", "completed", msg.clone());
+                    (200, json!({ "ok": true, "message": msg }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "reboot-efex", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/adb/root") => {
+            let body: AdbSerialReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            emit_ai_sync(app, "ai", "adb-root", "started", "Running adb root");
+            let res = run_blocking(move || adb::adb_root(body.serial)).await;
+            match res {
+                Ok(output) => {
+                    emit_ai_sync(app, "ai", "adb-root", "completed", "adb root completed");
+                    (200, json!({ "ok": true, "output": output }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "adb-root", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/inspect") => {
+            let body: InspectReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let fw = body.firmware_path.clone();
+            emit_ai_sync(app, "ai", "inspect", "started", format!("Inspecting {}", fw));
+            let res = run_blocking(move || packer::inspect_image(body.firmware_path)).await;
+            match res {
+                Ok(info) => {
+                    emit_ai_sync(app, "ai", "inspect", "completed", format!("Inspected {}", fw));
+                    (200, json!({ "ok": true, "info": info }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "inspect", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/unpack") => {
+            let body: UnpackReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let fw = body.firmware_path.clone();
+            let od = body.out_dir.clone();
+            emit_ai_sync(
+                app,
+                "ai",
+                "unpack",
+                "started",
+                format!("Unpacking {} -> {}", fw, od),
+            );
+            let res = run_blocking(move || packer::unpack_firmware_sync(&fw, &od)).await;
+            match res {
+                Ok(count) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "unpack",
+                        "completed",
+                        format!("Unpacked {} files -> {}", count, body.out_dir),
+                    );
+                    (
+                        200,
+                        json!({ "ok": true, "count": count, "out_dir": body.out_dir }),
+                    )
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "unpack", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/convert") => {
+            let body: ConvertReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let fw = body.firmware_path.clone();
+            let out = body.output_path.clone();
+            emit_ai_sync(
+                app,
+                "ai",
+                "convert",
+                "started",
+                format!("Converting {} -> {}", fw, out),
+            );
+            let app_clone = app.clone();
+            let res = run_blocking(move || {
+                packer::convert_firmware_sync(
+                    &app_clone,
+                    body.firmware_path,
+                    body.target,
+                    body.logic_offset,
+                    body.uboot_start,
+                    body.nor_size,
+                    body.storage_size,
+                    body.output_path,
+                )
+            })
+            .await;
+            match res {
+                Ok(output_path) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "convert",
+                        "completed",
+                        format!("Converted -> {}", output_path),
+                    );
+                    (200, json!({ "ok": true, "output_path": output_path }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "convert", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/flash") => {
+            let body: FlashReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            match efex::run_flash_firmware_full(
+                app,
+                &state,
+                "ai",
+                body.firmware_path,
+                body.mode,
+                body.partitions,
+                body.verify,
+                body.post_action,
+                body.bus,
+                body.port,
+            )
+            .await
+            {
+                Ok(()) => (200, json!({ "ok": true })),
+                Err(e) => {
+                    let (code, msg) = map_op_error(e);
+                    if code == 409 {
+                        emit_ai_sync(app, "ai", "flash", "error", msg.clone());
+                    }
+                    (code, json!({ "ok": false, "error": msg }))
+                }
+            }
+        }
+
+        ("POST", "/api/raw") => {
+            let body: RawReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            match efex::run_raw_flash_image(
+                app,
+                &state,
+                "ai",
+                body.boot_firmware,
+                body.raw_image,
+                body.mode,
+                body.storage,
+                body.logic_offset,
+                body.bus,
+                body.port,
+            )
+            .await
+            {
+                Ok(()) => (200, json!({ "ok": true })),
+                Err(e) => {
+                    let (code, msg) = map_op_error(e);
+                    if code == 409 {
+                        emit_ai_sync(app, "ai", "raw", "error", msg.clone());
+                    }
+                    (code, json!({ "ok": false, "error": msg }))
+                }
+            }
+        }
+
+        ("POST", "/api/efel/read") => {
+            let body: EfelReadReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let _busy = match state.try_acquire_busy("efel-read") {
+                Ok(g) => g,
+                Err(e) => {
+                    emit_ai_sync(app, "ai", "efel-read", "error", e.clone());
+                    return (409, json!({ "ok": false, "error": e }));
+                }
+            };
+            let addr = body.address;
+            let len = body.length;
+            emit_ai_sync(
+                app,
+                "ai",
+                "efel-read",
+                "started",
+                format!("FEL read 0x{:08x} ({} bytes)", addr, len),
+            );
+            let res = run_blocking(move || efex::efel_read_sync(addr, len)).await;
+            match res {
+                Ok(data) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "efel-read",
+                        "completed",
+                        format!("FEL read {} bytes from 0x{:08x}", data.len(), addr),
+                    );
+                    (
+                        200,
+                        json!({
+                            "ok": true,
+                            "address": format!("0x{:08x}", addr),
+                            "data": data,
+                        }),
+                    )
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "efel-read", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/efel/write") => {
+            let body: EfelWriteReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let _busy = match state.try_acquire_busy("efel-write") {
+                Ok(g) => g,
+                Err(e) => {
+                    emit_ai_sync(app, "ai", "efel-write", "error", e.clone());
+                    return (409, json!({ "ok": false, "error": e }));
+                }
+            };
+            let addr = body.address;
+            let len = body.data.len();
+            emit_ai_sync(
+                app,
+                "ai",
+                "efel-write",
+                "started",
+                format!("FEL write 0x{:08x} ({} bytes)", addr, len),
+            );
+            let res = run_blocking(move || efex::efel_write_sync(addr, body.data)).await;
+            match res {
+                Ok(()) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "efel-write",
+                        "completed",
+                        format!("FEL wrote {} bytes to 0x{:08x}", len, addr),
+                    );
+                    (200, json!({ "ok": true }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "efel-write", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/efel/exec") => {
+            let body: EfelExecReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let _busy = match state.try_acquire_busy("efel-exec") {
+                Ok(g) => g,
+                Err(e) => {
+                    emit_ai_sync(app, "ai", "efel-exec", "error", e.clone());
+                    return (409, json!({ "ok": false, "error": e }));
+                }
+            };
+            let addr = body.address;
+            emit_ai_sync(
+                app,
+                "ai",
+                "efel-exec",
+                "started",
+                format!("FEL exec 0x{:08x}", addr),
+            );
+            let res = run_blocking(move || efex::efel_exec_sync(addr)).await;
+            match res {
+                Ok(()) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "efel-exec",
+                        "completed",
+                        format!("FEL executed 0x{:08x}", addr),
+                    );
+                    (200, json!({ "ok": true }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "efel-exec", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        _ => (
+            404,
+            json!({ "ok": false, "error": format!("Unknown endpoint: {} {}", req.method, req.path) }),
+        ),
+    }
+}
