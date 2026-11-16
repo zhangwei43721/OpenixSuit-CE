@@ -4,5 +4,12 @@ docs/
 .idea/
 rpm/
 .claude/
+node_modules/
+dist/
+OpenixSuit-CE/node_modules/
+OpenixSuit-CE/dist/
+OpenixSuit-CE/src-tauri/target/
+OpenixSuit-CE/src-tauri/gen/
+
 
 
