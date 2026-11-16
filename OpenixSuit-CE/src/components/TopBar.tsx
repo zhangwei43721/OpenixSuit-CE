@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { RefreshCw, Shield, Zap } from "lucide-react";
+import { RefreshCw, RotateCw, Shield, Zap } from "lucide-react";
 
 export interface FelDevice {
   id: string;
@@ -20,6 +20,7 @@ interface TopBarProps {
   onSelectAdbSerial: (serial: string) => void;
   onRefreshDevices: () => void;
   onAdbRoot: () => void;
+  onAdbReboot: () => void;
   onSwitchEfex: () => void;
 }
 
@@ -31,6 +32,7 @@ export function TopBar({
   onSelectAdbSerial,
   onRefreshDevices,
   onAdbRoot,
+  onAdbReboot,
   onSwitchEfex,
 }: TopBarProps) {
   const { t } = useTranslation();
@@ -110,6 +112,13 @@ export function TopBar({
             >
               <Shield className="h-3.5 w-3.5" />
               Root
+            </button>
+            <button
+              onClick={onAdbReboot}
+              className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              <RotateCw className="h-3.5 w-3.5" />
+              {t("status.reboot")}
             </button>
             <button
               onClick={onSwitchEfex}

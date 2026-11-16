@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { Check, Edit2, Plus, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -28,6 +29,10 @@ export function SectorFlash({
   const [newFile, setNewFile] = useState("");
   const [newAddr, setNewAddr] = useState("0x00000020");
   const [newSectors, setNewSectors] = useState(0);
+  const [verify, setVerify] = useState(true);
+  const [postAction, setPostAction] = useState<"keep" | "reboot" | "poweroff">("reboot");
+  const [progress, setProgress] = useState<{ partition: string; percent: number } | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [opLogs, setOpLogs] = useState<string[]>([]);
 
   const log = (msg: string) => {
@@ -36,6 +41,16 @@ export function SectorFlash({
   };
 
   useEffect(() => {
+    const unlisten = listen<{ partition: string; percent: number }>("flash-progress", (e) => {
+      setProgress({ partition: e.payload.partition, percent: e.payload.percent });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  useEffect(() => {
+    setProgress(null);
     if (inspectInfo) {
       setPartitions(inspectInfo.partitions);
       log(`同步 MBR 分区表: ${inspectInfo.partitions.length} 个分区`);
@@ -90,22 +105,32 @@ export function SectorFlash({
   const flashPartitions = async () => {
     if (partitions.length === 0 || !firmwarePath) return;
     onFlashingChange(true);
-    log("Flashing sector partitions...");
+    setErrorMsg(null);
+    setProgress(null);
+    log("开始按编辑后的 MBR 扇区表刷写到设备...");
     try {
-      for (const p of partitions) {
-        if (p.download_file && p.download_file !== "-") {
-          await invoke("fes_download_partition", {
-            partition: p.name,
-            filePath: firmwarePath,
-            verify: false,
-          });
-        }
-      }
-      log("Sector flash completed");
+      await invoke("flash_custom_mbr_layout", {
+        firmwarePath,
+        partitions,
+        includeCopies,
+        verify,
+        postAction,
+      });
+      log("Sector MBR flash completed");
     } catch (err) {
-      log(`Flash error: ${String(err)}`);
+      const msg = String(err);
+      setErrorMsg(msg);
+      log(`Flash error: ${msg}`);
     } finally {
       onFlashingChange(false);
+    }
+  };
+
+  const cancelFlash = async () => {
+    try {
+      await invoke("cancel_flash");
+    } catch (err) {
+      log(String(err));
     }
   };
 
@@ -131,13 +156,64 @@ export function SectorFlash({
           </button>
         </div>
 
-        <button
-          disabled={isFlashing || partitions.length === 0 || !firmwarePath}
-          onClick={flashPartitions}
-          className="w-full rounded bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
-        >
-          {isFlashing ? t("flash.flashing") : t("sector.flashBtn")}
-        </button>
+        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-900">
+          <label className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              disabled={isFlashing}
+              checked={verify}
+              onChange={(e) => setVerify(e.target.checked)}
+            />
+            {t("flash.verify")}
+          </label>
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <span>{t("flash.postAction")}</span>
+            <select
+              disabled={isFlashing}
+              value={postAction}
+              onChange={(e) => setPostAction(e.target.value as "keep" | "reboot" | "poweroff")}
+              className="rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
+            >
+              <option value="reboot">{t("flash.reboot")}</option>
+              <option value="poweroff">{t("flash.poweroff")}</option>
+              <option value="keep">{t("flash.keepState")}</option>
+            </select>
+          </div>
+          {progress && (
+            <div className="space-y-1 pt-1">
+              <div className="flex justify-between text-[11px] text-slate-500">
+                <span className="truncate">{progress.partition}</span>
+                <span>{progress.percent.toFixed(1)}%</span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
+                <div className="h-full bg-emerald-600 transition-all" style={{ width: `${progress.percent}%` }} />
+              </div>
+            </div>
+          )}
+          <div className="flex gap-2 pt-1">
+            <button
+              disabled={isFlashing || partitions.length === 0 || !firmwarePath}
+              onClick={flashPartitions}
+              className="flex-1 rounded bg-emerald-600 py-2 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+            >
+              {isFlashing ? t("flash.flashing") : t("sector.flashBtn")}
+            </button>
+            {isFlashing && (
+              <button
+                onClick={cancelFlash}
+                className="rounded bg-red-600 px-3 py-2 text-xs text-white hover:bg-red-500"
+              >
+                {t("common.cancel")}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {errorMsg && (
+          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-600 dark:text-amber-400">
+            {errorMsg}
+          </div>
+        )}
       </div>
 
       <div className="col-span-9 flex flex-col space-y-3">

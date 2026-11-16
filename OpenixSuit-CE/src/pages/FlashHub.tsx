@@ -16,6 +16,7 @@ export interface SharedPartitionEntry {
   sectors: number;
   size_bytes: number;
   type_guid: string;
+  sparse?: boolean;
 }
 
 export interface SharedImageInspectResult {
@@ -25,6 +26,8 @@ export interface SharedImageInspectResult {
   file_count: number;
   encrypted: boolean;
   magic: string;
+  header_version?: string;
+  sys_config_raw?: string;
   sys_config: {
     debug_print: string;
     storage_type: string;

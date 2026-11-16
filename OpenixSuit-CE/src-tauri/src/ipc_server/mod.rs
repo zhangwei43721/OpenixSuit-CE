@@ -1,9 +1,10 @@
 use crate::adb;
 use crate::efex;
 use crate::packer;
+use crate::plugins;
 use crate::state::{emit_ai_sync, AppState, UsbBackend};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -153,6 +154,25 @@ struct EfelWriteReq {
 #[derive(Deserialize)]
 struct EfelExecReq {
     address: u32,
+}
+
+#[derive(Deserialize)]
+struct PluginInstallReq {
+    package_path: String,
+}
+
+#[derive(Deserialize)]
+struct PluginUninstallReq {
+    plugin_id: String,
+}
+
+#[derive(Deserialize)]
+struct PluginRunReq {
+    plugin_id: String,
+    #[serde(default)]
+    serial: String,
+    #[serde(default)]
+    inputs: Map<String, Value>,
 }
 
 pub fn start_ipc_server(app: AppHandle) {
@@ -585,6 +605,7 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                     body.uboot_start,
                     body.nor_size,
                     body.storage_size,
+                    None,
                     body.output_path,
                 )
             })
@@ -789,6 +810,105 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                 Err((c, e)) => {
                     emit_ai_sync(app, "ai", "efel-exec", "error", e.clone());
                     (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("GET", "/api/plugins") => {
+            let res = run_blocking(plugins::list_plugins).await;
+            match res {
+                Ok(list) => (200, json!({ "ok": true, "plugins": list })),
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+            }
+        }
+
+        ("POST", "/api/plugins/install") => {
+            let body: PluginInstallReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let pkg = body.package_path.clone();
+            emit_ai_sync(
+                app,
+                "ai",
+                "plugin-install",
+                "started",
+                format!("Installing plugin {}", pkg),
+            );
+            let res = run_blocking(move || plugins::install_plugin(body.package_path)).await;
+            match res {
+                Ok(manifest) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "plugin-install",
+                        "completed",
+                        format!("Installed plugin {} ({})", manifest.name, manifest.id),
+                    );
+                    (200, json!({ "ok": true, "plugin": manifest }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "plugin-install", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/plugins/uninstall") => {
+            let body: PluginUninstallReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let id = body.plugin_id.clone();
+            emit_ai_sync(
+                app,
+                "ai",
+                "plugin-uninstall",
+                "started",
+                format!("Uninstalling plugin {}", id),
+            );
+            let res = run_blocking(move || plugins::uninstall_plugin(body.plugin_id)).await;
+            match res {
+                Ok(()) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "plugin-uninstall",
+                        "completed",
+                        format!("Uninstalled plugin {}", id),
+                    );
+                    (200, json!({ "ok": true }))
+                }
+                Err((c, e)) => {
+                    emit_ai_sync(app, "ai", "plugin-uninstall", "error", e.clone());
+                    (c, json!({ "ok": false, "error": e }))
+                }
+            }
+        }
+
+        ("POST", "/api/plugins/run") => {
+            let body: PluginRunReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            match plugins::execute_plugin_with_handle(
+                app,
+                &state,
+                "ai",
+                body.plugin_id,
+                None,
+                body.serial,
+                body.inputs,
+            )
+            .await
+            {
+                Ok(logs) => (200, json!({ "ok": true, "logs": logs })),
+                Err(e) => {
+                    let (code, msg) = map_op_error(e);
+                    if code == 409 {
+                        emit_ai_sync(app, "ai", "plugin-run", "error", msg.clone());
+                    }
+                    (code, json!({ "ok": false, "error": msg }))
                 }
             }
         }

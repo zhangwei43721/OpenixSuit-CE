@@ -12,7 +12,6 @@ import {
   FolderPlus,
   LayoutGrid,
   List,
-  Power,
   RefreshCw,
   Trash2,
   Upload,
@@ -186,16 +185,6 @@ export function AdbExplorer({
     loadDir(serial, "/" + parts.join("/"));
   };
 
-  const handleReboot = async () => {
-    if (!serial) return;
-    try {
-      await invoke("adb_reboot", { serial });
-      onLog(`[${serial}] Rebooted`);
-    } catch (err) {
-      setErrorMsg(String(err));
-    }
-  };
-
   const submitModal = async () => {
     if (!modal || !serial) return;
     try {
@@ -315,15 +304,10 @@ export function AdbExplorer({
   return (
     <div className="flex h-full flex-col space-y-3 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <button
-            disabled={!serial}
-            onClick={handleReboot}
-            className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-800"
-          >
-            <Power className="h-3.5 w-3.5" />
-            {t("adb.reboot")}
-          </button>
+        <div className="flex items-center gap-2 text-slate-500">
+          <span>
+            {folderCount} folders, {fileCount} files
+          </span>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -562,9 +546,6 @@ export function AdbExplorer({
         )}
       </div>
 
-      <div className="flex items-center justify-between text-slate-500">
-        <span>{folderCount} folders, {fileCount} files</span>
-      </div>
       <div className="flex gap-2">
         <input
           value={cmd}

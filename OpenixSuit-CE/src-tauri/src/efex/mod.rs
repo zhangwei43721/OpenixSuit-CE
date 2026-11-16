@@ -8,9 +8,10 @@ use flasher::{
     FlashRequest, PostAction, RawMode, RawStorage,
 };
 use serde::Serialize;
+use std::collections::HashMap;
+use std::ffi::{c_char, CStr};
 use std::fs::File;
 use std::io::Read;
-use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
@@ -34,20 +35,56 @@ pub struct FlashProgressPayload {
 #[tauri::command]
 pub fn scan_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
     let backend = state.usb_backend.lock().map_err(|e| e.to_string())?.clone();
-    Ok(scan_devices_with_backend(&backend))
+    let is_busy = state.current_busy().is_some();
+    Ok(scan_devices_with_probe(&backend, !is_busy))
 }
 
 pub fn scan_devices_with_backend(backend: &UsbBackend) -> Vec<DeviceInfo> {
+    scan_devices_with_probe(backend, false)
+}
+
+fn scan_devices_with_probe(backend: &UsbBackend, probe_details: bool) -> Vec<DeviceInfo> {
     let backend_name = format!("{:?}", backend);
     let libefex_devs = scan_efex_devices();
     if !libefex_devs.is_empty() {
         return libefex_devs
             .into_iter()
-            .map(|d| DeviceInfo {
-                id: format!("bus:{}-port:{}", d.bus, d.port),
-                chip: "Sunxi SoC (0x1f3a:0xefe8)".into(),
-                mode: "DEVICE_MODE_FEL".into(),
-                backend: backend_name.clone(),
+            .map(|d| {
+                let id = format!("bus:{}-port:{}", d.bus, d.port);
+                if probe_details {
+                    if let Ok(session) = EfexSession::open_at(Some(d.bus), Some(d.port)) {
+                        let chip_id = session.ctx.resp.id;
+                        let mode_str = unsafe {
+                            let ptr = ffi::sunxi_efex_get_device_mode_str(&session.ctx);
+                            if ptr.is_null() {
+                                "Sunxi SoC".to_string()
+                            } else {
+                                CStr::from_ptr(ptr).to_string_lossy().to_string()
+                            }
+                        };
+                        let mode_label = match session.device_mode() {
+                            x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_FEL => {
+                                "FEL (USB Boot)"
+                            }
+                            x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_SRV => {
+                                "FES (U-Boot)"
+                            }
+                            _ => "FEL/FES",
+                        };
+                        return DeviceInfo {
+                            id,
+                            chip: format!("{} (0x{:08x})", mode_str, chip_id),
+                            mode: mode_label.into(),
+                            backend: backend_name.clone(),
+                        };
+                    }
+                }
+                DeviceInfo {
+                    id,
+                    chip: "Sunxi SoC (0x1f3a:0xefe8)".into(),
+                    mode: "FEL/FES".into(),
+                    backend: backend_name.clone(),
+                }
             })
             .collect();
     }
@@ -56,7 +93,7 @@ pub fn scan_devices_with_backend(backend: &UsbBackend) -> Vec<DeviceInfo> {
         .map(|id| DeviceInfo {
             id,
             chip: "Sunxi SoC (0x1f3a:0xefe8)".into(),
-            mode: "DEVICE_MODE_FEL".into(),
+            mode: "FEL/FES".into(),
             backend: backend_name.clone(),
         })
         .collect()
@@ -277,7 +314,7 @@ pub async fn fes_download_partition(
     .map_err(|e| format!("刷写任务异常: {}", e))?
 }
 
-pub async fn run_flash_firmware_full(
+pub(crate) async fn run_flash_firmware_full_unlocked(
     app: &AppHandle,
     state: &AppState,
     source: &str,
@@ -289,7 +326,6 @@ pub async fn run_flash_firmware_full(
     bus: Option<u8>,
     port: Option<u8>,
 ) -> Result<(), String> {
-    let _busy = state.try_acquire_busy("flash")?;
     let flash_mode: FlashMode = mode.parse()?;
     let action: PostAction = post_action.parse()?;
     let selected_partitions = if partitions.is_empty() {
@@ -305,6 +341,8 @@ pub async fn run_flash_firmware_full(
         partitions: selected_partitions,
         post_action: action,
         custom_layout: None,
+        custom_mbr_override: None,
+        custom_download_files: None,
     };
 
     emit_ai_sync(
@@ -338,6 +376,34 @@ pub async fn run_flash_firmware_full(
     result
 }
 
+pub async fn run_flash_firmware_full(
+    app: &AppHandle,
+    state: &AppState,
+    source: &str,
+    firmware_path: String,
+    mode: String,
+    partitions: Vec<String>,
+    verify: bool,
+    post_action: String,
+    bus: Option<u8>,
+    port: Option<u8>,
+) -> Result<(), String> {
+    let _busy = state.try_acquire_busy("flash")?;
+    run_flash_firmware_full_unlocked(
+        app,
+        state,
+        source,
+        firmware_path,
+        mode,
+        partitions,
+        verify,
+        post_action,
+        bus,
+        port,
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn flash_firmware_full(
     app: AppHandle,
@@ -365,7 +431,74 @@ pub async fn flash_firmware_full(
     .await
 }
 
-pub async fn run_raw_flash_image(
+#[tauri::command]
+pub async fn flash_custom_mbr_layout(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    firmware_path: String,
+    partitions: Vec<crate::packer::PartitionEntry>,
+    include_copies: bool,
+    verify: bool,
+    post_action: String,
+) -> Result<(), String> {
+    let _busy = state.try_acquire_busy("flash")?;
+    let mbr_bytes = crate::packer::build_mbr_binary(&partitions, include_copies)?;
+    let action: PostAction = post_action.parse()?;
+    let mut dl_map = HashMap::new();
+    let mut selected = Vec::new();
+    for part in &partitions {
+        let dl = part.download_file.trim();
+        if !dl.is_empty() && dl != "-" {
+            dl_map.insert(part.name.clone(), dl.to_string());
+            selected.push(part.name.clone());
+        }
+    }
+    let request = FlashRequest {
+        bus: None,
+        port: None,
+        verify,
+        mode: FlashMode::PartitionErase,
+        partitions: if selected.is_empty() {
+            None
+        } else {
+            Some(selected)
+        },
+        post_action: action,
+        custom_layout: None,
+        custom_mbr_override: Some(mbr_bytes),
+        custom_download_files: Some(dl_map),
+    };
+
+    emit_ai_sync(
+        &app,
+        "gui",
+        "flash",
+        "started",
+        format!("Flashing custom MBR layout from {}", firmware_path),
+    );
+    let app_clone = app.clone();
+    let cancel_flag = state.cancel_flash_flag.clone();
+    let fw_path = PathBuf::from(&firmware_path);
+    let result = tokio::task::spawn_blocking(move || {
+        execute_flash_sync(&app_clone, &fw_path, request, &cancel_flag)
+    })
+    .await
+    .map_err(|e| format!("扇区刷写任务异常: {}", e))?;
+
+    match &result {
+        Ok(()) => emit_ai_sync(
+            &app,
+            "gui",
+            "flash",
+            "completed",
+            format!("Custom MBR flash completed: {}", firmware_path),
+        ),
+        Err(err) => emit_ai_sync(&app, "gui", "flash", "error", err.clone()),
+    }
+    result
+}
+
+pub(crate) async fn run_raw_flash_image_unlocked(
     app: &AppHandle,
     state: &AppState,
     source: &str,
@@ -377,7 +510,6 @@ pub async fn run_raw_flash_image(
     bus: Option<u8>,
     port: Option<u8>,
 ) -> Result<(), String> {
-    let _busy = state.try_acquire_busy("raw")?;
     let raw_mode: RawMode = mode.parse()?;
     let raw_storage: RawStorage = storage.parse()?;
     let boot_path = PathBuf::from(&boot_firmware);
@@ -419,6 +551,34 @@ pub async fn run_raw_flash_image(
         Err(err) => emit_ai_sync(app, source, "raw", "error", err.clone()),
     }
     result
+}
+
+pub async fn run_raw_flash_image(
+    app: &AppHandle,
+    state: &AppState,
+    source: &str,
+    boot_firmware: String,
+    raw_image: String,
+    mode: String,
+    storage: String,
+    logic_offset: Option<u64>,
+    bus: Option<u8>,
+    port: Option<u8>,
+) -> Result<(), String> {
+    let _busy = state.try_acquire_busy("raw")?;
+    run_raw_flash_image_unlocked(
+        app,
+        state,
+        source,
+        boot_firmware,
+        raw_image,
+        mode,
+        storage,
+        logic_offset,
+        bus,
+        port,
+    )
+    .await
 }
 
 #[tauri::command]

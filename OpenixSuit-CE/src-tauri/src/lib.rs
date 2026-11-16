@@ -1,10 +1,12 @@
 mod adb;
+pub mod ai_cli;
 mod disasm;
 mod efex;
 mod gpio;
 mod hotplug;
 mod ipc_server;
 mod packer;
+mod plugins;
 mod state;
 mod system;
 
@@ -40,6 +42,7 @@ pub fn run() {
             efex::fes_tool_mode,
             efex::fes_download_partition,
             efex::flash_firmware_full,
+            efex::flash_custom_mbr_layout,
             efex::raw_flash_image,
             efex::cancel_flash,
             // packer
@@ -76,6 +79,11 @@ pub fn run() {
             system::env_check::check_system_env,
             system::settings::load_settings,
             system::settings::save_settings,
+            // plugins
+            plugins::list_plugins,
+            plugins::install_plugin,
+            plugins::uninstall_plugin,
+            plugins::run_plugin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

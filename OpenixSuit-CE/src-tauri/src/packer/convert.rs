@@ -52,6 +52,24 @@ impl ConvertTarget {
     }
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SecureMode {
+    Auto,
+    Enabled,
+    Disabled,
+}
+
+impl SecureMode {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => Ok(Self::Auto),
+            "enabled" | "true" | "1" => Ok(Self::Enabled),
+            "disabled" | "false" | "0" => Ok(Self::Disabled),
+            _ => Err(format!("Unsupported secure mode: {}", value)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ConvertOptions {
     pub firmware_path: PathBuf,
@@ -61,6 +79,7 @@ pub struct ConvertOptions {
     pub uboot_start: Option<u64>,
     pub nor_size: u64,
     pub storage_size: String,
+    pub secure: SecureMode,
 }
 
 #[derive(Debug, Clone)]
@@ -810,7 +829,11 @@ where
 
     let partitions = load_partitions(&mut packer)?;
     let offsets = detect_flash_offsets(&mut packer);
-    let is_secure = packer.is_secure_firmware();
+    let is_secure = match options.secure {
+        SecureMode::Auto => packer.is_secure_firmware(),
+        SecureMode::Enabled => true,
+        SecureMode::Disabled => false,
+    };
 
     if options.target == ConvertTarget::Spinor {
         let logic_start = options

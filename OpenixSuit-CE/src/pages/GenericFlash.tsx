@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 
@@ -36,12 +37,23 @@ export function GenericFlash({
   const [storageType, setStorageType] = useState<"sdmmc" | "nor" | "ufs">("sdmmc");
   const [logicOffset, setLogicOffset] = useState(40960);
   const [diskInfo, setDiskInfo] = useState<GenericImageInfo | null>(null);
+  const [progress, setProgress] = useState<{ partition: string; percent: number } | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
 
   const pushLog = (msg: string) => {
     setLogs((p) => [...p.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`]);
     onLog(msg);
   };
+
+  useEffect(() => {
+    const unlisten = listen<{ partition: string; percent: number }>("flash-progress", (e) => {
+      setProgress({ partition: e.payload.partition, percent: e.payload.percent });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
 
   const pickBoot = async () => {
     try {
@@ -76,6 +88,8 @@ export function GenericFlash({
   const startFlash = async () => {
     if (!bootImage || !genericImage) return;
     onFlashingChange(true);
+    setErrorMsg(null);
+    setProgress(null);
     pushLog(`Raw flash: ${mode}, ${storageType}, offset=${logicOffset}`);
     try {
       const res = await invoke<string | void>("raw_flash_image", {
@@ -90,9 +104,19 @@ export function GenericFlash({
       if (typeof res === "string" && res) pushLog(res);
       pushLog("Raw flash completed");
     } catch (err) {
-      pushLog(String(err));
+      const msg = String(err);
+      setErrorMsg(msg);
+      pushLog(msg);
     } finally {
       onFlashingChange(false);
+    }
+  };
+
+  const cancelFlash = async () => {
+    try {
+      await invoke("cancel_flash");
+    } catch (err) {
+      pushLog(String(err));
     }
   };
 
@@ -156,13 +180,41 @@ export function GenericFlash({
           />
         </div>
 
-        <button
-          disabled={isFlashing || !bootImage || !genericImage}
-          onClick={startFlash}
-          className="w-full rounded bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
-        >
-          {isFlashing ? t("flash.flashing") : t("generic.startFlash")}
-        </button>
+        {progress && (
+          <div className="space-y-1">
+            <div className="flex justify-between text-[11px] text-slate-500">
+              <span className="truncate">{progress.partition}</span>
+              <span>{progress.percent.toFixed(1)}%</span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
+              <div className="h-full bg-emerald-600 transition-all" style={{ width: `${progress.percent}%` }} />
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <button
+            disabled={isFlashing || !bootImage || !genericImage}
+            onClick={startFlash}
+            className="flex-1 rounded bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+          >
+            {isFlashing ? t("flash.flashing") : t("generic.startFlash")}
+          </button>
+          {isFlashing && (
+            <button
+              onClick={cancelFlash}
+              className="rounded bg-red-600 px-3 py-2 text-xs text-white hover:bg-red-500"
+            >
+              {t("common.cancel")}
+            </button>
+          )}
+        </div>
+
+        {errorMsg && (
+          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-600 dark:text-amber-400">
+            {errorMsg}
+          </div>
+        )}
       </div>
 
       <div className="col-span-8 flex flex-col space-y-3">

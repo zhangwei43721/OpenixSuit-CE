@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -11,7 +11,9 @@ import { FlashHub } from "./pages/FlashHub";
 import { EfelDebugger } from "./pages/EfelDebugger";
 import { AdbExplorer } from "./pages/AdbExplorer";
 import { GpioViewer } from "./pages/GpioViewer";
+import { PluginRunner } from "./pages/PluginRunner";
 import { SettingsPage } from "./pages/SettingsPage";
+import { getExtensionTabs, PluginManifest } from "./types/plugin";
 
 const STORAGE_ADB_SERIAL_KEY = "adb_last_serial";
 
@@ -39,13 +41,24 @@ interface AiSyncEventPayload {
 export default function App() {
   const { i18n } = useTranslation();
   const [activeTab, setActiveTab] = useState<TabKey>("firmware");
-  const [visitedTabs, setVisitedTabs] = useState<Record<TabKey, boolean>>({
+  const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>({
     firmware: true,
     debugger: false,
     adb: false,
     gpio: false,
     settings: false,
   });
+  const [plugins, setPlugins] = useState<PluginManifest[]>([]);
+  const extensionTabs = useMemo(() => getExtensionTabs(plugins), [plugins]);
+
+  const refreshPlugins = useCallback(async () => {
+    try {
+      const list = await invoke<PluginManifest[]>("list_plugins");
+      setPlugins(Array.isArray(list) ? list : []);
+    } catch {
+      setPlugins([]);
+    }
+  }, []);
   const [collapsed, setCollapsed] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
   const [aiSyncStatus, setAiSyncStatus] = useState<string | null>(null);
@@ -126,6 +139,7 @@ export default function App() {
 
     const initScanTimer = setTimeout(() => {
       refreshAllDevices();
+      refreshPlugins();
     }, 50);
 
     const unlisten = listen<{ connected: boolean; count: number }>("usb-hotplug", (event) => {
@@ -147,6 +161,12 @@ export default function App() {
         setAiSyncStatus(null);
         if (action === "flash" || action === "raw") {
           setIsFlashing(false);
+        }
+        if (
+          status === "completed" &&
+          (action === "plugin-install" || action === "plugin-uninstall")
+        ) {
+          refreshPlugins();
         }
       }
     });
@@ -177,7 +197,16 @@ export default function App() {
       unlisten.then((fn) => fn());
       unlistenAiSync.then((fn) => fn());
     };
-  }, [i18n]);
+  }, [i18n, refreshPlugins]);
+
+  useEffect(() => {
+    if (
+      activeTab.startsWith("ext:") &&
+      !extensionTabs.some((ext) => ext.key === activeTab)
+    ) {
+      setActiveTab("firmware");
+    }
+  }, [activeTab, extensionTabs]);
 
   const handleSelectAdbSerial = (next: string) => {
     setSelectedAdbSerial(next);
@@ -192,6 +221,17 @@ export default function App() {
       await refreshAllDevices();
     } catch (err) {
       appendLog(`adb root 失败: ${String(err)}`);
+    }
+  };
+
+  const handleAdbReboot = async () => {
+    if (!selectedAdbSerial) return;
+    try {
+      await invoke("adb_reboot", { serial: selectedAdbSerial });
+      appendLog(`[${selectedAdbSerial}] 已发送重启指令`);
+      setTimeout(refreshAllDevices, 2500);
+    } catch (err) {
+      appendLog(`重启设备失败: ${String(err)}`);
     }
   };
 
@@ -232,6 +272,7 @@ export default function App() {
         onSelectAdbSerial={handleSelectAdbSerial}
         onRefreshDevices={refreshAllDevices}
         onAdbRoot={handleAdbRoot}
+        onAdbReboot={handleAdbReboot}
         onSwitchEfex={handleSwitchEfex}
       />
 
@@ -240,6 +281,7 @@ export default function App() {
           activeTab={activeTab}
           collapsed={collapsed}
           locked={isFlashing}
+          extensionTabs={extensionTabs}
           onSelect={selectTab}
           onToggleCollapse={() => setCollapsed((c) => !c)}
         />
@@ -272,9 +314,22 @@ export default function App() {
               />
             </div>
           )}
+          {extensionTabs.map((ext) =>
+            visitedTabs[ext.key] ? (
+              <div key={ext.key} className={activeTab === ext.key ? "h-full" : "hidden"}>
+                <PluginRunner item={ext} serial={selectedAdbSerial} onLog={appendLog} />
+              </div>
+            ) : null
+          )}
           {visitedTabs.settings && (
             <div className={activeTab === "settings" ? "h-full" : "hidden"}>
-              <SettingsPage settings={settings} onUpdate={updateSettings} />
+              <SettingsPage
+                settings={settings}
+                plugins={plugins}
+                onUpdate={updateSettings}
+                onRefreshPlugins={refreshPlugins}
+                onLog={appendLog}
+              />
             </div>
           )}
         </main>

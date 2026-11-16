@@ -30,6 +30,7 @@ export function FirmwareConverter({
   const [norSize, setNorSize] = useState(16);
   const [ubootStart, setUbootStart] = useState("");
   const [storageSize, setStorageSize] = useState("auto");
+  const [secureMode, setSecureMode] = useState<"auto" | "enabled" | "disabled">("auto");
   const [progress, setProgress] = useState(0);
   const [converting, setConverting] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
@@ -67,6 +68,7 @@ export function FirmwareConverter({
         ubootStart: parsedUbootStart,
         norSize,
         storageSize: storageSize.trim() || "auto",
+        secure: secureMode,
         outputPath,
       });
       if (typeof res === "string" && res) pushLog(res);
@@ -136,6 +138,18 @@ export function FirmwareConverter({
                 <option value="8GB" />
                 <option value="16GB" />
               </datalist>
+            </div>
+            <div>
+              <div className="mb-1 text-slate-500">{t("converter.secureMode")}</div>
+              <select
+                value={secureMode}
+                onChange={(e) => setSecureMode(e.target.value as "auto" | "enabled" | "disabled")}
+                className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 dark:border-slate-700 dark:bg-slate-800"
+              >
+                <option value="auto">{t("converter.secureAuto")}</option>
+                <option value="enabled">{t("converter.secureEnabled")}</option>
+                <option value="disabled">{t("converter.secureDisabled")}</option>
+              </select>
             </div>
             {target === "spinor" && (
               <>

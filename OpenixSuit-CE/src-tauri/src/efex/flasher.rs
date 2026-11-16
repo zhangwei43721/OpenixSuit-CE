@@ -79,6 +79,7 @@ pub enum PostAction {
     Reboot,
     PowerOff,
     Shutdown,
+    Keep,
 }
 
 impl PostAction {
@@ -88,6 +89,7 @@ impl PostAction {
             PostAction::PowerOff | PostAction::Shutdown => {
                 ffi::sunxi_fes_tool_mode_t_TOOL_MODE_POWEROFF
             }
+            PostAction::Keep => ffi::sunxi_fes_tool_mode_t_TOOL_MODE_NORMAL,
         }
     }
 }
@@ -100,6 +102,7 @@ impl FromStr for PostAction {
             "reboot" => Ok(Self::Reboot),
             "poweroff" => Ok(Self::PowerOff),
             "shutdown" => Ok(Self::Shutdown),
+            "keep" | "normal" => Ok(Self::Keep),
             _ => Err(format!("Invalid post action: {}", value)),
         }
     }
@@ -176,6 +179,8 @@ pub struct FlashRequest {
     pub partitions: Option<Vec<String>>,
     pub post_action: PostAction,
     pub custom_layout: Option<CustomFlashLayout>,
+    pub custom_mbr_override: Option<Vec<u8>>,
+    pub custom_download_files: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -663,12 +668,18 @@ fn prepare_firmware_downloads(
         if !should_include_partition(request.mode, request.partitions.as_deref(), &part.name) {
             continue;
         }
-        let Some(dl_file) = configs
+        let custom_dl = request
+            .custom_download_files
+            .as_ref()
+            .and_then(|map| map.get(&part.name))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "-");
+        let sys_dl = configs
             .iter()
             .find(|c| c.name == part.name)
             .map(|c| c.downloadfile.clone())
-            .filter(|s| !s.is_empty())
-        else {
+            .filter(|s| !s.is_empty() && s != "-");
+        let Some(dl_file) = custom_dl.or(sys_dl) else {
             continue;
         };
         let subtype = packer.build_subtype_by_filename(&dl_file);
@@ -687,6 +698,22 @@ fn prepare_firmware_downloads(
                 source: PartitionSource::Firmware,
                 wrap_address: false,
             });
+        } else {
+            let ext_path = PathBuf::from(&dl_file);
+            if ext_path.is_file() {
+                let length = std::fs::metadata(&ext_path)
+                    .map_err(|e| format!("读取分区文件 {} 失败: {}", dl_file, e))?
+                    .len();
+                list.push(PartitionDownloadInfo {
+                    partition_name: part.name.clone(),
+                    partition_address: part.address(),
+                    download_filename: dl_file,
+                    download_subtype: String::new(),
+                    data_length: length,
+                    source: PartitionSource::ExternalFile(ext_path),
+                    wrap_address: false,
+                });
+            }
         }
     }
     Ok(list)
@@ -1499,6 +1526,8 @@ pub fn execute_flash_sync(
 
     let mbr_data = if let Some(ref layout) = request.custom_layout {
         layout.mbr_data.clone()
+    } else if let Some(ref custom_mbr) = request.custom_mbr_override {
+        custom_mbr.clone()
     } else {
         packer
             .get_mbr()
@@ -1704,5 +1733,7 @@ pub fn prepare_raw_flash_request(
         partitions: None,
         post_action: PostAction::Reboot,
         custom_layout: Some(layout),
+        custom_mbr_override: None,
+        custom_download_files: None,
     })
 }

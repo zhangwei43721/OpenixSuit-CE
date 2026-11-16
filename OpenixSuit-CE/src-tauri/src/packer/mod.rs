@@ -2,10 +2,13 @@ pub mod convert;
 pub mod imagewty;
 
 use crate::state::emit_ai_sync;
-use imagewty::{OpenixPacker, OpenixPartition, SunxiMbr};
+use imagewty::{
+    is_sparse_format, Boot0HeaderInfo, OpenixPacker, OpenixPartition, SunxiMbr, MBR_MAGIC,
+    MBR_SIZE, MBR_VERSION, SPARSE_HEADER_SIZE,
+};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter};
 
@@ -18,6 +21,8 @@ pub struct PartitionEntry {
     pub sectors: u64,
     pub size_bytes: u64,
     pub type_guid: String,
+    #[serde(default)]
+    pub sparse: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -48,7 +53,9 @@ pub struct ImageInspectResult {
     pub file_count: usize,
     pub encrypted: bool,
     pub magic: String,
+    pub header_version: String,
     pub sys_config: SysConfigInfo,
+    pub sys_config_raw: String,
     pub boot0: Option<Boot0Info>,
     pub partitions: Vec<PartitionEntry>,
     pub files: Vec<PartitionEntry>,
@@ -67,132 +74,6 @@ pub struct GenericImageInfo {
 pub struct ConvertProgressPayload {
     pub percent: f64,
     pub message: String,
-}
-
-struct ImagewtyItem {
-    name: String,
-    offset: u64,
-    size: u64,
-}
-
-fn read_u32_le(buf: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
-}
-
-fn read_u64_split(buf: &[u8], lo_off: usize) -> u64 {
-    let lo = read_u32_le(buf, lo_off) as u64;
-    let hi = read_u32_le(buf, lo_off + 4) as u64;
-    lo | (hi << 32)
-}
-
-fn parse_imagewty_items(file: &mut File, file_size: u64) -> Result<(String, bool, Vec<ImagewtyItem>), String> {
-    let mut hdr = [0u8; 1024];
-    file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    file.read_exact(&mut hdr).map_err(|e| format!("读取 IMAGEWTY 头失败: {}", e))?;
-
-    let magic = String::from_utf8_lossy(&hdr[0..8]).trim_end_matches('\0').to_string();
-    if magic != "IMAGEWTY" {
-        return Err(format!("非未加密 IMAGEWTY 固件格式 (magic: {})", magic));
-    }
-
-    let header_version = read_u32_le(&hdr, 8);
-    if !matches!(header_version, 0x0100 | 0x0200 | 0x0300) {
-        return Err(format!("未知 IMAGEWTY 头版本: 0x{:04x}", header_version));
-    }
-
-    // 与 OpenixCLI ImageHeaderV1 / ImageHeaderV3 精确对齐
-    let num_files = if header_version == 0x0300 {
-        read_u32_le(&hdr, 0x3c)
-    } else {
-        read_u32_le(&hdr, 0x38)
-    } as usize;
-
-    let max_entries = ((file_size.saturating_sub(1024)) / 1024) as usize;
-    if num_files > max_entries || num_files > 4096 {
-        return Err(format!("固件文件头数量异常: {}", num_files));
-    }
-
-    let mut items = Vec::with_capacity(num_files);
-    for idx in 0..num_files {
-        let entry_off = 1024u64 + (idx as u64) * 1024;
-        let mut entry = [0u8; 1024];
-        if file.seek(SeekFrom::Start(entry_off)).is_err() || file.read_exact(&mut entry).is_err() {
-            break;
-        }
-
-        let (name_slice, size, offset) = if header_version == 0x0300 {
-            // FileHeaderV3: data at 0x20 -> attr(4), filename(256 at 0x24), stored_len(8 at 0x124), orig_len(8 at 0x12c), offset(8 at 0x134)
-            let name_raw = &entry[0x24..0x124];
-            let orig_len = read_u64_split(&entry, 0x12c);
-            let stored_len = read_u64_split(&entry, 0x124);
-            let off = read_u64_split(&entry, 0x134);
-            (name_raw, if orig_len > 0 { orig_len } else { stored_len }, off)
-        } else {
-            // FileHeaderV1: data at 0x20 -> attr(4), stored_len(4 at 0x24), orig_len(4 at 0x28), offset(4 at 0x2c), checksum(4 at 0x30), filename(256 at 0x34)
-            let name_raw = &entry[0x34..0x134];
-            let stored_len = read_u32_le(&entry, 0x24) as u64;
-            let orig_len = read_u32_le(&entry, 0x28) as u64;
-            let off = read_u32_le(&entry, 0x2c) as u64;
-            (name_raw, if orig_len > 0 { orig_len } else { stored_len }, off)
-        };
-
-        let name = String::from_utf8_lossy(name_slice.split(|&b| b == 0).next().unwrap_or(&[]))
-            .trim()
-            .to_string();
-        if !name.is_empty() && offset < file_size {
-            let safe_size = size.min(file_size.saturating_sub(offset));
-            items.push(ImagewtyItem {
-                name,
-                offset,
-                size: safe_size,
-            });
-        }
-    }
-
-    Ok((magic, false, items))
-}
-
-fn read_item_bytes(file: &mut File, item: &ImagewtyItem, max_bytes: usize) -> Vec<u8> {
-    let len = (item.size as usize).min(max_bytes);
-    let mut buf = vec![0u8; len];
-    if file.seek(SeekFrom::Start(item.offset)).is_ok() && file.read_exact(&mut buf).is_ok() {
-        buf
-    } else {
-        vec![]
-    }
-}
-
-fn parse_sunxi_mbr_bytes(data: &[u8]) -> Vec<PartitionEntry> {
-    if data.len() < 160 || &data[8..16] != b"softw411" {
-        return vec![];
-    }
-    let part_count = (read_u32_le(data, 24) as usize).min(120);
-    let mut parts = Vec::with_capacity(part_count);
-    for idx in 0..part_count {
-        let off = 32 + idx * 128;
-        if off + 128 > data.len() {
-            break;
-        }
-        let addr_lo = read_u32_le(data, off) as u64;
-        let len_lo = read_u32_le(data, off + 4) as u64;
-        let name_raw = &data[off + 24..off + 40];
-        let name = String::from_utf8_lossy(name_raw.split(|&b| b == 0).next().unwrap_or(&[])).to_string();
-        let dl_raw = &data[off + 40..off + 56];
-        let download_file =
-            String::from_utf8_lossy(dl_raw.split(|&b| b == 0).next().unwrap_or(&[])).to_string();
-        if !name.is_empty() {
-            parts.push(PartitionEntry {
-                index: idx,
-                name,
-                download_file,
-                start_sector: addr_lo,
-                sectors: len_lo,
-                size_bytes: len_lo.saturating_mul(512),
-                type_guid: "Sunxi-MBR".into(),
-            });
-        }
-    }
-    parts
 }
 
 fn clean_pin_name(val: &str) -> String {
@@ -218,6 +99,7 @@ fn parse_sys_partition_fex(text: &str) -> Vec<PartitionEntry> {
                 sectors,
                 size_bytes: sectors.saturating_mul(512),
                 type_guid: "sys_partition".into(),
+                sparse: false,
             });
         }
         name.clear();
@@ -291,25 +173,25 @@ fn parse_sys_config_text(text: &str) -> SysConfigInfo {
                     "1" => "SDCard",
                     "2" => "eMMC",
                     "3" => "SPI NOR",
-                    "4" => "SPI NAND",
-                    "5" => "UFS",
+                    "4" => "eMMC3",
+                    "5" => "SPI NAND",
                     _ => "Auto",
                 }
                 .into();
-            } else if section == "uart_para" {
+            } else if section == "uart_para" || section == "uart0" {
                 if key == "uart_debug_port" {
                     info.uart_port = val.into();
-                } else if key == "uart_debug_tx" {
+                } else if key == "uart_debug_tx" || key == "uart0_tx" || key == "uart_tx" {
                     info.uart_tx = clean_pin_name(val);
-                } else if key == "uart_debug_rx" {
+                } else if key == "uart_debug_rx" || key == "uart0_rx" || key == "uart_rx" {
                     info.uart_rx = clean_pin_name(val);
                 }
-            } else if section == "twi_para" {
+            } else if section == "twi_para" || section == "twi0" {
                 if key == "twi_port" {
                     info.i2c_port = val.into();
-                } else if key == "twi_scl" {
+                } else if key == "twi_scl" || key == "twi0_scl" {
                     info.i2c_scl = clean_pin_name(val);
-                } else if key == "twi_sda" {
+                } else if key == "twi_sda" || key == "twi0_sda" {
                     info.i2c_sda = clean_pin_name(val);
                 }
             }
@@ -320,9 +202,14 @@ fn parse_sys_config_text(text: &str) -> SysConfigInfo {
 
 #[tauri::command]
 pub fn inspect_image(path: String) -> Result<ImageInspectResult, String> {
-    let mut file = File::open(&path).map_err(|e| e.to_string())?;
-    let file_size = file.metadata().map_err(|e| e.to_string())?.len();
-    let (magic, encrypted, items) = parse_imagewty_items(&mut file, file_size)?;
+    let fw_path = Path::new(&path);
+    let file_size = fs::metadata(fw_path)
+        .map_err(|e| format!("读取固件文件 {} 失败: {}", path, e))?
+        .len();
+
+    let mut packer = OpenixPacker::new();
+    packer.load(fw_path).map_err(|e| format!("加载固件失败: {}", e))?;
+    let info = packer.get_image_info();
 
     let mut sys_config = SysConfigInfo {
         debug_print: "On".into(),
@@ -335,55 +222,120 @@ pub fn inspect_image(path: String) -> Result<ImageInspectResult, String> {
         uart_tx: "-".into(),
         uart_rx: "-".into(),
     };
-    let mut boot0: Option<Boot0Info> = None;
-    let mut mbr_parts: Vec<PartitionEntry> = Vec::new();
-    let mut sys_parts: Vec<PartitionEntry> = Vec::new();
+    let mut sys_config_raw = String::new();
+    if let Ok(bytes) = packer
+        .get_image_data_by_name("sys_config")
+        .or_else(|_| {
+            info.files
+                .iter()
+                .find(|f| {
+                    let lower = f.filename.to_ascii_lowercase();
+                    lower == "sys_config.fex" || (lower.contains("sys_config") && lower.ends_with(".fex"))
+                })
+                .ok_or(imagewty::PackerError::FileNotFound("sys_config.fex".into()))
+                .and_then(|f| packer.get_file_data_by_maintype_subtype(&f.maintype, &f.subtype))
+        })
+    {
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        sys_config = parse_sys_config_text(&text);
+        sys_config_raw = text.chars().take(256 * 1024).collect();
+    }
 
-    for item in &items {
-        let lower = item.name.to_lowercase();
-        if lower.contains("sys_config") && lower.ends_with(".fex") {
-            let bytes = read_item_bytes(&mut file, item, 512 * 1024);
-            sys_config = parse_sys_config_text(&String::from_utf8_lossy(&bytes));
-        } else if lower.contains("sys_partition") && lower.ends_with(".fex") && sys_parts.is_empty() {
-            let bytes = read_item_bytes(&mut file, item, 512 * 1024);
-            sys_parts = parse_sys_partition_fex(&String::from_utf8_lossy(&bytes));
-        } else if lower.contains("sunxi_mbr") {
-            let bytes = read_item_bytes(&mut file, item, 64 * 1024);
-            let parsed = parse_sunxi_mbr_bytes(&bytes);
-            if !parsed.is_empty() {
-                mbr_parts = parsed;
-            }
-        } else if lower.contains("boot0") && boot0.is_none() {
-            let bytes = read_item_bytes(&mut file, item, 512);
-            if bytes.len() >= 32 {
-                let b_magic: String = String::from_utf8_lossy(&bytes[4..12])
-                    .chars()
-                    .filter(|c| c.is_ascii_graphic())
-                    .collect();
-                let platform: String = String::from_utf8_lossy(&bytes[24..32])
-                    .chars()
-                    .filter(|c| c.is_ascii_graphic())
-                    .collect();
-                boot0 = Some(Boot0Info {
-                    magic: b_magic,
-                    platform,
-                    dram_size_mb: 0,
-                });
+    let mut sys_parts: Vec<PartitionEntry> = Vec::new();
+    let mut cfg = OpenixPartition::new();
+    if let Ok(data) = packer.get_sys_partition() {
+        sys_parts = parse_sys_partition_fex(&String::from_utf8_lossy(&data));
+        cfg.parse_from_data(&data);
+    }
+    let cfg_parts = cfg.get_partitions();
+
+    let mut mbr_parts: Vec<PartitionEntry> = Vec::new();
+    if let Ok(mbr_bytes) = packer.get_mbr() {
+        if let Ok(mbr) = SunxiMbr::parse(&mbr_bytes) {
+            mbr_parts = mbr
+                .partitions
+                .iter()
+                .enumerate()
+                .map(|(idx, p)| {
+                    let dl_file = cfg_parts
+                        .iter()
+                        .find(|c| c.name == p.name)
+                        .map(|c| c.downloadfile.clone())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "-".to_string());
+                    let sectors = p.length();
+                    PartitionEntry {
+                        index: idx,
+                        name: p.name.clone(),
+                        download_file: dl_file,
+                        start_sector: p.address(),
+                        sectors,
+                        size_bytes: sectors.saturating_mul(512),
+                        type_guid: "Sunxi-MBR".into(),
+                        sparse: false,
+                    }
+                })
+                .collect();
+        }
+    }
+
+    let mut boot0: Option<Boot0Info> = None;
+    for candidate in &info.files {
+        let lower = candidate.filename.to_ascii_lowercase();
+        if lower.contains("boot0") || candidate.subtype.starts_with("TOC0") {
+            if let Ok(head) = packer.get_file_data_range_by_maintype_subtype(
+                &candidate.maintype,
+                &candidate.subtype,
+                0,
+                512,
+            ) {
+                if let Ok(parsed) = Boot0HeaderInfo::parse(&head) {
+                    let magic = parsed.magic.trim_matches('\0').to_string();
+                    let platform = parsed.platform.trim_matches('\0').to_string();
+                    boot0 = Some(Boot0Info {
+                        magic: if magic.is_empty() { "BOOT0".into() } else { magic },
+                        platform,
+                        dram_size_mb: 0,
+                    });
+                    break;
+                }
             }
         }
     }
 
-    let files: Vec<PartitionEntry> = items
+    let files: Vec<PartitionEntry> = info
+        .files
         .iter()
         .enumerate()
-        .map(|(idx, item)| PartitionEntry {
-            index: idx,
-            name: item.name.clone(),
-            download_file: item.name.clone(),
-            start_sector: item.offset / 512,
-            sectors: item.size.saturating_add(511) / 512,
-            size_bytes: item.size,
-            type_guid: "IMAGEWTY".into(),
+        .map(|(idx, item)| {
+            let size = if item.original_length > 0 {
+                item.original_length
+            } else {
+                item.stored_length
+            };
+            let sparse = packer
+                .get_file_data_range_by_maintype_subtype(
+                    &item.maintype,
+                    &item.subtype,
+                    0,
+                    SPARSE_HEADER_SIZE as u64,
+                )
+                .map(|head| is_sparse_format(&head))
+                .unwrap_or(false);
+            PartitionEntry {
+                index: idx,
+                name: item.filename.clone(),
+                download_file: item.filename.clone(),
+                start_sector: item.offset / 512,
+                sectors: size.saturating_add(511) / 512,
+                size_bytes: size,
+                type_guid: if sparse {
+                    format!("{}/{} [sparse]", item.maintype, item.subtype)
+                } else {
+                    format!("{}/{}", item.maintype, item.subtype)
+                },
+                sparse,
+            }
         })
         .collect();
 
@@ -399,16 +351,22 @@ pub fn inspect_image(path: String) -> Result<ImageInspectResult, String> {
         .fold(0u64, |acc, p| acc.saturating_add(p.size_bytes));
 
     Ok(ImageInspectResult {
-        file_name: Path::new(&path)
+        file_name: fw_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or(path),
         file_size,
         partition_size,
         file_count: files.len(),
-        encrypted,
-        magic,
+        encrypted: info.is_encrypted,
+        magic: "IMAGEWTY".into(),
+        header_version: if info.is_encrypted {
+            "Encrypted IMAGEWTY".into()
+        } else {
+            "Standard IMAGEWTY".into()
+        },
         sys_config,
+        sys_config_raw,
         boot0,
         partitions,
         files,
@@ -417,35 +375,67 @@ pub fn inspect_image(path: String) -> Result<ImageInspectResult, String> {
 
 #[tauri::command]
 pub fn extract_partition(image_path: String, partition: String, out_dir: String) -> Result<String, String> {
-    let mut file = File::open(&image_path).map_err(|e| e.to_string())?;
-    let file_size = file.metadata().map_err(|e| e.to_string())?.len();
-    let (_, _, items) = parse_imagewty_items(&mut file, file_size)?;
-    let target = items
+    let mut packer = OpenixPacker::new();
+    packer
+        .load(Path::new(&image_path))
+        .map_err(|e| format!("加载固件失败: {}", e))?;
+    let info = packer.get_image_info();
+    let target = info
+        .files
         .into_iter()
-        .find(|i| i.name == partition)
+        .find(|f| f.filename == partition)
         .ok_or_else(|| format!("未找到分区/文件: {}", partition))?;
 
     fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-    let safe_name = Path::new(&target.name)
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new("partition.bin"));
+    let safe_name = sanitize_unpack_filename(&target.filename);
     let out_path = Path::new(&out_dir).join(safe_name);
-
-    file.seek(SeekFrom::Start(target.offset)).map_err(|e| e.to_string())?;
-    let mut out = File::create(&out_path).map_err(|e| e.to_string())?;
-    let mut remaining = target.size;
-    let mut buf = vec![0u8; 65536];
-    while remaining > 0 {
-        let to_read = remaining.min(buf.len() as u64) as usize;
-        let n = file.read(&mut buf[..to_read]).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        out.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        remaining -= n as u64;
-    }
+    let len = if target.original_length > 0 {
+        target.original_length
+    } else {
+        target.stored_length
+    };
+    stream_packer_entry(&mut packer, &target.maintype, &target.subtype, len, &out_path)?;
 
     Ok(out_path.to_string_lossy().to_string())
+}
+
+pub fn build_mbr_binary(
+    partitions: &[PartitionEntry],
+    include_copies: bool,
+) -> Result<Vec<u8>, String> {
+    if partitions.len() > 120 {
+        return Err("Sunxi MBR 最多支持 120 个分区".to_string());
+    }
+    let copy_count = if include_copies { 4usize } else { 1usize };
+    let mut full_buf = vec![0u8; MBR_SIZE * copy_count];
+
+    for copy_idx in 0..copy_count {
+        let mut buf = vec![0u8; MBR_SIZE];
+        buf[4..8].copy_from_slice(&MBR_VERSION.to_le_bytes());
+        buf[8..16].copy_from_slice(MBR_MAGIC.as_bytes());
+        buf[16..20].copy_from_slice(&(copy_count as u32).to_le_bytes());
+        buf[20..24].copy_from_slice(&(copy_idx as u32).to_le_bytes());
+        buf[24..28].copy_from_slice(&(partitions.len() as u32).to_le_bytes());
+
+        for (i, part) in partitions.iter().enumerate() {
+            let off = 32 + i * 128;
+            buf[off..off + 4].copy_from_slice(&((part.start_sector >> 32) as u32).to_le_bytes());
+            buf[off + 4..off + 8].copy_from_slice(&(part.start_sector as u32).to_le_bytes());
+            buf[off + 8..off + 12].copy_from_slice(&((part.sectors >> 32) as u32).to_le_bytes());
+            buf[off + 12..off + 16].copy_from_slice(&(part.sectors as u32).to_le_bytes());
+            buf[off + 16..off + 20].copy_from_slice(b"DISK");
+            let name_bytes = part.name.as_bytes();
+            let nlen = name_bytes.len().min(16);
+            buf[off + 32..off + 32 + nlen].copy_from_slice(&name_bytes[..nlen]);
+        }
+
+        let crc = crc32fast::hash(&buf[4..]);
+        buf[0..4].copy_from_slice(&crc.to_le_bytes());
+        let start = copy_idx * MBR_SIZE;
+        full_buf[start..start + MBR_SIZE].copy_from_slice(&buf);
+    }
+
+    Ok(full_buf)
 }
 
 #[tauri::command]
@@ -454,36 +444,7 @@ pub fn export_mbr_binary(
     include_copies: bool,
     out_path: String,
 ) -> Result<(), String> {
-    let copy_count = if include_copies { 4usize } else { 1usize };
-    let mbr_size = 16 * 1024;
-    let mut full_buf = vec![0u8; mbr_size * copy_count];
-
-    for copy_idx in 0..copy_count {
-        let mut buf = vec![0u8; mbr_size];
-        buf[4..8].copy_from_slice(&0x00000200u32.to_le_bytes());
-        buf[8..16].copy_from_slice(b"softw411");
-        buf[16..20].copy_from_slice(&(copy_count as u32).to_le_bytes());
-        buf[20..24].copy_from_slice(&(copy_idx as u32).to_le_bytes());
-        buf[24..28].copy_from_slice(&(partitions.len().min(120) as u32).to_le_bytes());
-
-        for (i, part) in partitions.iter().take(120).enumerate() {
-            let off = 32 + i * 128;
-            buf[off..off + 4].copy_from_slice(&(part.start_sector as u32).to_le_bytes());
-            buf[off + 4..off + 8].copy_from_slice(&(part.sectors as u32).to_le_bytes());
-            let name_bytes = part.name.as_bytes();
-            let nlen = name_bytes.len().min(16);
-            buf[off + 24..off + 24 + nlen].copy_from_slice(&name_bytes[..nlen]);
-            let dl_bytes = part.download_file.as_bytes();
-            let dlen = dl_bytes.len().min(16);
-            buf[off + 40..off + 40 + dlen].copy_from_slice(&dl_bytes[..dlen]);
-        }
-
-        let crc = crc32fast::hash(&buf[4..]);
-        buf[0..4].copy_from_slice(&crc.to_le_bytes());
-        let start = copy_idx * mbr_size;
-        full_buf[start..start + mbr_size].copy_from_slice(&buf);
-    }
-
+    let full_buf = build_mbr_binary(&partitions, include_copies)?;
     fs::write(&out_path, full_buf).map_err(|e| e.to_string())
 }
 
@@ -506,6 +467,7 @@ pub fn read_partition_table(disk_image_path: String) -> Result<GenericImageInfo,
                     sectors: sec,
                     size_bytes: sec.saturating_mul(512),
                     type_guid: format!("{:02x?}", part.partition_type_guid),
+                    sparse: false,
                 });
             }
         }
@@ -531,6 +493,7 @@ pub fn read_partition_table(disk_image_path: String) -> Result<GenericImageInfo,
                 sectors: sec,
                 size_bytes: sec.saturating_mul(512),
                 type_guid: format!("0x{:02x}", part.sys),
+                sparse: false,
             });
         }
     }
@@ -551,9 +514,11 @@ pub fn convert_firmware_sync(
     uboot_start: Option<u64>,
     nor_size: u64,
     storage_size: String,
+    secure: Option<String>,
     output_path: String,
 ) -> Result<String, String> {
     let target_enum = convert::ConvertTarget::parse(&target)?;
+    let secure_mode = convert::SecureMode::parse(secure.as_deref().unwrap_or("auto"))?;
     let out_str = output_path.clone();
     let app_clone = app.clone();
     convert::run_convert(
@@ -565,6 +530,7 @@ pub fn convert_firmware_sync(
             uboot_start,
             nor_size,
             storage_size,
+            secure: secure_mode,
         },
         move |percent, message| {
             let _ = app_clone.emit(
@@ -585,6 +551,7 @@ pub async fn convert_firmware(
     uboot_start: Option<u64>,
     nor_size: u64,
     storage_size: String,
+    secure: Option<String>,
     output_path: String,
 ) -> Result<String, String> {
     emit_ai_sync(
@@ -604,6 +571,7 @@ pub async fn convert_firmware(
             uboot_start,
             nor_size,
             storage_size,
+            secure,
             output_path,
         )
     })
@@ -759,18 +727,65 @@ pub async fn unpack_firmware(
     res
 }
 
+fn format_dts_value(raw: &[u8]) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    // Check if value is a null-terminated printable ASCII string list
+    if raw.last() == Some(&0) {
+        let parts: Vec<&[u8]> = raw[..raw.len() - 1].split(|&b| b == 0).collect();
+        let all_printable = parts.iter().all(|p| {
+            !p.is_empty()
+                && p.iter()
+                    .all(|&b| matches!(b, 0x20..=0x7e | b'\t'))
+        });
+        if all_printable {
+            let formatted: Vec<String> = parts
+                .iter()
+                .map(|p| {
+                    let s = String::from_utf8_lossy(p)
+                        .replace('\\', "\\\\")
+                        .replace('"', "\\\"");
+                    format!("\"{}\"", s)
+                })
+                .collect();
+            return format!(" = {}", formatted.join(", "));
+        }
+    }
+    if raw.len() % 4 == 0 {
+        let cells: Vec<String> = raw
+            .chunks_exact(4)
+            .map(|c| format!("0x{:x}", u32::from_be_bytes([c[0], c[1], c[2], c[3]])))
+            .collect();
+        return format!(" = <{}>", cells.join(" "));
+    }
+    let hex_bytes: Vec<String> = raw.iter().map(|b| format!("{:02x}", b)).collect();
+    format!(" = [{}]", hex_bytes.join(" "))
+}
+
+fn emit_dts_node(node: fdt::node::FdtNode<'_, '_>, indent: usize, out: &mut String) {
+    let pad = "    ".repeat(indent);
+    let name = if node.name == "/" { "/" } else { node.name };
+    out.push_str(&format!("{}{} {{\n", pad, name));
+    for prop in node.properties() {
+        let val_str = format_dts_value(prop.value);
+        out.push_str(&format!("{}    {}{};\n", pad, prop.name, val_str));
+    }
+    for child in node.children() {
+        emit_dts_node(child, indent + 1, out);
+    }
+    out.push_str(&format!("{}}};\n", pad));
+}
+
 #[tauri::command]
 pub fn dtb_to_dts(dtb_path: String) -> Result<String, String> {
     let data = fs::read(&dtb_path).map_err(|e| e.to_string())?;
     let fdt = fdt::Fdt::new(&data).map_err(|e| format!("DTB 解析失败: {:?}", e))?;
-    let mut out = String::from("/dts-v1/;\n\n/ {\n");
-    for node in fdt.all_nodes() {
-        out.push_str(&format!("    {} {{\n", node.name));
-        for prop in node.properties() {
-            out.push_str(&format!("        {}; /* {} bytes */\n", prop.name, prop.value.len()));
-        }
-        out.push_str("    };\n");
+    let mut out = String::from("/dts-v1/;\n\n");
+    if let Some(root) = fdt.find_node("/") {
+        emit_dts_node(root, 0, &mut out);
+    } else {
+        out.push_str("/ {\n};\n");
     }
-    out.push_str("};\n");
     Ok(out)
 }
