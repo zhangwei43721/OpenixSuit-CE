@@ -45,8 +45,14 @@ impl<'a> PartitionPlanner<'a> {
                 continue;
             }
 
-            let Some(download_filename) =
-                download_filename_for(config_partitions, partition_name).map(str::to_string)
+            let Some(download_filename) = request
+                .partition_download_files
+                .get(partition_name)
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .or_else(|| {
+                    download_filename_for(config_partitions, partition_name).map(str::to_string)
+                })
             else {
                 self.logger.debug(&format!(
                     "Partition {} has no download file, skipping",

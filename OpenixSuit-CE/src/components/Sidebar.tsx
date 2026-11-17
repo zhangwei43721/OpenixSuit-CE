@@ -121,6 +121,16 @@ function loadSidebarLayout(): SidebarLayoutConfig {
   }
 }
 
+export function getFirstSidebarTab(): CoreTabKey {
+  const layout = loadSidebarLayout();
+  const uncommonSet = new Set(layout.uncommonItems);
+  for (const groupId of layout.groupOrder) {
+    const first = layout.itemOrder[groupId].find((key) => !uncommonSet.has(key));
+    if (first) return first;
+  }
+  return layout.uncommonItems[0] ?? "firmware";
+}
+
 function reorderList<T>(list: T[], fromIdx: number, toIdx: number): T[] {
   if (fromIdx < 0 || toIdx < 0 || fromIdx >= list.length || toIdx >= list.length) return list;
   const next = [...list];

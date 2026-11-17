@@ -10,7 +10,7 @@ use crate::firmware::sparse::SPARSE_HEADER_SIZE;
 use crate::firmware::OpenixPacker;
 use crate::flash::protocol::FesOps;
 use crate::utils::{FlashError, FlashResult, Logger};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Partition download handler
@@ -21,6 +21,7 @@ pub struct PartitionDownload<'a> {
     logger: &'a mut Logger,
     written_bytes: Arc<AtomicU64>,
     last_speed_update: Arc<AtomicU64>,
+    cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl<'a> PartitionDownload<'a> {
@@ -30,6 +31,24 @@ impl<'a> PartitionDownload<'a> {
             logger,
             written_bytes: Arc::new(AtomicU64::new(0)),
             last_speed_update: Arc::new(AtomicU64::new(0)),
+            cancel_flag: None,
+        }
+    }
+
+    pub fn with_cancel_flag(mut self, cancel_flag: Option<Arc<AtomicBool>>) -> Self {
+        self.cancel_flag = cancel_flag;
+        self
+    }
+
+    fn check_cancelled(&self) -> FlashResult<()> {
+        if self
+            .cancel_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            Err(FlashError::Cancelled)
+        } else {
+            Ok(())
         }
     }
 
@@ -62,6 +81,10 @@ impl<'a> PartitionDownload<'a> {
 
         let mut download_result = Ok(());
         for info in download_list {
+            if let Err(error) = self.check_cancelled() {
+                download_result = Err(error);
+                break;
+            }
             self.logger.info(&format!(
                 "Flashing partition: {} ({} bytes at sector {})",
                 info.partition_name, info.data_length, info.partition_address
@@ -159,7 +182,8 @@ impl<'a> PartitionDownload<'a> {
             self.logger,
             Arc::clone(&self.written_bytes),
             Arc::clone(&self.last_speed_update),
-        );
+        )
+        .with_cancel_flag(self.cancel_flag.clone());
         downloader.execute(ctx, packer, info, verify).await
     }
 
@@ -175,7 +199,8 @@ impl<'a> PartitionDownload<'a> {
             self.logger,
             Arc::clone(&self.written_bytes),
             Arc::clone(&self.last_speed_update),
-        );
+        )
+        .with_cancel_flag(self.cancel_flag.clone());
         downloader.execute(ctx, packer, info, verify).await
     }
 }

@@ -220,6 +220,17 @@ fn reject_input_as_output(input: &Path, output: &Path) -> Result<(), String> {
 
 /// Convert one IMAGEWTY firmware package into a raw programmer image.
 pub fn convert(options: ConvertOptions) -> Result<ConvertResult, String> {
+    convert_with_progress(options, |_, _| {})
+}
+
+/// Convert one IMAGEWTY firmware package into a raw programmer image with progress updates.
+pub fn convert_with_progress<F>(
+    options: ConvertOptions,
+    mut on_progress: F,
+) -> Result<ConvertResult, String>
+where
+    F: FnMut(f64, String),
+{
     if !options.firmware_path.is_file() {
         return Err(format!(
             "Firmware file not found: {}",
@@ -232,11 +243,13 @@ pub fn convert(options: ConvertOptions) -> Result<ConvertResult, String> {
         .unwrap_or_else(|| default_output_path(&options.firmware_path, options.target));
     reject_input_as_output(&options.firmware_path, &output_path)?;
 
+    on_progress(5.0, "Loading IMAGEWTY firmware...".to_string());
     let mut packer = OpenixPacker::new();
     packer
         .load(&options.firmware_path)
         .map_err(|error| format!("Failed to load firmware: {error}"))?;
 
+    on_progress(15.0, "Parsing partitions and flash map...".to_string());
     let partitions = load_partitions(&mut packer)?;
     let offsets = detect_flash_offsets(&mut packer);
     let detected_secure = packer.is_secure_firmware();
@@ -246,6 +259,10 @@ pub fn convert(options: ConvertOptions) -> Result<ConvertResult, String> {
         SecureMode::Disabled => false,
     };
 
+    on_progress(
+        30.0,
+        format!("Writing {} image...", options.target.flash_type()),
+    );
     let output_size = if options.target == ConvertTarget::Spinor {
         let logic_start = options
             .logic_offset
@@ -287,6 +304,7 @@ pub fn convert(options: ConvertOptions) -> Result<ConvertResult, String> {
         block::merge(&mut packer, config)?
     };
 
+    on_progress(100.0, "Conversion complete".to_string());
     Ok(ConvertResult {
         output_path,
         output_size,

@@ -13,7 +13,7 @@ use crate::utils::{FlashError, FlashResult, Logger};
 use libefex::FesDataType;
 use std::fs::File;
 use std::io::Read;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 const EXTERNAL_FILE_CHUNK_SIZE: u64 = 10 * 1024 * 1024;
@@ -26,6 +26,7 @@ pub struct RawDownloader<'a> {
     logger: &'a Logger,
     written_bytes: Arc<AtomicU64>,
     last_speed_update: Arc<AtomicU64>,
+    cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl<'a> RawDownloader<'a> {
@@ -39,6 +40,24 @@ impl<'a> RawDownloader<'a> {
             logger,
             written_bytes,
             last_speed_update,
+            cancel_flag: None,
+        }
+    }
+
+    pub fn with_cancel_flag(mut self, cancel_flag: Option<Arc<AtomicBool>>) -> Self {
+        self.cancel_flag = cancel_flag;
+        self
+    }
+
+    fn check_cancelled(&self) -> FlashResult<()> {
+        if self
+            .cancel_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            Err(FlashError::Cancelled)
+        } else {
+            Ok(())
         }
     }
 
@@ -100,6 +119,7 @@ impl<'a> RawDownloader<'a> {
         };
 
         for chunk_index in 0..total_chunks {
+            self.check_cancelled()?;
             let chunk_offset = chunk_index * chunk_limit;
             let chunk_size =
                 std::cmp::min(chunk_limit, info.data_length.saturating_sub(chunk_offset));
@@ -165,6 +185,7 @@ impl<'a> RawDownloader<'a> {
             .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
         }
 
+        self.check_cancelled()?;
         self.verify_partition(ctx, info, &mut checksum).await?;
 
         Ok(())

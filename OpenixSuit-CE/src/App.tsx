@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
-import { Sidebar, TabKey } from "./components/Sidebar";
+import { getFirstSidebarTab, Sidebar, TabKey } from "./components/Sidebar";
 import { AdbDevice, FelDevice, TopBar } from "./components/TopBar";
 import { LogDrawer } from "./components/LogDrawer";
 import { AppSettings, loadSettings, saveSettings, ThemeMode } from "./store/settings";
@@ -48,9 +48,9 @@ interface AiSyncEventPayload {
 
 export default function App() {
   const { i18n } = useTranslation();
-  const [activeTab, setActiveTab] = useState<TabKey>("firmware");
-  const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>({
-    firmware: true,
+  const [activeTab, setActiveTab] = useState<TabKey>(() => getFirstSidebarTab());
+  const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>(() => ({
+    firmware: false,
     serial: false,
     debugger: false,
     adb: false,
@@ -61,7 +61,8 @@ export default function App() {
     automation: false,
     ai: false,
     settings: false,
-  });
+    [activeTab]: true,
+  }));
   const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const extensionTabs = useMemo(() => getExtensionTabs(plugins), [plugins]);
   const [workspaces, setWorkspaces] = useState<DeviceWorkspace[]>([]);

@@ -19,11 +19,10 @@ path = "src/bin/openixsuit-ai.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-cc = "1.1"
-bindgen = "0.70"
-pkg-config = "0.3"
 
 [dependencies]
+openixcli = { path = "../.." }
+libefex = { git = "https://github.com/YuzukiTsuru/libefex", rev = "3752e38ff8e69190c53cd43290a8102beab55e73" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
@@ -46,3 +45,13 @@ serialport = "4"
 regex = "1"
 reqwest = "0.13"
 libc = "0.2"
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+strip = true
+lto = "thin"

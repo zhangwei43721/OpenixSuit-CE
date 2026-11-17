@@ -1,11 +1,10 @@
-pub mod convert;
-pub mod imagewty;
-
 use crate::state::emit_ai_sync;
-use imagewty::{
-    is_sparse_format, Boot0HeaderInfo, OpenixPacker, OpenixPartition, SunxiMbr, MBR_MAGIC,
-    MBR_SIZE, MBR_VERSION, SPARSE_HEADER_SIZE,
-};
+use openixcli::config::boot_header::Boot0Header;
+use openixcli::config::mbr_parser::{SunxiMbr, MBR_MAGIC, MBR_SIZE, MBR_VERSION};
+use openixcli::config::partition::OpenixPartition;
+use openixcli::convert::{convert_with_progress, ConvertOptions, ConvertTarget, SecureMode};
+use openixcli::firmware::sparse::{is_sparse_format, SPARSE_HEADER_SIZE};
+use openixcli::firmware::{OpenixPacker, PackerError};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Write;
@@ -224,7 +223,7 @@ pub fn inspect_image(path: String) -> Result<ImageInspectResult, String> {
     };
     let mut sys_config_raw = String::new();
     if let Ok(bytes) = packer
-        .get_image_data_by_name("sys_config")
+        .get_file_data_by_filename("sys_config.fex")
         .or_else(|_| {
             info.files
                 .iter()
@@ -232,7 +231,7 @@ pub fn inspect_image(path: String) -> Result<ImageInspectResult, String> {
                     let lower = f.filename.to_ascii_lowercase();
                     lower == "sys_config.fex" || (lower.contains("sys_config") && lower.ends_with(".fex"))
                 })
-                .ok_or(imagewty::PackerError::FileNotFound("sys_config.fex".into()))
+                .ok_or_else(|| PackerError::FileNotFound("sys_config.fex".into()))
                 .and_then(|f| packer.get_file_data_by_maintype_subtype(&f.maintype, &f.subtype))
         })
     {
@@ -289,9 +288,9 @@ pub fn inspect_image(path: String) -> Result<ImageInspectResult, String> {
                 0,
                 512,
             ) {
-                if let Ok(parsed) = Boot0HeaderInfo::parse(&head) {
-                    let magic = parsed.magic.trim_matches('\0').to_string();
-                    let platform = parsed.platform.trim_matches('\0').to_string();
+                if let Ok(parsed) = Boot0Header::parse(&head) {
+                    let magic = parsed.magic_str().trim_matches('\0').to_string();
+                    let platform = parsed.platform_str().trim_matches('\0').to_string();
                     boot0 = Some(Boot0Info {
                         magic: if magic.is_empty() { "BOOT0".into() } else { magic },
                         platform,
@@ -506,6 +505,26 @@ pub fn read_partition_table(disk_image_path: String) -> Result<GenericImageInfo,
     })
 }
 
+fn parse_convert_target(value: &str) -> Result<ConvertTarget, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "spinor" | "nor" => Ok(ConvertTarget::Spinor),
+        "sdcard" | "sd" => Ok(ConvertTarget::Sdcard),
+        "emmc" => Ok(ConvertTarget::Emmc),
+        "sdnand" => Ok(ConvertTarget::Sdnand),
+        "ufs" => Ok(ConvertTarget::Ufs),
+        _ => Err(format!("Unsupported convert target: {}", value)),
+    }
+}
+
+fn parse_secure_mode(value: &str) -> Result<SecureMode, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" | "auto" => Ok(SecureMode::Auto),
+        "enabled" | "true" | "1" => Ok(SecureMode::Enabled),
+        "disabled" | "false" | "0" => Ok(SecureMode::Disabled),
+        _ => Err(format!("Unsupported secure mode: {}", value)),
+    }
+}
+
 pub fn convert_firmware_sync(
     app: &AppHandle,
     firmware_path: String,
@@ -517,14 +536,15 @@ pub fn convert_firmware_sync(
     secure: Option<String>,
     output_path: String,
 ) -> Result<String, String> {
-    let target_enum = convert::ConvertTarget::parse(&target)?;
-    let secure_mode = convert::SecureMode::parse(secure.as_deref().unwrap_or("auto"))?;
-    let out_str = output_path.clone();
+    let target_enum = parse_convert_target(&target)?;
+    let secure_mode = parse_secure_mode(secure.as_deref().unwrap_or("auto"))?;
+    let out_path = PathBuf::from(&output_path);
+    let out_str = output_path;
     let app_clone = app.clone();
-    convert::run_convert(
-        convert::ConvertOptions {
+    convert_with_progress(
+        ConvertOptions {
             firmware_path: PathBuf::from(firmware_path),
-            output_path: PathBuf::from(output_path),
+            output: Some(out_path),
             target: target_enum,
             logic_offset,
             uboot_start,

@@ -15,7 +15,7 @@ use crate::flash::protocol::FesOps;
 use crate::utils::{FlashError, FlashResult, Logger};
 use libefex::FesDataType;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Sparse partition downloader
@@ -26,6 +26,7 @@ pub struct SparseDownloader<'a> {
     logger: &'a Logger,
     written_bytes: Arc<AtomicU64>,
     last_speed_update: Arc<AtomicU64>,
+    cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl<'a> SparseDownloader<'a> {
@@ -39,6 +40,24 @@ impl<'a> SparseDownloader<'a> {
             logger,
             written_bytes,
             last_speed_update,
+            cancel_flag: None,
+        }
+    }
+
+    pub fn with_cancel_flag(mut self, cancel_flag: Option<Arc<AtomicBool>>) -> Self {
+        self.cancel_flag = cancel_flag;
+        self
+    }
+
+    fn check_cancelled(&self) -> FlashResult<()> {
+        if self
+            .cancel_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            Err(FlashError::Cancelled)
+        } else {
+            Ok(())
         }
     }
 
@@ -151,6 +170,7 @@ impl<'a> SparseDownloader<'a> {
         let mut consumed = first_read_size as u64;
 
         while data_length.saturating_sub(consumed) >= constants::BUFFER_SIZE as u64 {
+            self.check_cancelled()?;
             file.read_exact(&mut buffer).map_err(|e| {
                 FlashError::InvalidFirmwareFormat(format!("Failed to read data chunk: {}", e))
             })?;
@@ -176,6 +196,7 @@ impl<'a> SparseDownloader<'a> {
                 .await?;
         }
 
+        self.check_cancelled()?;
         parser.finish(total_chunks, total_blks)?;
 
         if parser.need_verify() {

@@ -1,5 +1,6 @@
 //! Shared flash request and option types.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -222,6 +223,8 @@ pub struct FlashRequest {
     pub partitions: Option<Vec<String>>,
     pub post_action: PostAction,
     pub custom_layout: Option<CustomFlashLayout>,
+    pub mbr_override: Option<Vec<u8>>,
+    pub partition_download_files: BTreeMap<String, String>,
 }
 
 impl FlashRequest {
@@ -239,11 +242,23 @@ impl FlashRequest {
             partitions,
             post_action,
             custom_layout: None,
+            mbr_override: None,
+            partition_download_files: BTreeMap::new(),
         }
     }
 
     pub fn with_custom_layout(mut self, layout: CustomFlashLayout) -> Self {
         self.custom_layout = Some(layout);
+        self
+    }
+
+    pub fn with_mbr_override(mut self, mbr_data: Vec<u8>) -> Self {
+        self.mbr_override = Some(mbr_data);
+        self
+    }
+
+    pub fn with_partition_download_files(mut self, files: BTreeMap<String, String>) -> Self {
+        self.partition_download_files = files;
         self
     }
 }

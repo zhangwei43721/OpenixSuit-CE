@@ -22,6 +22,8 @@ use crate::firmware::OpenixPacker;
 use crate::flash::protocol::{FelOps, FesOps};
 use crate::process::{FlashStages, StageType};
 use crate::utils::{FlashError, FlashResult, Logger};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[doc(hidden)]
@@ -102,6 +104,7 @@ pub struct Flasher<B = LibefexDeviceBackend> {
     logger: Logger,
     backend: B,
     reconnect_policy: ReconnectPolicy,
+    cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl Flasher<LibefexDeviceBackend> {
@@ -113,11 +116,29 @@ impl Flasher<LibefexDeviceBackend> {
             logger,
             backend: LibefexDeviceBackend,
             reconnect_policy: ReconnectPolicy::default(),
+            cancel_flag: None,
         }
     }
 }
 
 impl<B: DeviceBackend> Flasher<B> {
+    pub fn with_cancel_flag(mut self, cancel_flag: Arc<AtomicBool>) -> Self {
+        self.cancel_flag = Some(cancel_flag);
+        self
+    }
+
+    fn check_cancelled(&self) -> FlashResult<()> {
+        if self
+            .cancel_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            Err(FlashError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
     #[cfg(test)]
     fn with_backend(
         packer: OpenixPacker,
@@ -135,6 +156,7 @@ impl<B: DeviceBackend> Flasher<B> {
                 retry_delay: tokio::time::Duration::from_millis(1),
                 startup_timeout: tokio::time::Duration::from_millis(100),
             },
+            cancel_flag: None,
         }
     }
 
@@ -151,6 +173,7 @@ impl<B: DeviceBackend> Flasher<B> {
     }
 
     async fn execute_inner(&mut self) -> FlashResult<()> {
+        self.check_cancelled()?;
         let fes_data = self.packer.get_fes().map_err(|_| FlashError::FesNotFound)?;
 
         let mut ctx = self.open_device()?;
@@ -250,7 +273,9 @@ impl<B: DeviceBackend> Flasher<B> {
     }
 
     async fn run_fes_mode(&mut self, ctx: &B::Context) -> FlashResult<()> {
-        let mut fes_handler = FesHandler::new(&mut self.logger);
+        self.check_cancelled()?;
+        let mut fes_handler =
+            FesHandler::new(&mut self.logger).with_cancel_flag(self.cancel_flag.clone());
         fes_handler
             .handle(ctx, &mut self.packer, &self.request)
             .await
@@ -294,6 +319,7 @@ impl<B: DeviceBackend> Flasher<B> {
         let mut attempts = 0;
 
         loop {
+            self.check_cancelled()?;
             attempts += 1;
 
             let devices = match self.backend.scan_devices() {

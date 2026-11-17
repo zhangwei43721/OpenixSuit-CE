@@ -26,6 +26,8 @@ use crate::flash::protocol::FesOps;
 use crate::flash::{CustomFlashLayout, FlashMode, FlashRequest};
 use crate::process::StageType;
 use crate::utils::{FlashError, FlashResult, Logger};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// FES handler for devices in U-Boot mode
 ///
@@ -33,12 +35,33 @@ use crate::utils::{FlashError, FlashResult, Logger};
 /// for devices that are in FES mode (U-Boot)
 pub struct FesHandler<'a> {
     logger: &'a mut Logger,
+    cancel_flag: Option<Arc<AtomicBool>>,
 }
 
 impl<'a> FesHandler<'a> {
     /// Create a new FES handler
     pub fn new(logger: &'a mut Logger) -> Self {
-        Self { logger }
+        Self {
+            logger,
+            cancel_flag: None,
+        }
+    }
+
+    pub fn with_cancel_flag(mut self, cancel_flag: Option<Arc<AtomicBool>>) -> Self {
+        self.cancel_flag = cancel_flag;
+        self
+    }
+
+    fn check_cancelled(&self) -> FlashResult<()> {
+        if self
+            .cancel_flag
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+        {
+            Err(FlashError::Cancelled)
+        } else {
+            Ok(())
+        }
     }
 
     /// Handle FES mode operations
@@ -83,6 +106,8 @@ impl<'a> FesHandler<'a> {
 
         self.logger.complete_stage();
 
+        self.check_cancelled()?;
+
         if request.mode != FlashMode::Partition {
             self.logger.begin_stage(StageType::FesErase);
             let erase_flag = EraseFlag::new(&*self.logger);
@@ -90,10 +115,13 @@ impl<'a> FesHandler<'a> {
             self.logger.complete_stage();
         }
 
+        self.check_cancelled()?;
         self.logger.begin_stage(StageType::FesMbr);
 
         let mbr_data = if let Some(layout) = &request.custom_layout {
             layout.mbr_data.clone()
+        } else if let Some(mbr) = &request.mbr_override {
+            mbr.clone()
         } else {
             packer.get_mbr().map_err(|_| FlashError::MbrNotFound)?
         };
@@ -131,7 +159,8 @@ impl<'a> FesHandler<'a> {
             self.logger.set_partition_stage_weight(total_bytes);
 
             {
-                let mut partition_download = PartitionDownload::new(&mut *self.logger);
+                let mut partition_download =
+                    PartitionDownload::new(&mut *self.logger).with_cancel_flag(self.cancel_flag.clone());
                 partition_download
                     .execute(ctx, packer, &download_list, request.verify)
                     .await?;
@@ -140,6 +169,7 @@ impl<'a> FesHandler<'a> {
             self.logger.complete_stage();
         }
 
+        self.check_cancelled()?;
         self.logger.begin_stage(StageType::FesBoot);
         let boot_download = BootDownload::new(&*self.logger);
         boot_download

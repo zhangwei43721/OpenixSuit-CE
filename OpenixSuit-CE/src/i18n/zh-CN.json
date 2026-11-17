@@ -2,8 +2,8 @@
   "appTitle": "OpenixSuit-CE",
   "status": {
     "connected": "FEL/FES 已连接",
-    "adbOnline": "ADB 在线 · 未进烧录模式",
-    "disconnected": "未连接 FEL/ADB 设备",
+    "adbOnline": "ADB 在线",
+    "disconnected": "未连接设备",
     "envCheck": "环境自检",
     "noAdb": "无 ADB 设备",
     "reboot": "重启设备",

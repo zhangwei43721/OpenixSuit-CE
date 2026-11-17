@@ -1,19 +1,21 @@
-pub mod ffi;
-pub mod flasher;
-
 use crate::hotplug::watcher::scan_sunxi_devices;
 use crate::state::{emit_ai_sync, AppState, UsbBackend};
-use flasher::{
-    execute_flash_sync, prepare_raw_flash_request, scan_efex_devices, EfexSession, FlashMode,
-    FlashRequest, PostAction, RawMode, RawStorage,
+use libefex::{Context as EfexContext, DeviceMode, FesDataType, FesToolMode};
+use openixcli::firmware::OpenixPacker;
+use openixcli::flash::{
+    DeviceSelector, FlashEvent, FlashEventSink, FlashLogLevel, FlashMode, FlashRequest, Flasher,
+    PostAction,
 };
+use openixcli::process::global_progress::set_tui_mode;
+use openixcli::raw::{prepare as prepare_raw_flash, RawMode, RawOptions, RawStorage};
+use openixcli::utils::Logger;
 use serde::Serialize;
-use std::collections::HashMap;
-use std::ffi::{c_char, CStr};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Clone, Serialize)]
@@ -39,6 +41,181 @@ pub struct FlashLogPayload {
     pub message: String,
 }
 
+fn open_efex_session(bus: Option<u8>, port: Option<u8>) -> Result<EfexContext, String> {
+    let mut ctx = EfexContext::new();
+    if let (Some(b), Some(p)) = (bus, port) {
+        ctx.scan_usb_device_at(b, p).map_err(|e| e.to_string())?;
+    } else {
+        let devs = EfexContext::scan_usb_devices().map_err(|e| e.to_string())?;
+        let first = devs
+            .first()
+            .ok_or_else(|| "未检测到任何 ALLWINNER FEL/FES USB 设备 (0x1f3a:0xefe8)".to_string())?;
+        ctx.scan_usb_device_at(first.bus, first.port)
+            .map_err(|e| e.to_string())?;
+    }
+    ctx.usb_init().map_err(|e| e.to_string())?;
+    ctx.efex_init().map_err(|e| e.to_string())?;
+    Ok(ctx)
+}
+
+fn require_fel_mode(ctx: &EfexContext) -> Result<(), String> {
+    let mode_label = match ctx.get_device_mode() {
+        DeviceMode::Fel => return Ok(()),
+        DeviceMode::Srv => "FES (U-Boot / DEVICE_MODE_SRV)".to_string(),
+        DeviceMode::UpdateCool => "UPDATE_COOL".to_string(),
+        DeviceMode::UpdateHot => "UPDATE_HOT".to_string(),
+        DeviceMode::Null => "NULL".to_string(),
+        DeviceMode::Unknown(val) => format!("UNKNOWN (0x{:04x})", val),
+    };
+    Err(format!(
+        "当前设备处于 {}，不支持 FEL 内存读写与反汇编（仅固件刷写可用）。请按住板卡 FEL 键重新上电或复位进入 BROM FEL 模式后再调试。",
+        mode_label
+    ))
+}
+
+fn build_flash_logger(app: &AppHandle) -> Logger {
+    let app_clone = app.clone();
+    let current_stage = Arc::new(Mutex::new("INIT".to_string()));
+    let current_partition = Arc::new(Mutex::new(String::new()));
+    let last_percent = Arc::new(Mutex::new(0.0_f64));
+
+    let sink = FlashEventSink::from_fn(move |event| match event {
+        FlashEvent::Log { level, message } => {
+            let stage = current_stage
+                .lock()
+                .map(|s| s.clone())
+                .unwrap_or_else(|_| "FLASH".to_string());
+            let level_str = match level {
+                FlashLogLevel::Info => "info",
+                FlashLogLevel::Success => "success",
+                FlashLogLevel::Warn => "warn",
+                FlashLogLevel::Error => "error",
+                FlashLogLevel::Debug => "debug",
+            };
+            let _ = app_clone.emit(
+                "flash-log",
+                FlashLogPayload {
+                    stage,
+                    level: level_str.to_string(),
+                    message,
+                },
+            );
+        }
+        FlashEvent::StageStarted(stage_type) => {
+            let name = stage_type.name().to_string();
+            if let Ok(mut stage) = current_stage.lock() {
+                *stage = name.clone();
+            }
+            let _ = app_clone.emit(
+                "flash-log",
+                FlashLogPayload {
+                    stage: name.clone(),
+                    level: "info".to_string(),
+                    message: format!("开始阶段: {}", name),
+                },
+            );
+        }
+        FlashEvent::PartitionStarted(partition_name) => {
+            if let Ok(mut part) = current_partition.lock() {
+                *part = partition_name.clone();
+            }
+            let percent = last_percent.lock().map(|p| *p).unwrap_or(0.0);
+            let _ = app_clone.emit(
+                "flash-progress",
+                FlashProgressPayload {
+                    partition: partition_name,
+                    written: 0,
+                    total: 0,
+                    percent,
+                },
+            );
+        }
+        FlashEvent::Progress {
+            overall_percent,
+            stage_progress,
+            total,
+            speed: _,
+        } => {
+            let clamped = overall_percent.clamp(0.0, 100.0);
+            if let Ok(mut p) = last_percent.lock() {
+                *p = clamped;
+            }
+            let partition = current_partition
+                .lock()
+                .map(|p| {
+                    if p.is_empty() {
+                        current_stage
+                            .lock()
+                            .map(|s| s.clone())
+                            .unwrap_or_else(|_| "flashing".to_string())
+                    } else {
+                        p.clone()
+                    }
+                })
+                .unwrap_or_else(|_| "flashing".to_string());
+            let _ = app_clone.emit(
+                "flash-progress",
+                FlashProgressPayload {
+                    partition,
+                    written: stage_progress,
+                    total,
+                    percent: clamped,
+                },
+            );
+        }
+        FlashEvent::Finished { post_action } => {
+            if let Ok(mut p) = last_percent.lock() {
+                *p = 100.0;
+            }
+            let _ = app_clone.emit(
+                "flash-progress",
+                FlashProgressPayload {
+                    partition: "完成".to_string(),
+                    written: 100,
+                    total: 100,
+                    percent: 100.0,
+                },
+            );
+            let _ = app_clone.emit(
+                "flash-log",
+                FlashLogPayload {
+                    stage: "FINISH".to_string(),
+                    level: "success".to_string(),
+                    message: format!("刷写完成 ({})", post_action),
+                },
+            );
+        }
+        FlashEvent::StagesDefined(_)
+        | FlashEvent::StageCompleted(_)
+        | FlashEvent::PartitionStageWeight(_) => {}
+    });
+
+    Logger::for_events(true, sink)
+}
+
+fn execute_openix_flash_sync(
+    app: &AppHandle,
+    packer: OpenixPacker,
+    request: FlashRequest,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    cancel_flag.store(false, Ordering::SeqCst);
+    set_tui_mode(true);
+    let logger = build_flash_logger(app);
+    let mut flasher =
+        Flasher::new(packer, request, logger).with_cancel_flag(Arc::clone(cancel_flag));
+    let res = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.block_on(flasher.execute())
+    } else {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .map_err(|e| format!("创建异步运行时失败: {}", e))?;
+        rt.block_on(flasher.execute())
+    };
+    res.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn scan_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
     let backend = state.usb_backend.lock().map_err(|e| e.to_string())?.clone();
@@ -52,48 +229,40 @@ pub fn scan_devices_with_backend(backend: &UsbBackend) -> Vec<DeviceInfo> {
 
 fn scan_devices_with_probe(backend: &UsbBackend, probe_details: bool) -> Vec<DeviceInfo> {
     let backend_name = format!("{:?}", backend);
-    let libefex_devs = scan_efex_devices();
-    if !libefex_devs.is_empty() {
-        return libefex_devs
-            .into_iter()
-            .map(|d| {
-                let id = format!("bus:{}-port:{}", d.bus, d.port);
-                if probe_details {
-                    if let Ok(session) = EfexSession::open_at(Some(d.bus), Some(d.port)) {
-                        let chip_id = session.ctx.resp.id;
-                        let mode_str = unsafe {
-                            let ptr = ffi::sunxi_efex_get_device_mode_str(&session.ctx);
-                            if ptr.is_null() {
-                                "Sunxi SoC".to_string()
-                            } else {
-                                CStr::from_ptr(ptr).to_string_lossy().to_string()
-                            }
-                        };
-                        let mode_label = match session.device_mode() {
-                            x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_FEL => {
-                                "FEL (USB Boot)"
-                            }
-                            x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_SRV => {
-                                "FES (U-Boot)"
-                            }
-                            _ => "FEL/FES",
-                        };
-                        return DeviceInfo {
-                            id,
-                            chip: format!("{} (0x{:08x})", mode_str, chip_id),
-                            mode: mode_label.into(),
-                            backend: backend_name.clone(),
-                        };
+    if let Ok(libefex_devs) = EfexContext::scan_usb_devices() {
+        if !libefex_devs.is_empty() {
+            return libefex_devs
+                .into_iter()
+                .map(|d| {
+                    let id = format!("bus:{}-port:{}", d.bus, d.port);
+                    if probe_details {
+                        if let Ok(ctx) = open_efex_session(Some(d.bus), Some(d.port)) {
+                            let chip_id = unsafe { (*ctx.as_ptr()).resp.id };
+                            let mode_str = ctx.get_device_mode_str();
+                            let mode_label = match ctx.get_device_mode() {
+                                DeviceMode::Fel => "FEL (USB Boot)",
+                                DeviceMode::Srv => "FES (U-Boot)",
+                                DeviceMode::UpdateCool => "UPDATE_COOL",
+                                DeviceMode::UpdateHot => "UPDATE_HOT",
+                                _ => "FEL/FES",
+                            };
+                            return DeviceInfo {
+                                id,
+                                chip: format!("{} (0x{:08x})", mode_str, chip_id),
+                                mode: mode_label.into(),
+                                backend: backend_name.clone(),
+                            };
+                        }
                     }
-                }
-                DeviceInfo {
-                    id,
-                    chip: "Sunxi SoC (0x1f3a:0xefe8)".into(),
-                    mode: "FEL/FES".into(),
-                    backend: backend_name.clone(),
-                }
-            })
-            .collect();
+                    DeviceInfo {
+                        id,
+                        chip: "Sunxi SoC (0x1f3a:0xefe8)".into(),
+                        mode: "FEL/FES".into(),
+                        backend: backend_name.clone(),
+                    }
+                })
+                .collect();
+        }
     }
     scan_sunxi_devices()
         .into_iter()
@@ -108,45 +277,19 @@ fn scan_devices_with_probe(backend: &UsbBackend, probe_details: bool) -> Vec<Dev
 
 #[tauri::command]
 pub fn set_usb_backend(backend: UsbBackend, state: State<'_, AppState>) -> Result<(), String> {
-    let c_backend = match backend {
-        UsbBackend::Auto => ffi::usb_backend_type_USB_BACKEND_AUTO,
-        UsbBackend::Libusb => ffi::usb_backend_type_USB_BACKEND_LIBUSB,
-        UsbBackend::Winusb => ffi::usb_backend_type_USB_BACKEND_WINUSB,
-    };
-    let rc = unsafe { ffi::sunxi_efex_set_usb_backend(c_backend) };
-    if rc < 0 && backend != UsbBackend::Winusb {
-        return Err(format!("设置 USB 后端失败 (code {})", rc));
-    }
     let mut guard = state.usb_backend.lock().map_err(|e| e.to_string())?;
     *guard = backend;
     Ok(())
-}
-
-fn require_fel_mode(session: &EfexSession) -> Result<(), String> {
-    let mode = session.device_mode();
-    if mode == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_FEL {
-        return Ok(());
-    }
-    let mode_label = match mode {
-        x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_SRV => "FES (U-Boot / DEVICE_MODE_SRV)",
-        x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_UPDATE_COOL => "UPDATE_COOL",
-        x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_UPDATE_HOT => "UPDATE_HOT",
-        _ => "非 FEL 模式",
-    };
-    Err(format!(
-        "当前设备处于 {}，不支持 FEL 内存读写与反汇编（仅固件刷写可用）。请按住板卡 FEL 键重新上电或复位进入 BROM FEL 模式后再调试。",
-        mode_label
-    ))
 }
 
 pub fn efel_read_sync(address: u32, length: usize) -> Result<Vec<u8>, String> {
     if length == 0 || length > 1024 * 1024 {
         return Err("读取长度必须在 1B ~ 1MB 之间".into());
     }
-    let session = EfexSession::open_at(None, None)?;
-    require_fel_mode(&session)?;
+    let ctx = open_efex_session(None, None)?;
+    require_fel_mode(&ctx)?;
     let mut buf = vec![0u8; length];
-    session.fel_read(address, &mut buf)?;
+    ctx.fel_read(address, &mut buf).map_err(|e| e.to_string())?;
     Ok(buf)
 }
 
@@ -154,15 +297,15 @@ pub fn efel_write_sync(address: u32, data: Vec<u8>) -> Result<(), String> {
     if data.is_empty() {
         return Ok(());
     }
-    let session = EfexSession::open_at(None, None)?;
-    require_fel_mode(&session)?;
-    session.fel_write(address, &data)
+    let ctx = open_efex_session(None, None)?;
+    require_fel_mode(&ctx)?;
+    ctx.fel_write(address, &data).map_err(|e| e.to_string())
 }
 
 pub fn efel_exec_sync(address: u32) -> Result<(), String> {
-    let session = EfexSession::open_at(None, None)?;
-    require_fel_mode(&session)?;
-    session.fel_exec(address)
+    let ctx = open_efex_session(None, None)?;
+    require_fel_mode(&ctx)?;
+    ctx.fel_exec(address).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -211,11 +354,11 @@ pub fn fel_init_dram(state: State<'_, AppState>, file_path: String) -> Result<Ve
     if data.len() < 96 {
         return Err("镜像文件过小，无法解析 DRAM 参数".into());
     }
-    let session = EfexSession::open_at(None, None)?;
-    require_fel_mode(&session)?;
+    let ctx = open_efex_session(None, None)?;
+    require_fel_mode(&ctx)?;
     let load_addr: u32 = 0x00020000;
-    session.fel_write(load_addr, &data)?;
-    session.fel_exec(load_addr)?;
+    ctx.fel_write(load_addr, &data).map_err(|e| e.to_string())?;
+    ctx.fel_exec(load_addr).map_err(|e| e.to_string())?;
     let mut logs = Vec::new();
     for i in 0..8 {
         let off = 0x38 + i * 4;
@@ -231,8 +374,8 @@ pub fn fel_init_dram(state: State<'_, AppState>, file_path: String) -> Result<Ve
 #[tauri::command]
 pub fn fes_query_storage(state: State<'_, AppState>) -> Result<String, String> {
     let _busy = state.try_acquire_busy("fes_query_storage")?;
-    let session = EfexSession::open_at(None, None)?;
-    let storage_type = session.fes_query_storage()?;
+    let ctx = open_efex_session(None, None)?;
+    let storage_type = ctx.fes_query_storage().map_err(|e| e.to_string())?;
     let name = match storage_type {
         0 => "NAND",
         1 => "SDCard",
@@ -248,18 +391,19 @@ pub fn fes_query_storage(state: State<'_, AppState>) -> Result<String, String> {
 #[tauri::command]
 pub fn fes_tool_mode(state: State<'_, AppState>, action: String) -> Result<(), String> {
     let _busy = state.try_acquire_busy("fes_tool_mode")?;
-    let session = EfexSession::open_at(None, None)?;
+    let ctx = open_efex_session(None, None)?;
     let mode = match action.as_str() {
-        "reboot" => ffi::sunxi_fes_tool_mode_t_TOOL_MODE_REBOOT,
-        "poweroff" | "shutdown" => ffi::sunxi_fes_tool_mode_t_TOOL_MODE_POWEROFF,
-        _ => ffi::sunxi_fes_tool_mode_t_TOOL_MODE_NORMAL,
+        "reboot" => FesToolMode::Reboot,
+        "poweroff" | "shutdown" => FesToolMode::PowerOff,
+        _ => FesToolMode::Normal,
     };
-    session.fes_tool_mode(mode, ffi::sunxi_fes_tool_mode_t_TOOL_MODE_NORMAL)
+    ctx.fes_tool_mode(mode, FesToolMode::Normal)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn cancel_flash(state: State<'_, AppState>) {
-    state.cancel_flash_flag.store(true, Ordering::Relaxed);
+    state.cancel_flash_flag.store(true, Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -271,13 +415,13 @@ pub async fn fes_download_partition(
     verify: Option<bool>,
 ) -> Result<(), String> {
     let _busy = state.try_acquire_busy("fes_download_partition")?;
-    state.cancel_flash_flag.store(false, Ordering::Relaxed);
+    state.cancel_flash_flag.store(false, Ordering::SeqCst);
     let cancel_flag = state.cancel_flash_flag.clone();
 
     tokio::task::spawn_blocking(move || {
         let mut file = File::open(&file_path).map_err(|e| format!("打开文件失败: {}", e))?;
         let total = file.metadata().map_err(|e| e.to_string())?.len();
-        let session = EfexSession::open_at(None, None)?;
+        let ctx = open_efex_session(None, None)?;
 
         let mut buf = vec![0u8; 65536];
         let mut written: u64 = 0;
@@ -285,7 +429,7 @@ pub async fn fes_download_partition(
         let mut hasher = crc32fast::Hasher::new();
 
         loop {
-            if cancel_flag.load(Ordering::Relaxed) {
+            if cancel_flag.load(Ordering::SeqCst) {
                 return Err("刷写已由用户取消".into());
             }
             let n = file.read(&mut buf).map_err(|e| e.to_string())?;
@@ -293,18 +437,8 @@ pub async fn fes_download_partition(
                 break;
             }
             hasher.update(&buf[..n]);
-            let rc = unsafe {
-                ffi::sunxi_efex_fes_down(
-                    &session.ctx,
-                    buf.as_ptr() as *const c_char,
-                    n as isize,
-                    sector_addr,
-                    0,
-                )
-            };
-            if rc < 0 {
-                return Err(format!("FES 分区写入失败 (code {})", rc));
-            }
+            ctx.fes_down(&buf[..n], sector_addr, FesDataType::Flash)
+                .map_err(|e| format!("FES 分区写入失败: {}", e))?;
 
             written += n as u64;
             sector_addr = sector_addr.saturating_add((n / 512) as u32);
@@ -326,14 +460,9 @@ pub async fn fes_download_partition(
         }
 
         if verify.unwrap_or(false) {
-            let mut status: ffi::sunxi_fes_verify_resp_t = unsafe { std::mem::zeroed() };
             let _crc = hasher.finalize();
-            let rc = unsafe {
-                ffi::sunxi_efex_fes_verify_value(&session.ctx, 0, written, &mut status)
-            };
-            if rc < 0 {
-                return Err(format!("分区 {} 写入校验失败 (code {})", partition, rc));
-            }
+            ctx.fes_verify_value(0, written)
+                .map_err(|e| format!("分区 {} 写入校验失败: {}", partition, e))?;
         }
 
         Ok(())
@@ -361,17 +490,13 @@ pub(crate) async fn run_flash_firmware_full_unlocked(
     } else {
         Some(partitions)
     };
-    let request = FlashRequest {
-        bus,
-        port,
+    let request = FlashRequest::new(
+        DeviceSelector::new(bus, port),
         verify,
-        mode: flash_mode,
-        partitions: selected_partitions,
-        post_action: action,
-        custom_layout: None,
-        custom_mbr_override: None,
-        custom_download_files: None,
-    };
+        flash_mode,
+        selected_partitions,
+        action,
+    );
 
     emit_ai_sync(
         app,
@@ -386,7 +511,11 @@ pub(crate) async fn run_flash_firmware_full_unlocked(
     let fw_path = PathBuf::from(&firmware_path);
 
     let result = tokio::task::spawn_blocking(move || {
-        execute_flash_sync(&app_clone, &fw_path, request, &cancel_flag)
+        let mut packer = OpenixPacker::new();
+        packer
+            .load(&fw_path)
+            .map_err(|e| format!("加载固件失败: {}", e))?;
+        execute_openix_flash_sync(&app_clone, packer, request, &cancel_flag)
     })
     .await
     .map_err(|e| format!("刷写任务异常: {}", e))?;
@@ -472,7 +601,7 @@ pub async fn flash_custom_mbr_layout(
     let _busy = state.try_acquire_busy("flash")?;
     let mbr_bytes = crate::packer::build_mbr_binary(&partitions, include_copies)?;
     let action: PostAction = post_action.parse()?;
-    let mut dl_map = HashMap::new();
+    let mut dl_map = BTreeMap::new();
     let mut selected = Vec::new();
     for part in &partitions {
         let dl = part.download_file.trim();
@@ -481,21 +610,19 @@ pub async fn flash_custom_mbr_layout(
             selected.push(part.name.clone());
         }
     }
-    let request = FlashRequest {
-        bus: None,
-        port: None,
+    let request = FlashRequest::new(
+        DeviceSelector::default(),
         verify,
-        mode: FlashMode::PartitionErase,
-        partitions: if selected.is_empty() {
+        FlashMode::PartitionErase,
+        if selected.is_empty() {
             None
         } else {
             Some(selected)
         },
-        post_action: action,
-        custom_layout: None,
-        custom_mbr_override: Some(mbr_bytes),
-        custom_download_files: Some(dl_map),
-    };
+        action,
+    )
+    .with_mbr_override(mbr_bytes)
+    .with_partition_download_files(dl_map);
 
     emit_ai_sync(
         &app,
@@ -508,7 +635,11 @@ pub async fn flash_custom_mbr_layout(
     let cancel_flag = state.cancel_flash_flag.clone();
     let fw_path = PathBuf::from(&firmware_path);
     let result = tokio::task::spawn_blocking(move || {
-        execute_flash_sync(&app_clone, &fw_path, request, &cancel_flag)
+        let mut packer = OpenixPacker::new();
+        packer
+            .load(&fw_path)
+            .map_err(|e| format!("加载固件失败: {}", e))?;
+        execute_openix_flash_sync(&app_clone, packer, request, &cancel_flag)
     })
     .await
     .map_err(|e| format!("扇区刷写任务异常: {}", e))?;
@@ -526,6 +657,23 @@ pub async fn flash_custom_mbr_layout(
     result
 }
 
+fn parse_raw_mode(value: &str) -> Result<RawMode, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "command" => Ok(RawMode::Command),
+        "logic-offset" | "logic_offset" => Ok(RawMode::LogicOffset),
+        _ => Err(format!("Unsupported raw mode: {}", value)),
+    }
+}
+
+fn parse_raw_storage(value: &str) -> Result<RawStorage, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "sdmmc" | "emmc" => Ok(RawStorage::Sdmmc),
+        "ufs" => Ok(RawStorage::Ufs),
+        "nor" | "spinor" => Ok(RawStorage::Nor),
+        _ => Err(format!("Unsupported raw storage: {}", value)),
+    }
+}
+
 pub(crate) async fn run_raw_flash_image_unlocked(
     app: &AppHandle,
     state: &AppState,
@@ -538,19 +686,18 @@ pub(crate) async fn run_raw_flash_image_unlocked(
     bus: Option<u8>,
     port: Option<u8>,
 ) -> Result<(), String> {
-    let raw_mode: RawMode = mode.parse()?;
-    let raw_storage: RawStorage = storage.parse()?;
-    let boot_path = PathBuf::from(&boot_firmware);
-    let raw_path = PathBuf::from(&raw_image);
-    let request = prepare_raw_flash_request(
-        &boot_path,
-        &raw_path,
-        raw_mode,
-        raw_storage,
+    let raw_mode = parse_raw_mode(&mode)?;
+    let raw_storage = parse_raw_storage(&storage)?;
+    let raw_options = RawOptions {
+        firmware_path: PathBuf::from(&boot_firmware),
+        image_path: PathBuf::from(&raw_image),
+        mode: raw_mode,
+        storage: raw_storage,
         logic_offset,
         bus,
         port,
-    )?;
+        verbose: true,
+    };
 
     emit_ai_sync(
         app,
@@ -563,7 +710,8 @@ pub(crate) async fn run_raw_flash_image_unlocked(
     let app_clone = app.clone();
     let cancel_flag = state.cancel_flash_flag.clone();
     let result = tokio::task::spawn_blocking(move || {
-        execute_flash_sync(&app_clone, &boot_path, request, &cancel_flag)
+        let (packer, request) = prepare_raw_flash(&raw_options)?;
+        execute_openix_flash_sync(&app_clone, packer, request, &cancel_flag)
     })
     .await
     .map_err(|e| format!("Raw 刷写任务异常: {}", e))?;
