@@ -8,12 +8,20 @@ import { AdbDevice, FelDevice, TopBar } from "./components/TopBar";
 import { LogDrawer } from "./components/LogDrawer";
 import { AppSettings, loadSettings, saveSettings, ThemeMode } from "./store/settings";
 import { FlashHub } from "./pages/FlashHub";
+import { SerialPage } from "./pages/SerialPage";
 import { EfelDebugger } from "./pages/EfelDebugger";
 import { AdbExplorer } from "./pages/AdbExplorer";
+import { AdbTerminalPage } from "./pages/AdbTerminalPage";
+import { DeviceMonitorPage } from "./pages/DeviceMonitorPage";
+import { AdbScreenPage } from "./pages/AdbScreenPage";
 import { GpioViewer } from "./pages/GpioViewer";
+import { AutomationPage } from "./pages/AutomationPage";
+import { AiWorkbenchPage } from "./pages/AiWorkbenchPage";
 import { PluginRunner } from "./pages/PluginRunner";
 import { SettingsPage } from "./pages/SettingsPage";
+import { WorkspaceModal } from "./components/WorkspaceModal";
 import { getExtensionTabs, PluginManifest } from "./types/plugin";
+import { DeviceWorkspace } from "./types/workbench";
 
 const STORAGE_ADB_SERIAL_KEY = "adb_last_serial";
 
@@ -43,13 +51,45 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("firmware");
   const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>({
     firmware: true,
+    serial: false,
     debugger: false,
     adb: false,
+    "adb-term": false,
+    monitor: false,
+    screen: false,
     gpio: false,
+    automation: false,
+    ai: false,
     settings: false,
   });
   const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const extensionTabs = useMemo(() => getExtensionTabs(plugins), [plugins]);
+  const [workspaces, setWorkspaces] = useState<DeviceWorkspace[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
+    () => localStorage.getItem("active_workspace_id") || null
+  );
+  const [workspaceModal, setWorkspaceModal] = useState<{
+    open: boolean;
+    editing: DeviceWorkspace | null;
+  }>({ open: false, editing: null });
+  const [syncEvents, setSyncEvents] = useState<
+    Array<{ time: string; source: string; action: string; status: string; message: string }>
+  >([]);
+  const [adbJumpRequest, setAdbJumpRequest] = useState<{ path: string; seq: number } | null>(null);
+
+  const activeWorkspace = useMemo(
+    () => workspaces.find((w) => w.id === activeWorkspaceId) || null,
+    [workspaces, activeWorkspaceId]
+  );
+
+  const refreshWorkspaces = useCallback(async () => {
+    try {
+      const list = await invoke<DeviceWorkspace[]>("workspace_list");
+      setWorkspaces(Array.isArray(list) ? list : []);
+    } catch {
+      setWorkspaces([]);
+    }
+  }, []);
 
   const refreshPlugins = useCallback(async () => {
     try {
@@ -78,10 +118,10 @@ export default function App() {
     resolveTheme((localStorage.getItem("theme_mode") as ThemeMode) || "system")
   );
 
-  const appendLog = (msg: string) => {
+  const appendLog = useCallback((msg: string) => {
     const time = new Date().toLocaleTimeString();
     setLogs((prev) => [...prev.slice(-499), `[${time}] ${msg}`]);
-  };
+  }, []);
 
   const selectTab = (tab: TabKey) => {
     setActiveTab(tab);
@@ -140,6 +180,7 @@ export default function App() {
     const initScanTimer = setTimeout(() => {
       refreshAllDevices();
       refreshPlugins();
+      refreshWorkspaces();
     }, 50);
 
     const unlisten = listen<{ connected: boolean; count: number }>("usb-hotplug", (event) => {
@@ -150,8 +191,18 @@ export default function App() {
     });
 
     const unlistenAiSync = listen<AiSyncEventPayload>("ai-sync-event", (event) => {
-      const { action, status, message } = event.payload;
+      const { source, action, status, message } = event.payload;
       appendLog(`[AI] ${action}: ${message}`);
+      setSyncEvents((prev) => [
+        ...prev.slice(-199),
+        {
+          time: new Date().toLocaleTimeString(),
+          source,
+          action,
+          status,
+          message,
+        },
+      ]);
       if (status === "started") {
         setAiSyncStatus(action);
         if (action === "flash" || action === "raw") {
@@ -170,6 +221,16 @@ export default function App() {
         }
       }
     });
+
+    const unlistenFlashLog = listen<{ stage: string; level: string; message: string }>(
+      "flash-log",
+      (event) => {
+        if (event.payload?.message) {
+          const warnTag = event.payload.level === "warn" ? "[WARN] " : "";
+          appendLog(`[${event.payload.stage || "FLASH"}] ${warnTag}${event.payload.message}`);
+        }
+      }
+    );
 
     const adbTimer = setInterval(() => {
       invoke<AdbDevice[]>("adb_list_devices")
@@ -196,8 +257,9 @@ export default function App() {
       clearInterval(adbTimer);
       unlisten.then((fn) => fn());
       unlistenAiSync.then((fn) => fn());
+      unlistenFlashLog.then((fn) => fn());
     };
-  }, [i18n, refreshPlugins]);
+  }, [i18n, refreshPlugins, refreshWorkspaces, appendLog]);
 
   useEffect(() => {
     if (
@@ -262,6 +324,38 @@ export default function App() {
     await saveSettings(next).catch(() => {});
   };
 
+  const handleSelectWorkspace = (id: string | null) => {
+    setActiveWorkspaceId(id);
+    if (id) {
+      localStorage.setItem("active_workspace_id", id);
+      const ws = workspaces.find((w) => w.id === id);
+      if (ws?.adb_serial) {
+        handleSelectAdbSerial(ws.adb_serial);
+      }
+    } else {
+      localStorage.removeItem("active_workspace_id");
+    }
+  };
+
+  const handleSaveWorkspace = async (ws: DeviceWorkspace) => {
+    const exists = workspaces.some((w) => w.id === ws.id);
+    const next = exists
+      ? workspaces.map((w) => (w.id === ws.id ? ws : w))
+      : [...workspaces, ws];
+    await invoke("workspace_save", { workspaces: next });
+    setWorkspaces(next);
+    handleSelectWorkspace(ws.id);
+  };
+
+  const handleDeleteWorkspace = async (id: string) => {
+    const next = workspaces.filter((w) => w.id !== id);
+    await invoke("workspace_save", { workspaces: next });
+    setWorkspaces(next);
+    if (activeWorkspaceId === id) {
+      handleSelectWorkspace(null);
+    }
+  };
+
   return (
     <div className="flex h-screen flex-col bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <TopBar
@@ -282,10 +376,16 @@ export default function App() {
           collapsed={collapsed}
           locked={isFlashing}
           extensionTabs={extensionTabs}
+          workspaces={workspaces}
+          activeWorkspaceId={activeWorkspaceId}
+          onSelectWorkspace={handleSelectWorkspace}
+          onAddWorkspace={() => setWorkspaceModal({ open: true, editing: null })}
+          onEditWorkspace={(ws) => setWorkspaceModal({ open: true, editing: ws })}
+          onDeleteWorkspace={handleDeleteWorkspace}
           onSelect={selectTab}
           onToggleCollapse={() => setCollapsed((c) => !c)}
         />
-        <main className="flex-1 overflow-auto p-5">
+        <main className="flex-1 overflow-auto bg-slate-50/80 p-5 dark:bg-slate-950">
           {visitedTabs.firmware && (
             <div className={activeTab === "firmware" ? "h-full" : "hidden"}>
               <FlashHub
@@ -295,6 +395,11 @@ export default function App() {
               />
             </div>
           )}
+          {visitedTabs.serial && (
+            <div className={activeTab === "serial" ? "h-full" : "hidden"}>
+              <SerialPage activeWorkspace={activeWorkspace} onLog={appendLog} />
+            </div>
+          )}
           {visitedTabs.debugger && (
             <div className={activeTab === "debugger" ? "h-full" : "hidden"}>
               <EfelDebugger theme={effectiveTheme} onLog={appendLog} />
@@ -302,7 +407,34 @@ export default function App() {
           )}
           {visitedTabs.adb && (
             <div className={activeTab === "adb" ? "h-full" : "hidden"}>
-              <AdbExplorer serial={selectedAdbSerial} theme={effectiveTheme} onLog={appendLog} />
+              <AdbExplorer
+                serial={selectedAdbSerial}
+                theme={effectiveTheme}
+                jumpRequest={adbJumpRequest}
+                onLog={appendLog}
+              />
+            </div>
+          )}
+          {visitedTabs["adb-term"] && (
+            <div className={activeTab === "adb-term" ? "h-full" : "hidden"}>
+              <AdbTerminalPage serial={selectedAdbSerial} onLog={appendLog} />
+            </div>
+          )}
+          {visitedTabs.monitor && (
+            <div className={activeTab === "monitor" ? "h-full" : "hidden"}>
+              <DeviceMonitorPage
+                serial={selectedAdbSerial}
+                onLog={appendLog}
+                onNavigateAdbPath={(remotePath) => {
+                  setAdbJumpRequest({ path: remotePath, seq: Date.now() });
+                  selectTab("adb");
+                }}
+              />
+            </div>
+          )}
+          {visitedTabs.screen && (
+            <div className={activeTab === "screen" ? "h-full" : "hidden"}>
+              <AdbScreenPage serial={selectedAdbSerial} onLog={appendLog} />
             </div>
           )}
           {visitedTabs.gpio && (
@@ -312,6 +444,16 @@ export default function App() {
                 felConnected={felDevices.length > 0}
                 onLog={appendLog}
               />
+            </div>
+          )}
+          {visitedTabs.automation && (
+            <div className={activeTab === "automation" ? "h-full" : "hidden"}>
+              <AutomationPage onLog={appendLog} />
+            </div>
+          )}
+          {visitedTabs.ai && (
+            <div className={activeTab === "ai" ? "h-full" : "hidden"}>
+              <AiWorkbenchPage syncEvents={syncEvents} onLog={appendLog} />
             </div>
           )}
           {extensionTabs.map((ext) =>
@@ -334,6 +476,15 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {workspaceModal.open && (
+        <WorkspaceModal
+          initial={workspaceModal.editing}
+          adbDevices={adbDevices}
+          onClose={() => setWorkspaceModal({ open: false, editing: null })}
+          onSave={handleSaveWorkspace}
+        />
+      )}
 
       <LogDrawer
         logs={logs}

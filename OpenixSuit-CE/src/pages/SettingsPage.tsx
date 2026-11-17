@@ -106,10 +106,15 @@ export function SettingsPage({
   };
 
   return (
-    <div className="max-w-3xl space-y-6">
-      <h2 className="text-lg font-semibold">{t("settings.title")}</h2>
+    <div className="mx-auto max-w-4xl space-y-4">
+      <div className="ui-toolbar">
+        <span className="ui-title text-sm">{t("settings.title")}</span>
+        <span className="rounded-md bg-blue-600/15 px-2.5 py-1 text-xs font-medium text-blue-600 dark:text-blue-400">
+          OpenixSuit-CE v0.1.0
+        </span>
+      </div>
 
-      <div className="space-y-4 rounded border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-800 dark:bg-slate-900">
+      <div className="ui-card space-y-4 p-4 text-sm">
         <div className="flex items-center justify-between">
           <div>
             <div className="font-medium">{t("settings.lang")}</div>
@@ -118,7 +123,7 @@ export function SettingsPage({
           <select
             value={settings.language}
             onChange={(e) => onUpdate({ language: e.target.value as "zh-CN" | "en-US" })}
-            className="rounded border border-slate-300 bg-white px-3 py-1.5 text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            className="ui-select"
           >
             <option value="zh-CN">简体中文</option>
             <option value="en-US">English</option>
@@ -133,7 +138,7 @@ export function SettingsPage({
           <select
             value={settings.theme}
             onChange={(e) => onUpdate({ theme: e.target.value as ThemeMode })}
-            className="rounded border border-slate-300 bg-white px-3 py-1.5 text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            className="ui-select"
           >
             <option value="system">{t("settings.system")}</option>
             <option value="dark">{t("settings.dark")}</option>
@@ -149,7 +154,7 @@ export function SettingsPage({
           <select
             value={settings.usb_backend}
             onChange={(e) => onUpdate({ usb_backend: e.target.value as UsbBackend })}
-            className="rounded border border-slate-300 bg-white px-3 py-1.5 text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            className="ui-select"
           >
             <option value="auto">Auto</option>
             <option value="winusb">WinUSB</option>
@@ -162,14 +167,14 @@ export function SettingsPage({
             <div className="font-medium">{t("settings.version")}</div>
             <div className="text-xs text-slate-500">OpenixSuit-CE v0.1.0 (Tauri 2.x + React 19)</div>
           </div>
-          <span className="rounded bg-blue-600/15 px-2.5 py-1 text-xs font-medium text-blue-600 dark:text-blue-400">
+          <span className="rounded-md bg-blue-600/15 px-2.5 py-1 text-xs font-medium text-blue-600 dark:text-blue-400">
             {t("settings.latest")}
           </span>
         </div>
       </div>
 
       {/* 项目拓展插件管理 */}
-      <div className="space-y-3 rounded border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-800 dark:bg-slate-900">
+      <div className="ui-card space-y-3 p-4 text-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="flex items-center gap-2 font-medium">
@@ -183,7 +188,7 @@ export function SettingsPage({
               type="button"
               disabled={pluginBusy}
               onClick={() => onRefreshPlugins()}
-              className="flex items-center gap-1.5 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              className="ui-btn-secondary"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${pluginBusy ? "animate-spin" : ""}`} />
               {t("common.refresh")}
@@ -192,7 +197,7 @@ export function SettingsPage({
               type="button"
               disabled={pluginBusy}
               onClick={handleImportPluginDir}
-              className="flex items-center gap-1.5 rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-700 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              className="ui-btn-secondary"
             >
               <FolderOpen className="h-3.5 w-3.5" />
               {t("plugins.importDir")}
@@ -201,7 +206,7 @@ export function SettingsPage({
               type="button"
               disabled={pluginBusy}
               onClick={handleImportPlugin}
-              className="flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              className="ui-btn-primary"
             >
               <Upload className="h-3.5 w-3.5" />
               {t("plugins.import")}
@@ -209,15 +214,11 @@ export function SettingsPage({
           </div>
         </div>
 
-        {pluginError && (
-          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-            {pluginError}
-          </div>
-        )}
+        {pluginError && <div className="ui-alert-warn">{pluginError}</div>}
 
         <div className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
           {plugins.length === 0 ? (
-            <div className="rounded border border-dashed border-slate-300 p-3 text-center text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
+            <div className="ui-subcard border-dashed p-4 text-center text-xs text-slate-500 dark:text-slate-400">
               {t("plugins.noPlugins")}
             </div>
           ) : (
@@ -227,7 +228,7 @@ export function SettingsPage({
               return (
                 <div
                   key={plugin.id}
-                  className="flex items-start justify-between gap-3 rounded border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-950/60"
+                  className="ui-subcard flex items-start justify-between gap-3 p-3"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
@@ -235,10 +236,10 @@ export function SettingsPage({
                       <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">
                         {plugin.name}
                       </span>
-                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                      <span className="rounded-md bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-700 dark:bg-slate-800 dark:text-slate-300">
                         v{plugin.version}
                       </span>
-                      <span className="rounded bg-blue-600/15 px-1.5 py-0.5 text-[10px] text-blue-600 dark:text-blue-400">
+                      <span className="rounded-md bg-blue-600/15 px-1.5 py-0.5 text-[10px] text-blue-600 dark:text-blue-400">
                         {t("plugins.tabCount", { count: tabCount })}
                       </span>
                     </div>
@@ -256,9 +257,9 @@ export function SettingsPage({
                     type="button"
                     disabled={pluginBusy}
                     onClick={() => handleUninstallPlugin(plugin.id)}
-                    className="flex shrink-0 items-center gap-1 rounded border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-xs text-red-600 hover:bg-red-500/20 disabled:opacity-50 dark:text-red-400"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 text-xs font-medium text-rose-600 transition hover:bg-rose-500/20 disabled:opacity-50 dark:text-rose-400"
                   >
-                    <Trash2 className="h-3 w-3" />
+                    <Trash2 className="h-3.5 w-3.5" />
                     {t("plugins.uninstall")}
                   </button>
                 </div>
@@ -269,13 +270,13 @@ export function SettingsPage({
       </div>
 
       {/* AI 本地控制接口 (CLI 同步) */}
-      <div className="space-y-3 rounded border border-slate-200 bg-slate-50 p-4 text-sm dark:border-slate-800 dark:bg-slate-900">
+      <div className="ui-card space-y-3 p-4 text-sm">
         <div className="flex items-center justify-between gap-2">
           <div>
             <div className="font-medium">{t("settings.aiTitle")}</div>
             <div className="text-xs text-slate-500">{t("settings.aiDesc")}</div>
           </div>
-          <code className="rounded bg-purple-500/15 px-2.5 py-1 font-mono text-xs font-medium text-purple-600 dark:text-purple-300">
+          <code className="rounded-md bg-purple-500/15 px-2.5 py-1 font-mono text-xs font-medium text-purple-600 dark:text-purple-300">
             {AI_ENDPOINT}
           </code>
         </div>
@@ -284,12 +285,12 @@ export function SettingsPage({
           <div className="text-xs text-slate-500">{t("settings.aiExamples")}</div>
           {AI_CLI_EXAMPLES.map((cmd) => (
             <div key={cmd} className="relative">
-              <pre className="whitespace-pre-wrap break-all rounded bg-slate-900 p-2.5 pr-20 font-mono text-xs text-emerald-400 dark:bg-slate-950">
+              <pre className="ui-terminal whitespace-pre-wrap break-all p-3 pr-20 text-emerald-400">
                 {cmd}
               </pre>
               <button
                 onClick={() => copyText(cmd)}
-                className="absolute right-2 top-1.5 flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-xs text-slate-200 hover:bg-slate-700"
+                className="absolute right-2 top-2 flex items-center gap-1 rounded-md bg-slate-800 px-2.5 py-1 text-xs text-slate-200 hover:bg-slate-700"
               >
                 {copiedCmd === cmd ? (
                   <Check className="h-3.5 w-3.5 text-emerald-400" />

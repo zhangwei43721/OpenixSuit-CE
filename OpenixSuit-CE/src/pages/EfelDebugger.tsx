@@ -47,7 +47,12 @@ export function EfelDebugger({
     try {
       const list = await invoke<DeviceInfo[]>("scan_devices");
       setDevices(list);
-      pushLog(`Scan devices: ${list.length}`);
+      if (list.length === 0) {
+        pushLog("Scan devices: 0");
+      } else {
+        const desc = list.map((d) => `${d.chip} [${d.mode}]`).join("; ");
+        pushLog(`Scan devices: ${list.length} -> ${desc}`);
+      }
     } catch (err) {
       pushLog(String(err));
     }
@@ -134,62 +139,87 @@ export function EfelDebugger({
   };
 
   return (
-    <div className="grid h-full grid-cols-12 gap-4">
+    <div className="grid h-full min-h-0 grid-cols-12 gap-3">
       <div className="col-span-4 space-y-3 overflow-y-auto text-xs">
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-blue-600 dark:text-blue-400">{t("efel.deviceSel")}</div>
-          <button onClick={scanDevices} className="w-full rounded bg-blue-600 py-1.5 text-white">
+        <div className="ui-card space-y-2.5 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("efel.deviceSel")}</div>
+          <button onClick={scanDevices} className="ui-btn-primary w-full py-2">
             {t("efel.scan")}
           </button>
-          <div className="text-slate-500">
-            {devices.length === 0 ? t("flash.noDevice") : devices.map((d) => `${d.chip} (${d.mode})`).join(", ")}
+          <div className="space-y-1.5 text-slate-500">
+            {devices.length === 0 ? (
+              t("flash.noDevice")
+            ) : (
+              devices.map((d) => {
+                const isFes = d.mode.toUpperCase().includes("FES");
+                return (
+                  <div
+                    key={d.id}
+                    className={`rounded-lg border px-2.5 py-1.5 ${
+                      isFes
+                        ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+                    }`}
+                  >
+                    <div className="font-mono font-medium">
+                      {d.chip} · {d.mode}
+                    </div>
+                    {isFes && (
+                      <div className="mt-0.5 text-[11px] opacity-90">
+                        当前为 FES 模式，仅支持刷机；读取内存需按住 FEL 键上电进入 FEL 模式
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
           </div>
         </div>
 
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-blue-600 dark:text-blue-400">{t("efel.memRead")}</div>
+        <div className="ui-card space-y-2.5 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("efel.memRead")}</div>
           <input
             value={address}
             onChange={(e) => setAddress(e.target.value)}
-            className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono dark:border-slate-700 dark:bg-slate-950"
+            className="ui-input w-full font-mono"
           />
           <input
             type="number"
             value={length}
             onChange={(e) => setLength(Number(e.target.value))}
-            className="w-full rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-950"
+            className="ui-input w-full font-mono"
           />
           <div className="flex gap-2">
             <button
               disabled={loading}
               onClick={readAndDisasm}
-              className="flex-1 rounded bg-blue-600 py-1.5 text-white disabled:opacity-50"
+              className="ui-btn-primary flex-1"
             >
               {loading ? t("efel.reading") : t("efel.read")}
             </button>
             <button
               disabled={rawBytes.length === 0}
               onClick={saveBinary}
-              className="rounded border border-slate-300 bg-white px-3 py-1.5 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800"
+              className="ui-btn-secondary"
             >
               {t("efel.saveBin")}
             </button>
           </div>
         </div>
 
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-blue-600 dark:text-blue-400">{t("efel.memWrite")}</div>
+        <div className="ui-card space-y-2.5 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("efel.memWrite")}</div>
           <input
             value={writeAddr}
             onChange={(e) => setWriteAddr(e.target.value)}
-            className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono dark:border-slate-700 dark:bg-slate-950"
+            className="ui-input w-full font-mono"
           />
           <div className="flex gap-2">
             <input
               readOnly
               value={writeFilePath}
               placeholder="..."
-              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-950"
+              className="ui-input flex-1 font-mono"
             />
             <button
               onClick={async () => {
@@ -200,7 +230,7 @@ export function EfelDebugger({
                   pushLog(String(err));
                 }
               }}
-              className="rounded bg-blue-600 px-2.5 py-1 text-white"
+              className="ui-btn-secondary"
             >
               {t("common.browse")}
             </button>
@@ -208,20 +238,20 @@ export function EfelDebugger({
           <button
             disabled={!writeFilePath}
             onClick={doWriteFile}
-            className="w-full rounded bg-blue-600 py-1.5 text-white disabled:opacity-50"
+            className="ui-btn-primary w-full"
           >
             {t("efel.write")}
           </button>
         </div>
 
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-blue-600 dark:text-blue-400">{t("efel.initMem")}</div>
+        <div className="ui-card space-y-2.5 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("efel.initMem")}</div>
           <div className="flex gap-2">
             <input
               readOnly
               value={initFilePath}
               placeholder="Boot0 / FEX..."
-              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-950"
+              className="ui-input flex-1 font-mono"
             />
             <button
               onClick={async () => {
@@ -232,7 +262,7 @@ export function EfelDebugger({
                   pushLog(String(err));
                 }
               }}
-              className="rounded bg-blue-600 px-2.5 py-1 text-white"
+              className="ui-btn-secondary"
             >
               {t("common.browse")}
             </button>
@@ -240,37 +270,37 @@ export function EfelDebugger({
           <button
             disabled={!initFilePath}
             onClick={doInitDram}
-            className="w-full rounded bg-blue-600 py-1.5 text-white disabled:opacity-50"
+            className="ui-btn-primary w-full"
           >
             {t("efel.run")}
           </button>
         </div>
 
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-blue-600 dark:text-blue-400">{t("efel.execJump")}</div>
+        <div className="ui-card space-y-2.5 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("efel.execJump")}</div>
           <div className="flex gap-2">
             <input
               value={jumpAddr}
               onChange={(e) => setJumpAddr(e.target.value)}
-              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono dark:border-slate-700 dark:bg-slate-950"
+              className="ui-input flex-1 font-mono"
             />
-            <button onClick={doJump} className="rounded bg-blue-600 px-3 py-1 text-white">
+            <button onClick={doJump} className="ui-btn-primary">
               {t("efel.jump")}
             </button>
           </div>
         </div>
       </div>
 
-      <div className="col-span-8 flex flex-col space-y-3">
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold">{t("efel.memView")}</span>
+      <div className="col-span-8 flex min-h-0 flex-col gap-3">
+        <div className="ui-toolbar">
+          <span className="ui-title">{t("efel.memView")}</span>
           <select
             value={arch}
             onChange={(e) => {
               setArch(e.target.value);
               localStorage.setItem("efel_arch", e.target.value);
             }}
-            className="rounded border border-slate-300 bg-white px-2.5 py-1 dark:border-slate-700 dark:bg-slate-800"
+            className="ui-select"
           >
             <option value="riscv32">RISC-V 32</option>
             <option value="riscv64">RISC-V 64</option>
@@ -280,7 +310,7 @@ export function EfelDebugger({
             <option value="x86_64">x86-64</option>
           </select>
         </div>
-        <div className="flex-1 overflow-hidden rounded border border-slate-300 dark:border-slate-800">
+        <div className="ui-card flex-1 overflow-hidden">
           <Editor
             height="100%"
             defaultLanguage="plaintext"
@@ -289,7 +319,7 @@ export function EfelDebugger({
             options={{ readOnly: true, minimap: { enabled: false }, fontSize: 12 }}
           />
         </div>
-        <pre className="h-28 overflow-y-auto rounded border border-slate-200 bg-slate-900 p-2.5 font-mono text-xs text-slate-300 dark:border-slate-800 dark:bg-slate-950">
+        <pre className="ui-terminal h-28 overflow-y-auto p-3 text-slate-300">
           {opLogs.join("\n") || "OPERATION LOG"}
         </pre>
       </div>

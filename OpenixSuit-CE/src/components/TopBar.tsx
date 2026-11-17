@@ -77,7 +77,7 @@ export function TopBar({
           <select
             value={selectedAdbSerial}
             onChange={(e) => onSelectAdbSerial(e.target.value)}
-            className="rounded border border-blue-400/50 bg-blue-500/10 px-2.5 py-1 text-blue-600 dark:text-blue-400"
+            className="rounded-lg border border-blue-500/40 bg-blue-500/10 px-2.5 py-1.5 text-xs font-medium text-blue-600 focus:border-blue-500 focus:outline-none dark:text-blue-400"
           >
             {adbDevices.map((d) => (
               <option
@@ -90,14 +90,14 @@ export function TopBar({
             ))}
           </select>
         ) : (
-          <span className="rounded bg-slate-100 px-2.5 py-1 text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+          <span className="rounded-lg border border-slate-200 bg-slate-100 px-2.5 py-1.5 text-slate-500 dark:border-slate-800 dark:bg-slate-800 dark:text-slate-400">
             {t("status.noAdb")}
           </span>
         )}
 
         <button
           onClick={onRefreshDevices}
-          className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-800 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          className="ui-btn-secondary"
           title={t("common.refresh")}
         >
           <RefreshCw className="h-3.5 w-3.5" />
@@ -108,21 +108,21 @@ export function TopBar({
           <>
             <button
               onClick={onAdbRoot}
-              className="flex items-center gap-1 rounded bg-emerald-500/15 px-2.5 py-1 text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-600 transition hover:bg-emerald-500/20 dark:text-emerald-400"
             >
               <Shield className="h-3.5 w-3.5" />
               Root
             </button>
             <button
               onClick={onAdbReboot}
-              className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              className="ui-btn-secondary"
             >
               <RotateCw className="h-3.5 w-3.5" />
               {t("status.reboot")}
             </button>
             <button
               onClick={onSwitchEfex}
-              className="flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-white hover:bg-blue-500"
+              className="ui-btn-primary"
             >
               <Zap className="h-3.5 w-3.5" />
               {t("status.switchEfex")}

@@ -177,14 +177,14 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
 
   return (
     <div className="flex h-full flex-col space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3 rounded border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
+      <div className="ui-toolbar items-start py-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <ExtensionIcon icon={item.icon} className="h-5 w-5 shrink-0 text-blue-500" />
-            <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
               {title}
             </h2>
-            <span className="rounded bg-blue-600/15 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
+            <span className="rounded-md bg-blue-600/15 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400">
               {item.plugin.name} v{item.plugin.version}
             </span>
           </div>
@@ -197,21 +197,17 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
 
         <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
           <span>{t("plugins.targetDevice")}:</span>
-          <code className="rounded bg-slate-200 px-2 py-0.5 font-mono text-slate-800 dark:bg-slate-800 dark:text-slate-200">
+          <code className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
             {serial || t("plugins.noDevice")}
           </code>
         </div>
       </div>
 
-      {errorMsg && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-          {errorMsg}
-        </div>
-      )}
+      {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
-      <div className="rounded border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
+      <div className="ui-card p-4">
         {inputSpecs.length === 0 ? (
-          <div className="rounded border border-dashed border-slate-300 p-3 text-xs text-slate-500 dark:border-slate-700 dark:text-slate-400">
+          <div className="ui-subcard border-dashed p-3 text-xs text-slate-500 dark:text-slate-400">
             {t("plugins.noInputs")}
           </div>
         ) : (
@@ -227,7 +223,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
                 <div key={key} className="space-y-1.5">
                   <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-200">
                     <span>{label}</span>
-                    {field.required && <span className="text-red-500">*</span>}
+                    {field.required && <span className="text-rose-500">*</span>}
                     <span className="font-mono text-[11px] font-normal text-slate-400">
                       ({key})
                     </span>
@@ -245,12 +241,12 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
                         value={typeof val === "string" ? val : ""}
                         onChange={(e) => setFieldValue(key, e.target.value)}
                         placeholder={field.placeholder || t("plugins.selectFile")}
-                        className="flex-1 rounded border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                        className="ui-input flex-1"
                       />
                       <button
                         type="button"
                         onClick={() => browseInputFile(field)}
-                        className="flex shrink-0 items-center gap-1.5 rounded border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+                        className="ui-btn-secondary shrink-0"
                       >
                         <FileUp className="h-3.5 w-3.5" />
                         {t("common.browse")}
@@ -264,7 +260,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
                       value={typeof val === "string" ? val : ""}
                       onChange={(e) => setFieldValue(key, e.target.value)}
                       placeholder={field.placeholder || ""}
-                      className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      className="ui-input w-full"
                     />
                   )}
 
@@ -272,7 +268,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
                     <select
                       value={typeof val === "string" ? val : ""}
                       onChange={(e) => setFieldValue(key, e.target.value)}
-                      className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      className="ui-select w-full"
                     >
                       {options.map((opt) => (
                         <option key={opt.value} value={opt.value}>
@@ -283,7 +279,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
                   )}
 
                   {fType === "boolean" && (
-                    <label className="inline-flex cursor-pointer items-center gap-2 rounded border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
+                    <label className="ui-subcard inline-flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200">
                       <input
                         type="checkbox"
                         checked={Boolean(val)}
@@ -304,7 +300,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
             type="button"
             disabled={running}
             onClick={handleRun}
-            className="flex items-center gap-1.5 rounded bg-emerald-600 px-4 py-2 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+            className="ui-btn-success px-4 py-2"
           >
             <Play className="h-3.5 w-3.5" />
             {running ? t("plugins.running") : t("plugins.run")}
@@ -312,7 +308,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col rounded border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
+      <div className="ui-card flex min-h-0 flex-1 flex-col p-4">
         <div className="mb-2 flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-300">
           <span>{t("plugins.logs")}</span>
           {logs.length > 0 && (
@@ -327,7 +323,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
         </div>
         <div
           ref={logBoxRef}
-          className="min-h-[160px] flex-1 overflow-auto rounded bg-slate-950 p-3 font-mono text-xs text-slate-200"
+          className="ui-terminal min-h-[160px] flex-1 overflow-auto p-3"
         >
           {logs.length === 0 ? (
             <span className="text-slate-500">{t("log.empty")}</span>

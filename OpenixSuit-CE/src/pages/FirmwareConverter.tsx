@@ -84,9 +84,9 @@ export function FirmwareConverter({
   const partitions = inspectInfo?.partitions || [];
 
   return (
-    <div className="grid h-full grid-cols-12 gap-4">
-      <div className="col-span-3 space-y-1.5 rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-900">
-        <div className="px-2 py-1 text-xs font-semibold text-slate-500">{t("converter.tools")}</div>
+    <div className="grid h-full min-h-0 grid-cols-12 gap-3">
+      <div className="ui-card col-span-3 space-y-1.5 p-3">
+        <div className="px-2 py-1 text-xs font-semibold text-slate-500 dark:text-slate-400">{t("converter.tools")}</div>
         {TARGET_DEFS.map((item) => (
           <button
             key={item.key}
@@ -94,10 +94,10 @@ export function FirmwareConverter({
               setTarget(item.key);
               setLogicOffset(item.defaultOffset);
             }}
-            className={`w-full rounded p-2.5 text-left text-xs ${
+            className={`w-full rounded-lg p-2.5 text-left text-xs transition ${
               target === item.key
                 ? "bg-blue-600/15 text-blue-600 dark:text-blue-400"
-                : "hover:bg-slate-200 dark:hover:bg-slate-800"
+                : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
             }`}
           >
             <div className="font-semibold">{t(item.titleKey)}</div>
@@ -106,29 +106,29 @@ export function FirmwareConverter({
         ))}
       </div>
 
-      <div className="col-span-9 flex flex-col space-y-3 text-xs">
-        <div className="space-y-3 rounded border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
-          <div className="text-sm font-semibold">{t(currentMeta.titleKey)}</div>
+      <div className="col-span-9 flex min-h-0 flex-col gap-3 text-xs">
+        <div className="ui-card space-y-3 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t(currentMeta.titleKey)}</div>
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <div className="mb-1 text-slate-500">{t("converter.logicOffset")}</div>
+              <div className="mb-1 text-[11px] text-slate-500">{t("converter.logicOffset")}</div>
               <input
                 type="number"
                 value={logicOffset}
                 onChange={(e) => setLogicOffset(Number(e.target.value))}
-                className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 dark:border-slate-700 dark:bg-slate-950"
+                className="ui-input w-full font-mono"
               />
             </div>
             <div>
-              <div className="mb-1 text-slate-500">{t("converter.storageSize")}</div>
+              <div className="mb-1 text-[11px] text-slate-500">{t("converter.storageSize")}</div>
               <input
                 type="text"
                 list="converter-storage-presets"
                 value={storageSize}
                 onChange={(e) => setStorageSize(e.target.value)}
                 placeholder="auto / 8GB / 512MB"
-                className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 font-mono dark:border-slate-700 dark:bg-slate-950"
+                className="ui-input w-full font-mono"
               />
               <datalist id="converter-storage-presets">
                 <option value="auto" />
@@ -140,11 +140,11 @@ export function FirmwareConverter({
               </datalist>
             </div>
             <div>
-              <div className="mb-1 text-slate-500">{t("converter.secureMode")}</div>
+              <div className="mb-1 text-[11px] text-slate-500">{t("converter.secureMode")}</div>
               <select
                 value={secureMode}
                 onChange={(e) => setSecureMode(e.target.value as "auto" | "enabled" | "disabled")}
-                className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 dark:border-slate-700 dark:bg-slate-800"
+                className="ui-select w-full"
               >
                 <option value="auto">{t("converter.secureAuto")}</option>
                 <option value="enabled">{t("converter.secureEnabled")}</option>
@@ -154,44 +154,44 @@ export function FirmwareConverter({
             {target === "spinor" && (
               <>
                 <div>
-                  <div className="mb-1 text-slate-500">{t("converter.norSize")}</div>
+                  <div className="mb-1 text-[11px] text-slate-500">{t("converter.norSize")}</div>
                   <input
                     type="number"
                     min={1}
                     value={norSize}
                     onChange={(e) => setNorSize(Number(e.target.value))}
-                    className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 dark:border-slate-700 dark:bg-slate-950"
+                    className="ui-input w-full font-mono"
                   />
                 </div>
                 <div>
-                  <div className="mb-1 text-slate-500">{t("converter.ubootStart")}</div>
+                  <div className="mb-1 text-[11px] text-slate-500">{t("converter.ubootStart")}</div>
                   <input
                     type="number"
                     value={ubootStart}
                     onChange={(e) => setUbootStart(e.target.value)}
                     placeholder={t("converter.ubootStartPlaceholder")}
-                    className="w-full rounded border border-slate-300 bg-white px-3 py-1.5 dark:border-slate-700 dark:bg-slate-950"
+                    className="ui-input w-full font-mono"
                   />
                 </div>
               </>
             )}
           </div>
 
-          <div className="h-2 w-full overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
-            <div className="h-full bg-blue-600 transition-all" style={{ width: `${progress}%` }} />
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+            <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${progress}%` }} />
           </div>
 
           <button
             disabled={converting || !firmwarePath}
             onClick={startConvert}
-            className="w-full rounded bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+            className="ui-btn-primary w-full py-2"
           >
             {converting ? `${t("converter.converting")} (${progress.toFixed(0)}%)...` : t("converter.start")}
           </button>
 
           {partitions.length > 0 && (
-            <div className="max-h-36 overflow-y-auto rounded border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-950">
-              <div className="mb-1 text-slate-500">
+            <div className="ui-subcard max-h-36 overflow-y-auto p-3">
+              <div className="mb-1.5 text-[11px] font-medium text-slate-500">
                 {t("converter.partList")} ({partitions.length})
               </div>
               {partitions.map((p) => (
@@ -204,7 +204,7 @@ export function FirmwareConverter({
           )}
         </div>
 
-        <pre className="h-28 overflow-y-auto rounded border border-slate-200 bg-slate-900 p-2.5 font-mono text-xs text-slate-300 dark:border-slate-800 dark:bg-slate-950">
+        <pre className="ui-terminal h-28 overflow-y-auto p-3 text-slate-300">
           {logs.join("\n") || t("converter.logTitle")}
         </pre>
       </div>

@@ -139,6 +139,53 @@ enum Commands {
         #[arg(long, default_value = "{}")]
         inputs: String,
     },
+    /// List available host serial ports
+    SerialPorts,
+    /// List serial log files or read buffered/persisted serial logs
+    SerialLogs {
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        file_name: Option<String>,
+        #[arg(long)]
+        tail: Option<usize>,
+    },
+    /// Send data to an active serial session
+    SerialSend {
+        session_id: String,
+        data: String,
+        #[arg(long, default_value = "lf")]
+        append_newline: String,
+    },
+    /// Execute a power control profile action (on | off | cycle)
+    Power {
+        profile_id: String,
+        #[arg(default_value = "cycle")]
+        action: String,
+    },
+    /// Query live CPU/memory/thermal/top metrics via ADB
+    Metrics {
+        #[arg(long, default_value = "")]
+        serial: String,
+    },
+    /// List recorded trigger incident reports
+    Incidents,
+}
+
+fn percent_encode(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for b in input.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char);
+            }
+            _ => {
+                out.push('%');
+                out.push_str(&format!("{:02X}", b));
+            }
+        }
+    }
+    out
 }
 
 fn parse_u32_auto(s: &str) -> Result<u32, String> {
@@ -217,11 +264,11 @@ where
 {
     let cli = Cli::parse_from(itr);
 
-    let (method, path, payload) = match cli.command {
-        Commands::Status => ("GET", "/api/status", None),
+    let (method, path, payload): (&str, String, Option<Value>) = match cli.command {
+        Commands::Status => ("GET", "/api/status".to_string(), None),
         Commands::AdbShell { serial, command } => (
             "POST",
-            "/api/adb/shell",
+            "/api/adb/shell".to_string(),
             Some(json!({ "serial": serial, "command": command })),
         ),
         Commands::AdbPush {
@@ -230,7 +277,7 @@ where
             remote_path,
         } => (
             "POST",
-            "/api/adb/push",
+            "/api/adb/push".to_string(),
             Some(json!({
                 "serial": serial,
                 "local_path": local_path,
@@ -243,7 +290,7 @@ where
             local_path,
         } => (
             "POST",
-            "/api/adb/pull",
+            "/api/adb/pull".to_string(),
             Some(json!({
                 "serial": serial,
                 "remote_path": remote_path,
@@ -252,17 +299,17 @@ where
         ),
         Commands::RebootEfex { serial } => (
             "POST",
-            "/api/adb/reboot-efex",
+            "/api/adb/reboot-efex".to_string(),
             Some(json!({ "serial": serial })),
         ),
         Commands::AdbRoot { serial } => (
             "POST",
-            "/api/adb/root",
+            "/api/adb/root".to_string(),
             Some(json!({ "serial": serial })),
         ),
         Commands::Inspect { firmware_path } => (
             "POST",
-            "/api/inspect",
+            "/api/inspect".to_string(),
             Some(json!({ "firmware_path": firmware_path })),
         ),
         Commands::Unpack {
@@ -270,7 +317,7 @@ where
             out_dir,
         } => (
             "POST",
-            "/api/unpack",
+            "/api/unpack".to_string(),
             Some(json!({
                 "firmware_path": firmware_path,
                 "out_dir": out_dir,
@@ -286,7 +333,7 @@ where
             storage_size,
         } => (
             "POST",
-            "/api/convert",
+            "/api/convert".to_string(),
             Some(json!({
                 "firmware_path": firmware_path,
                 "target": target,
@@ -307,7 +354,7 @@ where
             port,
         } => (
             "POST",
-            "/api/flash",
+            "/api/flash".to_string(),
             Some(json!({
                 "firmware_path": firmware_path,
                 "mode": mode,
@@ -328,7 +375,7 @@ where
             port,
         } => (
             "POST",
-            "/api/raw",
+            "/api/raw".to_string(),
             Some(json!({
                 "boot_firmware": boot_firmware,
                 "raw_image": raw_image,
@@ -341,28 +388,28 @@ where
         ),
         Commands::EfelRead { address, length } => (
             "POST",
-            "/api/efel/read",
+            "/api/efel/read".to_string(),
             Some(json!({ "address": address, "length": length })),
         ),
         Commands::EfelWrite { address, data } => (
             "POST",
-            "/api/efel/write",
+            "/api/efel/write".to_string(),
             Some(json!({ "address": address, "data": data })),
         ),
         Commands::EfelExec { address } => (
             "POST",
-            "/api/efel/exec",
+            "/api/efel/exec".to_string(),
             Some(json!({ "address": address })),
         ),
-        Commands::Plugins => ("GET", "/api/plugins", None),
+        Commands::Plugins => ("GET", "/api/plugins".to_string(), None),
         Commands::PluginInstall { package_path } => (
             "POST",
-            "/api/plugins/install",
+            "/api/plugins/install".to_string(),
             Some(json!({ "package_path": package_path })),
         ),
         Commands::PluginUninstall { plugin_id } => (
             "POST",
-            "/api/plugins/uninstall",
+            "/api/plugins/uninstall".to_string(),
             Some(json!({ "plugin_id": plugin_id })),
         ),
         Commands::PluginRun {
@@ -385,7 +432,7 @@ where
             };
             (
                 "POST",
-                "/api/plugins/run",
+                "/api/plugins/run".to_string(),
                 Some(json!({
                     "plugin_id": plugin_id,
                     "serial": serial,
@@ -393,9 +440,62 @@ where
                 })),
             )
         }
+        Commands::SerialPorts => ("GET", "/api/serial/ports".to_string(), None),
+        Commands::SerialLogs {
+            session_id,
+            file_name,
+            tail,
+        } => {
+            let mut params = Vec::new();
+            if let Some(sid) = session_id {
+                params.push(format!("session_id={}", percent_encode(&sid)));
+            }
+            if let Some(fname) = file_name {
+                params.push(format!("file_name={}", percent_encode(&fname)));
+            }
+            if let Some(n) = tail {
+                params.push(format!("tail_lines={}", n));
+            }
+            let p = if params.is_empty() {
+                "/api/serial/logs".to_string()
+            } else {
+                format!("/api/serial/logs?{}", params.join("&"))
+            };
+            ("GET", p, None)
+        }
+        Commands::SerialSend {
+            session_id,
+            data,
+            append_newline,
+        } => (
+            "POST",
+            "/api/serial/write".to_string(),
+            Some(json!({
+                "session_id": session_id,
+                "data": data,
+                "append_newline": append_newline,
+            })),
+        ),
+        Commands::Power { profile_id, action } => (
+            "POST",
+            "/api/power/action".to_string(),
+            Some(json!({
+                "profile_id": profile_id,
+                "action": action,
+            })),
+        ),
+        Commands::Metrics { serial } => {
+            let p = if serial.is_empty() {
+                "/api/monitor/metrics".to_string()
+            } else {
+                format!("/api/monitor/metrics?serial={}", percent_encode(&serial))
+            };
+            ("GET", p, None)
+        }
+        Commands::Incidents => ("GET", "/api/triggers/incidents".to_string(), None),
     };
 
-    match send_http(&cli.addr, method, path, payload) {
+    match send_http(&cli.addr, method, &path, payload) {
         Ok((status, val)) => {
             println!(
                 "{}",

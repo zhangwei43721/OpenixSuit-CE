@@ -32,6 +32,13 @@ pub struct FlashProgressPayload {
     pub percent: f64,
 }
 
+#[derive(Clone, Serialize)]
+pub struct FlashLogPayload {
+    pub stage: String,
+    pub level: String,
+    pub message: String,
+}
+
 #[tauri::command]
 pub fn scan_devices(state: State<'_, AppState>) -> Result<Vec<DeviceInfo>, String> {
     let backend = state.usb_backend.lock().map_err(|e| e.to_string())?.clone();
@@ -115,11 +122,29 @@ pub fn set_usb_backend(backend: UsbBackend, state: State<'_, AppState>) -> Resul
     Ok(())
 }
 
+fn require_fel_mode(session: &EfexSession) -> Result<(), String> {
+    let mode = session.device_mode();
+    if mode == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_FEL {
+        return Ok(());
+    }
+    let mode_label = match mode {
+        x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_SRV => "FES (U-Boot / DEVICE_MODE_SRV)",
+        x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_UPDATE_COOL => "UPDATE_COOL",
+        x if x == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_UPDATE_HOT => "UPDATE_HOT",
+        _ => "非 FEL 模式",
+    };
+    Err(format!(
+        "当前设备处于 {}，不支持 FEL 内存读写与反汇编（仅固件刷写可用）。请按住板卡 FEL 键重新上电或复位进入 BROM FEL 模式后再调试。",
+        mode_label
+    ))
+}
+
 pub fn efel_read_sync(address: u32, length: usize) -> Result<Vec<u8>, String> {
     if length == 0 || length > 1024 * 1024 {
         return Err("读取长度必须在 1B ~ 1MB 之间".into());
     }
     let session = EfexSession::open_at(None, None)?;
+    require_fel_mode(&session)?;
     let mut buf = vec![0u8; length];
     session.fel_read(address, &mut buf)?;
     Ok(buf)
@@ -130,11 +155,13 @@ pub fn efel_write_sync(address: u32, data: Vec<u8>) -> Result<(), String> {
         return Ok(());
     }
     let session = EfexSession::open_at(None, None)?;
+    require_fel_mode(&session)?;
     session.fel_write(address, &data)
 }
 
 pub fn efel_exec_sync(address: u32) -> Result<(), String> {
     let session = EfexSession::open_at(None, None)?;
+    require_fel_mode(&session)?;
     session.fel_exec(address)
 }
 
@@ -185,6 +212,7 @@ pub fn fel_init_dram(state: State<'_, AppState>, file_path: String) -> Result<Ve
         return Err("镜像文件过小，无法解析 DRAM 参数".into());
     }
     let session = EfexSession::open_at(None, None)?;
+    require_fel_mode(&session)?;
     let load_addr: u32 = 0x00020000;
     session.fel_write(load_addr, &data)?;
     session.fel_exec(load_addr)?;

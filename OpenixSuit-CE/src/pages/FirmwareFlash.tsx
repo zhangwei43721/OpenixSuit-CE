@@ -1,22 +1,26 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult } from "./FlashHub";
 
 interface FirmwareFlashProps {
+  active?: boolean;
   firmwarePath: string;
   inspectInfo: SharedImageInspectResult | null;
   isFlashing: boolean;
   onFlashingChange: (flashing: boolean) => void;
+  onFlashComplete?: (status: "completed" | "error", mode: string, message: string) => void;
   onLog: (msg: string) => void;
 }
 
 export function FirmwareFlash({
+  active = true,
   firmwarePath,
   inspectInfo,
   isFlashing,
   onFlashingChange,
+  onFlashComplete,
   onLog,
 }: FirmwareFlashProps) {
   const { t } = useTranslation();
@@ -31,12 +35,22 @@ export function FirmwareFlash({
   );
   const [verify, setVerify] = useState(true);
   const [postAction, setPostAction] = useState<"keep" | "reboot" | "poweroff">("reboot");
-  const [progress, setProgress] = useState<{ partition: string; percent: number } | null>(null);
+  const [progress, setProgress] = useState<{
+    partition: string;
+    written: number;
+    total: number;
+    percent: number;
+  } | null>(null);
   const [flashLogs, setFlashLogs] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const logBoxRef = useRef<HTMLPreElement | null>(null);
+
+  const appendFlashLine = (msg: string) => {
+    setFlashLogs((prev) => [...prev.slice(-499), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  };
 
   const pushLog = (msg: string) => {
-    setFlashLogs((prev) => [...prev.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+    appendFlashLine(msg);
     onLog(msg);
   };
 
@@ -46,13 +60,38 @@ export function FirmwareFlash({
   }, [inspectInfo]);
 
   useEffect(() => {
-    const unlisten = listen<{ partition: string; percent: number }>("flash-progress", (e) => {
-      setProgress({ partition: e.payload.partition, percent: e.payload.percent });
+    const unlistenProgress = listen<{
+      partition: string;
+      written: number;
+      total: number;
+      percent: number;
+    }>("flash-progress", (e) => {
+      setProgress({
+        partition: e.payload.partition,
+        written: e.payload.written ?? 0,
+        total: e.payload.total ?? 0,
+        percent: e.payload.percent,
+      });
     });
+    const unlistenLog = listen<{ stage: string; level: string; message: string }>(
+      "flash-log",
+      (e) => {
+        if (!active || !e.payload?.message) return;
+        const warnTag = e.payload.level === "warn" ? "[WARN] " : "";
+        appendFlashLine(`[${e.payload.stage || "FLASH"}] ${warnTag}${e.payload.message}`);
+      }
+    );
     return () => {
-      unlisten.then((fn) => fn());
+      unlistenProgress.then((fn) => fn());
+      unlistenLog.then((fn) => fn());
     };
-  }, []);
+  }, [active]);
+
+  useEffect(() => {
+    if (logBoxRef.current) {
+      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+    }
+  }, [flashLogs]);
 
   const startFlash = async () => {
     if (!firmwarePath) return;
@@ -72,10 +111,12 @@ export function FirmwareFlash({
       });
       if (typeof res === "string" && res) pushLog(res);
       pushLog("Flash completed");
+      onFlashComplete?.("completed", mode, "Flash completed");
     } catch (err) {
       const msg = String(err);
       setErrorMsg(msg);
       pushLog(msg);
+      onFlashComplete?.("error", mode, msg);
     } finally {
       onFlashingChange(false);
     }
@@ -90,16 +131,12 @@ export function FirmwareFlash({
   };
 
   return (
-    <div className="flex h-full flex-col space-y-3">
-      {errorMsg && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-          {errorMsg}
-        </div>
-      )}
+    <div className="flex h-full flex-col gap-3">
+      {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
-      <div className="grid flex-1 grid-cols-12 gap-4">
-        <div className="col-span-4 space-y-3 rounded border border-slate-200 bg-slate-50 p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
-          <div className="text-sm font-semibold text-blue-600 dark:text-blue-400">{t("flash.config")}</div>
+      <div className="grid min-h-0 flex-1 grid-cols-12 gap-3">
+        <div className="ui-card col-span-4 flex flex-col gap-3 p-4 text-xs">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("flash.config")}</div>
           <select
             disabled={isFlashing}
             value={mode}
@@ -108,7 +145,7 @@ export function FirmwareFlash({
               setMode(next);
               localStorage.setItem("flash_mode", next);
             }}
-            className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            className="ui-select w-full"
           >
             <option value="full_erase">{t("flash.fullErase")}</option>
             <option value="keep_data">{t("flash.keepData")}</option>
@@ -116,9 +153,12 @@ export function FirmwareFlash({
             <option value="partition">{t("flash.partitionOnly")}</option>
           </select>
 
-          <div className="max-h-60 space-y-1.5 overflow-y-auto pt-1">
+          <div className="max-h-64 flex-1 space-y-1.5 overflow-y-auto pt-1">
             {(inspectInfo?.partitions || []).map((p) => (
-              <label key={p.name} className="flex items-center justify-between rounded bg-white px-2 py-1 dark:bg-slate-950">
+              <label
+                key={p.name}
+                className="ui-subcard flex cursor-pointer items-center justify-between px-2.5 py-1.5 transition hover:border-blue-500/40"
+              >
                 <span className="flex items-center gap-2">
                   <input
                     type="checkbox"
@@ -129,35 +169,37 @@ export function FirmwareFlash({
                         e.target.checked ? [...prev, p.name] : prev.filter((x) => x !== p.name)
                       )
                     }
+                    className="accent-blue-600"
                   />
-                  {p.name}
+                  <span className="font-medium text-slate-800 dark:text-slate-200">{p.name}</span>
                 </span>
-                <span className="font-mono text-slate-500">{(p.size_bytes / 1024).toFixed(0)} KB</span>
+                <span className="font-mono text-[11px] text-slate-500">{(p.size_bytes / 1024).toFixed(0)} KB</span>
               </label>
             ))}
           </div>
         </div>
 
-        <div className="col-span-8 flex flex-col space-y-3">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
-              <div className="text-sm font-semibold text-blue-600 dark:text-blue-400">{t("flash.options")}</div>
-              <label className="flex items-center gap-2">
+        <div className="col-span-8 flex min-h-0 flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="ui-card space-y-2.5 p-4 text-xs">
+              <div className="ui-title text-blue-600 dark:text-blue-400">{t("flash.options")}</div>
+              <label className="flex cursor-pointer items-center gap-2 text-slate-700 dark:text-slate-200">
                 <input
                   type="checkbox"
                   disabled={isFlashing}
                   checked={verify}
                   onChange={(e) => setVerify(e.target.checked)}
+                  className="accent-blue-600"
                 />
                 {t("flash.verify")}
               </label>
               <div className="flex items-center justify-between gap-2 pt-1">
-                <span>{t("flash.postAction")}</span>
+                <span className="text-slate-600 dark:text-slate-300">{t("flash.postAction")}</span>
                 <select
                   disabled={isFlashing}
                   value={postAction}
                   onChange={(e) => setPostAction(e.target.value as "keep" | "reboot" | "poweroff")}
-                  className="rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
+                  className="ui-select"
                 >
                   <option value="reboot">{t("flash.reboot")}</option>
                   <option value="poweroff">{t("flash.poweroff")}</option>
@@ -166,14 +208,28 @@ export function FirmwareFlash({
               </div>
             </div>
 
-            <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-4 text-xs dark:border-slate-800 dark:bg-slate-900">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-blue-600 dark:text-blue-400">{t("flash.control")}</span>
-                <span>{progress ? `${progress.percent.toFixed(1)}%` : "0.0%"}</span>
+            <div className="ui-card space-y-2.5 p-4 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="ui-title truncate text-blue-600 dark:text-blue-400">
+                  {progress?.partition || t("flash.control")}
+                </span>
+                <span className="shrink-0 font-mono text-slate-600 dark:text-slate-300">
+                  {progress
+                    ? `${progress.percent.toFixed(1)}%${
+                        progress.total > 100
+                          ? ` (${(progress.written / 1024 / 1024).toFixed(1)}/${(
+                              progress.total /
+                              1024 /
+                              1024
+                            ).toFixed(1)} MB)`
+                          : ""
+                      }`
+                    : "0.0%"}
+                </span>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
                 <div
-                  className="h-full bg-blue-600 transition-all"
+                  className="h-full rounded-full bg-blue-600 transition-all"
                   style={{ width: `${progress?.percent ?? 0}%` }}
                 />
               </div>
@@ -181,14 +237,14 @@ export function FirmwareFlash({
                 <button
                   disabled={isFlashing || !firmwarePath}
                   onClick={startFlash}
-                  className="flex-1 rounded bg-blue-600 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                  className="ui-btn-primary flex-1 py-2"
                 >
                   {isFlashing ? t("flash.flashing") : t("flash.start")}
                 </button>
                 {isFlashing && (
                   <button
                     onClick={cancelFlash}
-                    className="rounded bg-red-600 px-3 py-1.5 text-white hover:bg-red-500"
+                    className="ui-btn-danger py-2"
                   >
                     {t("common.cancel")}
                   </button>
@@ -197,9 +253,28 @@ export function FirmwareFlash({
             </div>
           </div>
 
-          <pre className="flex-1 overflow-y-auto rounded border border-slate-200 bg-slate-900 p-3 font-mono text-xs text-slate-300 dark:border-slate-800 dark:bg-slate-950">
-            {flashLogs.join("\n") || t("flash.logPlaceholder")}
-          </pre>
+          <div className="ui-card flex min-h-[220px] flex-1 flex-col overflow-hidden">
+            <div className="ui-card-header py-2">
+              <span className="ui-title">
+                {t("log.live")} ({flashLogs.length})
+              </span>
+              {flashLogs.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setFlashLogs([])}
+                  className="text-[11px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                >
+                  {t("log.clear")}
+                </button>
+              )}
+            </div>
+            <pre
+              ref={logBoxRef}
+              className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3.5 text-slate-300"
+            >
+              {flashLogs.join("\n") || t("flash.logPlaceholder")}
+            </pre>
+          </div>
         </div>
       </div>
     </div>

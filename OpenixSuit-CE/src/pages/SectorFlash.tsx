@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -7,12 +7,14 @@ import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult, SharedPartitionEntry } from "./FlashHub";
 
 export function SectorFlash({
+  active = true,
   firmwarePath,
   inspectInfo,
   isFlashing,
   onFlashingChange,
   onLog,
 }: {
+  active?: boolean;
   firmwarePath: string;
   inspectInfo: SharedImageInspectResult | null;
   isFlashing: boolean;
@@ -34,20 +36,40 @@ export function SectorFlash({
   const [progress, setProgress] = useState<{ partition: string; percent: number } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [opLogs, setOpLogs] = useState<string[]>([]);
+  const logBoxRef = useRef<HTMLPreElement | null>(null);
+
+  const appendLine = (msg: string) => {
+    setOpLogs((p) => [...p.slice(-499), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  };
 
   const log = (msg: string) => {
-    setOpLogs((p) => [...p.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+    appendLine(msg);
     onLog(msg);
   };
 
   useEffect(() => {
-    const unlisten = listen<{ partition: string; percent: number }>("flash-progress", (e) => {
+    const unlistenProgress = listen<{ partition: string; percent: number }>("flash-progress", (e) => {
       setProgress({ partition: e.payload.partition, percent: e.payload.percent });
     });
+    const unlistenLog = listen<{ stage: string; level: string; message: string }>(
+      "flash-log",
+      (e) => {
+        if (!active || !e.payload?.message) return;
+        const warnTag = e.payload.level === "warn" ? "[WARN] " : "";
+        appendLine(`[${e.payload.stage || "FLASH"}] ${warnTag}${e.payload.message}`);
+      }
+    );
     return () => {
-      unlisten.then((fn) => fn());
+      unlistenProgress.then((fn) => fn());
+      unlistenLog.then((fn) => fn());
     };
-  }, []);
+  }, [active]);
+
+  useEffect(() => {
+    if (logBoxRef.current) {
+      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+    }
+  }, [opLogs]);
 
   useEffect(() => {
     setProgress(null);
@@ -135,44 +157,46 @@ export function SectorFlash({
   };
 
   return (
-    <div className="grid h-full grid-cols-12 gap-4">
-      <div className="col-span-3 space-y-4">
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-slate-500">{t("sector.exportMbr")}</div>
-          <label className="flex items-center gap-2">
+    <div className="grid h-full min-h-0 grid-cols-12 gap-3">
+      <div className="col-span-3 space-y-3">
+        <div className="ui-card space-y-2.5 p-4 text-xs">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("sector.exportMbr")}</div>
+          <label className="flex cursor-pointer items-center gap-2 text-slate-700 dark:text-slate-200">
             <input
               type="checkbox"
               checked={includeCopies}
               onChange={(e) => setIncludeCopies(e.target.checked)}
+              className="accent-blue-600"
             />
             {t("sector.includeCopies")}
           </label>
           <button
             disabled={partitions.length === 0}
             onClick={exportMbr}
-            className="w-full rounded border border-slate-300 bg-white py-1.5 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800"
+            className="ui-btn-secondary w-full"
           >
             {t("sector.exportBtn")}
           </button>
         </div>
 
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 text-xs dark:border-slate-800 dark:bg-slate-900">
-          <label className="flex items-center gap-2">
+        <div className="ui-card space-y-2.5 p-4 text-xs">
+          <label className="flex cursor-pointer items-center gap-2 text-slate-700 dark:text-slate-200">
             <input
               type="checkbox"
               disabled={isFlashing}
               checked={verify}
               onChange={(e) => setVerify(e.target.checked)}
+              className="accent-blue-600"
             />
             {t("flash.verify")}
           </label>
           <div className="flex items-center justify-between gap-2 pt-1">
-            <span>{t("flash.postAction")}</span>
+            <span className="text-slate-600 dark:text-slate-300">{t("flash.postAction")}</span>
             <select
               disabled={isFlashing}
               value={postAction}
               onChange={(e) => setPostAction(e.target.value as "keep" | "reboot" | "poweroff")}
-              className="rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
+              className="ui-select"
             >
               <option value="reboot">{t("flash.reboot")}</option>
               <option value="poweroff">{t("flash.poweroff")}</option>
@@ -183,10 +207,10 @@ export function SectorFlash({
             <div className="space-y-1 pt-1">
               <div className="flex justify-between text-[11px] text-slate-500">
                 <span className="truncate">{progress.partition}</span>
-                <span>{progress.percent.toFixed(1)}%</span>
+                <span className="font-mono">{progress.percent.toFixed(1)}%</span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
-                <div className="h-full bg-emerald-600 transition-all" style={{ width: `${progress.percent}%` }} />
+              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                <div className="h-full rounded-full bg-emerald-600 transition-all" style={{ width: `${progress.percent}%` }} />
               </div>
             </div>
           )}
@@ -194,14 +218,14 @@ export function SectorFlash({
             <button
               disabled={isFlashing || partitions.length === 0 || !firmwarePath}
               onClick={flashPartitions}
-              className="flex-1 rounded bg-emerald-600 py-2 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+              className="ui-btn-success flex-1 py-2"
             >
               {isFlashing ? t("flash.flashing") : t("sector.flashBtn")}
             </button>
             {isFlashing && (
               <button
                 onClick={cancelFlash}
-                className="rounded bg-red-600 px-3 py-2 text-xs text-white hover:bg-red-500"
+                className="ui-btn-danger py-2"
               >
                 {t("common.cancel")}
               </button>
@@ -209,31 +233,27 @@ export function SectorFlash({
           </div>
         </div>
 
-        {errorMsg && (
-          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-600 dark:text-amber-400">
-            {errorMsg}
-          </div>
-        )}
+        {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
       </div>
 
-      <div className="col-span-9 flex flex-col space-y-3">
-        <div className="flex flex-1 flex-col rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="mb-2 flex items-center justify-between text-xs">
-            <span className="font-semibold text-blue-500">
+      <div className="col-span-9 flex min-h-0 flex-col gap-3">
+        <div className="ui-card flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div className="ui-card-header">
+            <span className="ui-title text-blue-600 dark:text-blue-400">
               {t("sector.editorTitle")} ({partitions.length}/120)
             </span>
             <div className="flex items-center gap-2">
               <select
                 value={alignSectors}
                 onChange={(e) => setAlignSectors(Number(e.target.value))}
-                className="rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
+                className="ui-select"
               >
                 <option value={128}>64K (128 sectors align)</option>
                 <option value={2048}>1M (2048 sectors align)</option>
               </select>
               <button
                 onClick={() => setPartitions([])}
-                className="rounded bg-red-600 px-2 py-1 text-white"
+                className="ui-btn-danger p-1.5"
                 title={t("log.clear")}
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -241,7 +261,7 @@ export function SectorFlash({
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto">
+          <div className="flex-1 overflow-y-auto p-3">
             <table className="w-full text-left text-xs">
               <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-800">
                 <tr>
@@ -258,13 +278,13 @@ export function SectorFlash({
                   const isEd = editingIdx === idx && editRow;
                   return (
                     <tr key={`${p.name}-${idx}`}>
-                      <td className="py-1.5">{idx}</td>
+                      <td className="py-1.5 text-slate-400">{idx}</td>
                       <td className="py-1.5 font-medium">
                         {isEd ? (
                           <input
                             value={editRow.name}
                             onChange={(e) => setEditRow({ ...editRow, name: e.target.value })}
-                            className="w-24 rounded border border-slate-400 bg-white px-1 py-0.5 dark:bg-slate-950"
+                            className="ui-input w-24 py-0.5"
                           />
                         ) : (
                           p.name
@@ -275,7 +295,7 @@ export function SectorFlash({
                           <input
                             value={editRow.download_file}
                             onChange={(e) => setEditRow({ ...editRow, download_file: e.target.value })}
-                            className="w-32 rounded border border-slate-400 bg-white px-1 py-0.5 dark:bg-slate-950"
+                            className="ui-input w-32 py-0.5 font-mono"
                           />
                         ) : (
                           p.download_file || "-"
@@ -288,7 +308,7 @@ export function SectorFlash({
                             onChange={(e) =>
                               setEditRow({ ...editRow, start_sector: parseInt(e.target.value, 16) || 0 })
                             }
-                            className="w-24 rounded border border-slate-400 bg-white px-1 py-0.5 dark:bg-slate-950"
+                            className="ui-input w-24 py-0.5 font-mono"
                           />
                         ) : (
                           `0x${p.start_sector.toString(16).padStart(8, "0")}`
@@ -306,7 +326,7 @@ export function SectorFlash({
                                 size_bytes: Number(e.target.value) * 512,
                               })
                             }
-                            className="w-20 rounded border border-slate-400 bg-white px-1 py-0.5 dark:bg-slate-950"
+                            className="ui-input w-20 py-0.5 font-mono"
                           />
                         ) : (
                           p.sectors
@@ -315,10 +335,10 @@ export function SectorFlash({
                       <td className="space-x-1 py-1.5 text-right">
                         {isEd ? (
                           <>
-                            <button onClick={saveEditRow} className="rounded bg-emerald-500/20 p-1 text-emerald-500">
+                            <button onClick={saveEditRow} className="rounded-md bg-emerald-500/20 p-1 text-emerald-600 dark:text-emerald-400">
                               <Check className="h-3.5 w-3.5" />
                             </button>
-                            <button onClick={() => setEditingIdx(null)} className="rounded bg-red-500/20 p-1 text-red-500">
+                            <button onClick={() => setEditingIdx(null)} className="rounded-md bg-rose-500/20 p-1 text-rose-500">
                               <X className="h-3.5 w-3.5" />
                             </button>
                           </>
@@ -329,13 +349,13 @@ export function SectorFlash({
                                 setEditingIdx(idx);
                                 setEditRow({ ...p });
                               }}
-                              className="rounded bg-slate-200 p-1 dark:bg-slate-800"
+                              className="rounded-md bg-slate-100 p-1 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"
                             >
                               <Edit2 className="h-3.5 w-3.5" />
                             </button>
                             <button
                               onClick={() => setPartitions((prev) => prev.filter((_, i) => i !== idx))}
-                              className="text-red-500 hover:underline"
+                              className="text-rose-500 hover:underline"
                             >
                               {t("common.delete")}
                             </button>
@@ -346,13 +366,13 @@ export function SectorFlash({
                   );
                 })}
                 <tr>
-                  <td className="py-1.5">*</td>
+                  <td className="py-1.5 text-slate-400">*</td>
                   <td>
                     <input
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
                       placeholder={t("sector.partPlaceholder")}
-                      className="w-24 rounded border border-slate-300 bg-white px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-950"
+                      className="ui-input w-24 py-1"
                     />
                   </td>
                   <td>
@@ -360,14 +380,14 @@ export function SectorFlash({
                       value={newFile}
                       onChange={(e) => setNewFile(e.target.value)}
                       placeholder={t("sector.filePlaceholder")}
-                      className="w-32 rounded border border-slate-300 bg-white px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-950"
+                      className="ui-input w-32 py-1 font-mono"
                     />
                   </td>
                   <td>
                     <input
                       value={newAddr}
                       onChange={(e) => setNewAddr(e.target.value)}
-                      className="w-24 rounded border border-slate-300 bg-white px-1.5 py-0.5 font-mono dark:border-slate-700 dark:bg-slate-950"
+                      className="ui-input w-24 py-1 font-mono"
                     />
                   </td>
                   <td>
@@ -375,11 +395,11 @@ export function SectorFlash({
                       type="number"
                       value={newSectors}
                       onChange={(e) => setNewSectors(Number(e.target.value))}
-                      className="w-20 rounded border border-slate-300 bg-white px-1.5 py-0.5 dark:border-slate-700 dark:bg-slate-950"
+                      className="ui-input w-20 py-1 font-mono"
                     />
                   </td>
                   <td className="text-right">
-                    <button onClick={addPartition} className="rounded bg-emerald-600 p-1 text-white">
+                    <button onClick={addPartition} className="ui-btn-success p-1.5">
                       <Plus className="h-3.5 w-3.5" />
                     </button>
                   </td>
@@ -389,9 +409,28 @@ export function SectorFlash({
           </div>
         </div>
 
-        <pre className="h-28 overflow-y-auto rounded border border-slate-200 bg-slate-900 p-2.5 font-mono text-xs text-slate-300 dark:border-slate-800 dark:bg-slate-950">
-          {opLogs.join("\n") || "OPERATION LOG"}
-        </pre>
+        <div className="ui-card flex h-48 shrink-0 flex-col overflow-hidden">
+          <div className="ui-card-header py-2">
+            <span className="ui-title">
+              {t("log.live")} ({opLogs.length})
+            </span>
+            {opLogs.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setOpLogs([])}
+                className="text-[11px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+              >
+                {t("log.clear")}
+              </button>
+            )}
+          </div>
+          <pre
+            ref={logBoxRef}
+            className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3 text-slate-300"
+          >
+            {opLogs.join("\n") || "OPERATION LOG"}
+          </pre>
+        </div>
       </div>
     </div>
   );

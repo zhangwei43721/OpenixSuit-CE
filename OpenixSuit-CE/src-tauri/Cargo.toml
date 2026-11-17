@@ -42,3 +42,7 @@ dirs = "5"
 crc32fast = "1.5"
 clap = { version = "4", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+serialport = "4"
+regex = "1"
+reqwest = "0.13"
+libc = "0.2"

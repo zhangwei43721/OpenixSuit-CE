@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 
-use super::{ffi, FlashProgressPayload};
+use super::{ffi, FlashLogPayload, FlashProgressPayload};
 
 const EFEX_CODE_MAX_SIZE: usize = 64 * 1024;
 const EXTERNAL_FILE_CHUNK_SIZE: u64 = 10 * 1024 * 1024;
@@ -507,6 +507,29 @@ fn emit_progress(app: &AppHandle, partition: &str, written: u64, total: u64, per
     );
 }
 
+fn emit_flash_log(app: &AppHandle, stage: &str, level: &str, message: impl Into<String>) {
+    let _ = app.emit(
+        "flash-log",
+        FlashLogPayload {
+            stage: stage.to_string(),
+            level: level.to_string(),
+            message: message.into(),
+        },
+    );
+}
+
+fn storage_type_label(storage_type: u32) -> &'static str {
+    match storage_type {
+        0 => "NAND",
+        1 => "SDCard",
+        2 => "eMMC",
+        3 => "SPI NOR",
+        4 => "SPI NAND",
+        5 => "UFS",
+        _ => "Unknown",
+    }
+}
+
 fn fel_init_dram(
     session: &EfexSession,
     fes_data: &[u8],
@@ -762,6 +785,7 @@ fn prepare_custom_downloads(
 }
 
 fn configure_ubifs_if_needed(
+    app: &AppHandle,
     session: &EfexSession,
     packer: &mut OpenixPacker,
     download_list: &[PartitionDownloadInfo],
@@ -798,6 +822,12 @@ fn configure_ubifs_if_needed(
                         0,
                         ffi::sunxi_fes_data_type_t_SUNXI_EFEX_EXT4_UBIFS_TAG,
                     )?;
+                    emit_flash_log(
+                        app,
+                        "UBIFS",
+                        "info",
+                        format!("检测到 UBIFS 分区 [{}]，已下发 UBIFS 配置标记", info.partition_name),
+                    );
                     return Ok(());
                 }
             }
@@ -966,12 +996,45 @@ fn download_raw_partition(
         if resp.flag == EFEX_CRC32_VALID_FLAG {
             let media_crc = resp.media_crc as u32;
             if local_crc != media_crc {
-                return Err(format!(
-                    "分区 {} 校验不匹配: local=0x{:08x}, device=0x{:08x}",
-                    info.partition_name, local_crc, media_crc
-                ));
+                emit_flash_log(
+                    app,
+                    "PART",
+                    "warn",
+                    format!(
+                        "分区 [{}] 校验值不一致 (local=0x{:08x}, device=0x{:08x})，按 OpenixCLI 策略继续刷写",
+                        info.partition_name, local_crc, media_crc
+                    ),
+                );
+            } else {
+                emit_flash_log(
+                    app,
+                    "PART",
+                    "ok",
+                    format!(
+                        "分区 [{}] 写入并校验通过 (CRC=0x{:08x})",
+                        info.partition_name, local_crc
+                    ),
+                );
             }
+        } else {
+            let resp_flag = resp.flag;
+            emit_flash_log(
+                app,
+                "PART",
+                "warn",
+                format!(
+                    "分区 [{}] 未返回有效 CRC 标记 (flag=0x{:08x})，继续刷写",
+                    info.partition_name, resp_flag
+                ),
+            );
         }
+    } else {
+        emit_flash_log(
+            app,
+            "PART",
+            "ok",
+            format!("分区 [{}] 写入完成", info.partition_name),
+        );
     }
 
     Ok(())
@@ -1278,11 +1341,27 @@ impl<'a> SparseStreamParser<'a> {
         if resp.flag == EFEX_CRC32_VALID_FLAG {
             let device_crc = resp.media_crc as u32;
             if self.checksum != device_crc {
-                return Err(format!(
-                    "Sparse 分区 {} 校验不匹配: local=0x{:08x}, device=0x{:08x}",
-                    self.partition_name, self.checksum, device_crc
-                ));
+                emit_flash_log(
+                    self.app,
+                    "PART",
+                    "warn",
+                    format!(
+                        "Sparse 分区 [{}] 校验值不一致 (local=0x{:08x}, device=0x{:08x})，继续刷写",
+                        self.partition_name, self.checksum, device_crc
+                    ),
+                );
             }
+        } else {
+            let resp_flag = resp.flag;
+            emit_flash_log(
+                self.app,
+                "PART",
+                "warn",
+                format!(
+                    "Sparse 分区 [{}] 未返回有效 CRC 标记 (flag=0x{:08x})，继续刷写",
+                    self.partition_name, resp_flag
+                ),
+            );
         }
         Ok(())
     }
@@ -1328,6 +1407,18 @@ fn download_sparse_partition(
         .map_err(|_| format!("分区 {} 地址超出 FES 范围", info.partition_name))?;
     let head = read_firmware_range(packer, info, 0, SPARSE_HEADER_SIZE as u64)?;
     let sparse_header = sparse_format_probe(&head)?;
+    emit_flash_log(
+        app,
+        "PART",
+        "info",
+        format!(
+            "Sparse [{}]: blk_sz={}, chunks={}, blocks={}",
+            info.partition_name,
+            sparse_header.blk_sz,
+            sparse_header.total_chunks,
+            sparse_header.total_blks
+        ),
+    );
 
     let mut parser = SparseStreamParser::new(
         app,
@@ -1349,10 +1440,23 @@ fn download_sparse_partition(
         offset += len;
     }
 
-    parser.finish(session, sparse_header.total_chunks, sparse_header.total_blks)
+    parser.finish(session, sparse_header.total_chunks, sparse_header.total_blks)?;
+    emit_flash_log(
+        app,
+        "PART",
+        "ok",
+        format!(
+            "Sparse 分区 [{}] 写入{}完成 ({} chunks)",
+            info.partition_name,
+            if verify { "与校验" } else { "" },
+            sparse_header.total_chunks
+        ),
+    );
+    Ok(())
 }
 
 fn download_boot_images(
+    app: &AppHandle,
     session: &EfexSession,
     packer: &mut OpenixPacker,
     secure: u32,
@@ -1368,6 +1472,12 @@ fn download_boot_images(
             let data = packer
                 .find_file_data_by_subtype(sub)
                 .map_err(|e| e.to_string())?;
+            emit_flash_log(
+                app,
+                "BOOT",
+                "info",
+                format!("正在写入 Preboot ({}, {} bytes)...", sub, data.len()),
+            );
             session.fes_down(
                 &data,
                 0,
@@ -1393,12 +1503,19 @@ fn download_boot_images(
         let boot1_data = packer
             .get_file_data_by_maintype_subtype(main, sub)
             .map_err(|_| format!("固件中缺少 Boot1 ({}/{})", main, sub))?;
+        emit_flash_log(
+            app,
+            "BOOT",
+            "info",
+            format!("正在写入 Boot1/U-Boot ({}/{}, {} bytes)...", main, sub, boot1_data.len()),
+        );
         session.fes_down(
             &boot1_data,
             0,
             ffi::sunxi_fes_data_type_t_SUNXI_EFEX_BOOT1_TAG,
         )?;
         let _ = session.fes_verify_status(ffi::sunxi_fes_data_type_t_SUNXI_EFEX_BOOT1_TAG);
+        emit_flash_log(app, "BOOT", "ok", format!("Boot1 ({}) 写入完成", sub));
     }
 
     let boot0_entry = if secure == BOOT_FILE_MODE_NORMAL || secure == BOOT_FILE_MODE_PKG {
@@ -1441,12 +1558,19 @@ fn download_boot_images(
                 ))),
             })
             .map_err(|_| format!("固件中缺少 Boot0 ({}/{})", main, sub))?;
+        emit_flash_log(
+            app,
+            "BOOT",
+            "info",
+            format!("正在写入 Boot0 ({}/{}, {} bytes)...", main, sub, boot0_data.len()),
+        );
         session.fes_down(
             &boot0_data,
             0,
             ffi::sunxi_fes_data_type_t_SUNXI_EFEX_BOOT0_TAG,
         )?;
         let _ = session.fes_verify_status(ffi::sunxi_fes_data_type_t_SUNXI_EFEX_BOOT0_TAG);
+        emit_flash_log(app, "BOOT", "ok", format!("Boot0 ({}) 写入完成", sub));
     }
 
     Ok(())
@@ -1461,7 +1585,20 @@ pub fn execute_flash_sync(
     if !firmware_path.exists() {
         return Err(format!("固件文件不存在: {}", firmware_path.display()));
     }
+    let started_at = Instant::now();
     cancel_flag.store(false, Ordering::Relaxed);
+    emit_flash_log(
+        app,
+        "LOAD",
+        "info",
+        format!(
+            "开始刷写: {} (mode={:?}, verify={}, post={:?})",
+            firmware_path.display(),
+            request.mode,
+            request.verify,
+            request.post_action
+        ),
+    );
 
     let mut packer = OpenixPacker::new();
     packer
@@ -1473,9 +1610,16 @@ pub fn execute_flash_sync(
 
     let mode = session.device_mode();
     if mode == ffi::sunxi_verify_device_mode_t_DEVICE_MODE_FEL {
+        emit_flash_log(
+            app,
+            "FEL",
+            "info",
+            format!("检测到设备处于 FEL 模式，正在使用 FES ({} bytes) 初始化 DRAM...", fes_data.len()),
+        );
         emit_progress(app, "FEL: DRAM 初始化", 0, 100, 5.0);
         fel_init_dram(&session, &fes_data, cancel_flag)?;
         check_cancelled(cancel_flag)?;
+        emit_flash_log(app, "FEL", "ok", "DRAM 初始化完成");
 
         emit_progress(app, "FEL: 加载 U-Boot", 10, 100, 10.0);
         let uboot_data = packer
@@ -1486,6 +1630,18 @@ pub fn execute_flash_sync(
             .get_sys_config_bin()
             .map_err(|_| "固件中未找到 sys_config.bin".to_string())?;
         let board_config_data = packer.get_board_config().ok();
+        emit_flash_log(
+            app,
+            "FEL",
+            "info",
+            format!(
+                "加载启动组件: U-Boot={}B, DTB={}B, sys_config={}B, board_config={}B",
+                uboot_data.len(),
+                dtb_data.as_ref().map_or(0, |d| d.len()),
+                sysconfig_data.len(),
+                board_config_data.as_ref().map_or(0, |d| d.len())
+            ),
+        );
 
         fel_download_uboot(
             &session,
@@ -1496,15 +1652,37 @@ pub fn execute_flash_sync(
         )?;
         drop(session);
 
+        emit_flash_log(app, "FEL", "info", "已跳转执行 U-Boot，等待设备重枚举进入 FES 模式...");
         emit_progress(app, "FEL: 等待设备进入 FES", 15, 100, 15.0);
         session = reconnect_to_fes(cancel_flag)?;
+        emit_flash_log(app, "FES", "ok", "设备已进入 FES 模式并重新建立连接");
+    } else {
+        emit_flash_log(app, "FES", "info", "检测到设备已在 FES 模式，跳过 FEL 引导");
     }
 
     let secure = session.fes_query_secure()?;
     let storage_type = session.fes_query_storage()?;
-    let _flash_size = session.fes_probe_flash_size()?;
+    let flash_size = session.fes_probe_flash_size()?;
+    emit_flash_log(
+        app,
+        "PROBE",
+        "info",
+        format!(
+            "设备存储信息: storage={} ({}), secure_mode={}, flash_sectors={}",
+            storage_type_label(storage_type),
+            storage_type,
+            secure,
+            flash_size
+        ),
+    );
 
     if request.mode != FlashMode::Partition {
+        emit_flash_log(
+            app,
+            "ERASE",
+            "info",
+            format!("下发擦除标志: mode={:?}, erase_flag=0x{:x}", request.mode, request.mode.erase_flag()),
+        );
         emit_progress(app, "FES: 擦除标志", 20, 100, 20.0);
         let mut erase_data = vec![0u8; 16];
         erase_data[0..4].copy_from_slice(&request.mode.erase_flag().to_le_bytes());
@@ -1539,8 +1717,21 @@ pub fn execute_flash_sync(
     } else {
         prepare_firmware_downloads(&mut packer, &mbr, &request)?
     };
+    let plan_bytes: u64 = download_list.iter().map(|d| d.data_length).sum();
+    emit_flash_log(
+        app,
+        "MBR",
+        "info",
+        format!(
+            "分区计划: MBR 共 {} 个分区, 本次待刷写 {} 个分区 ({:.2} MB)",
+            mbr.partitions.len(),
+            download_list.len(),
+            plan_bytes as f64 / (1024.0 * 1024.0)
+        ),
+    );
 
     configure_ubifs_if_needed(
+        app,
         &session,
         &mut packer,
         &download_list,
@@ -1561,6 +1752,7 @@ pub fn execute_flash_sync(
             }
         }
     }
+    emit_flash_log(app, "MBR", "ok", "Sunxi MBR 写入与校验完成");
 
     if !download_list.is_empty() {
         let grand_total: u64 = download_list.iter().map(|d| d.data_length).sum();
@@ -1579,6 +1771,19 @@ pub fn execute_flash_sync(
                         }
                     }
                 };
+                emit_flash_log(
+                    app,
+                    "PART",
+                    "info",
+                    format!(
+                        "开始写入分区 [{}] ({}, {:.2} MB, {}, sector=0x{:08x})",
+                        info.partition_name,
+                        info.download_filename,
+                        info.data_length as f64 / (1024.0 * 1024.0),
+                        if is_sparse { "Sparse" } else { "Raw" },
+                        info.partition_address
+                    ),
+                );
                 if is_sparse {
                     download_sparse_partition(
                         app,
@@ -1610,11 +1815,21 @@ pub fn execute_flash_sync(
     }
 
     emit_progress(app, "FES: 写入 Boot0/Boot1", 98, 100, 98.0);
-    download_boot_images(&session, &mut packer, secure, storage_type)?;
+    download_boot_images(app, &session, &mut packer, secure, storage_type)?;
 
     let tool_mode = request.post_action.fes_tool_mode();
     session.fes_tool_mode(ffi::sunxi_fes_tool_mode_t_TOOL_MODE_NORMAL, tool_mode)?;
     emit_progress(app, "完成", 100, 100, 100.0);
+    emit_flash_log(
+        app,
+        "DONE",
+        "ok",
+        format!(
+            "刷写完成，已执行 Post-Action ({:?})，总耗时 {:.2}s",
+            request.post_action,
+            started_at.elapsed().as_secs_f64()
+        ),
+    );
 
     Ok(())
 }

@@ -136,10 +136,25 @@ openixsuit-ce ai plugin-uninstall v881-ab-ota
 当运行环境未将 `openixsuit-ce` / `openixsuit-ai` 加入 `PATH` 时，可直接调用 `http://127.0.0.1:28765`（请求头 `Content-Type: application/json`）：
 
 - `GET /api/status`
+- `GET /api/serial/ports`、`GET /api/serial/logs?session_id=...&tail=200`、`POST /api/serial/write`
+- `POST /api/power/action`：`{"profile_id": "...", "action": "on|off|cycle"}`
+- `GET /api/monitor/metrics?serial=...`
+- `GET /api/triggers/incidents`
 - `GET /api/plugins`
 - `POST /api/plugins/install`：`{"package_path": "..."}`
 - `POST /api/plugins/uninstall`：`{"plugin_id": "..."}`
 - `POST /api/plugins/run`：`{"plugin_id": "...", "serial": "", "inputs": {}}`
+
+### 串口、电源、监控与事件触发 CLI 示例
+
+```bash
+openixsuit-ce ai serial-ports
+openixsuit-ce ai serial-logs --tail 200
+openixsuit-ce ai serial-send <session_id> "dmesg | tail -n 30"
+openixsuit-ce ai power <profile_id> cycle
+openixsuit-ce ai metrics --serial <serial>
+openixsuit-ce ai incidents
+```
 - `POST /api/adb/shell`：`{"serial": "", "command": "..."}`
 - `POST /api/adb/push`：`{"serial": "", "local_path": "...", "remote_path": "..."}`
 - `POST /api/adb/pull`：`{"serial": "", "remote_path": "...", "local_path": "..."}`

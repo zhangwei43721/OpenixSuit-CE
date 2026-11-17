@@ -151,15 +151,15 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
   };
 
   return (
-    <div className="space-y-2.5 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
+    <div className="ui-card space-y-3 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-blue-500">{t("parser.sysConfig")}</span>
-          <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+          <span className="ui-title">{t("parser.sysConfig")}</span>
+          <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-mono text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
             {doc.sections.length} sections / {doc.entries.length} keys
           </span>
           {modifiedCount > 0 && (
-            <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+            <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-[11px] font-medium text-amber-600 dark:text-amber-400">
               {t("parser.modifiedCount", { count: modifiedCount })}
             </span>
           )}
@@ -167,23 +167,23 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
 
         <div className="flex flex-wrap items-center gap-1.5">
           <div className="relative">
-            <Search className="pointer-events-none absolute left-2 top-1.5 h-3.5 w-3.5 text-slate-400" />
+            <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t("parser.searchConfig")}
-              className="w-44 rounded border border-slate-300 bg-white py-1 pl-7 pr-2 text-xs dark:border-slate-700 dark:bg-slate-950"
+              className="ui-input w-44 pl-8"
             />
           </div>
 
-          <div className="inline-flex overflow-hidden rounded border border-slate-300 dark:border-slate-700">
+          <div className="ui-segmented">
             <button
               type="button"
               onClick={() => setViewMode("visual")}
-              className={`px-2.5 py-1 text-xs ${
+              className={`ui-segmented-btn ${
                 viewMode === "visual"
-                  ? "bg-blue-600 text-white"
-                  : "bg-white text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-600 dark:text-slate-300"
               }`}
             >
               {t("parser.visualView")}
@@ -191,10 +191,10 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
             <button
               type="button"
               onClick={() => setViewMode("raw")}
-              className={`px-2.5 py-1 text-xs ${
+              className={`ui-segmented-btn ${
                 viewMode === "raw"
-                  ? "bg-blue-600 text-white"
-                  : "bg-white text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-600 dark:text-slate-300"
               }`}
             >
               {t("parser.rawView")}
@@ -204,7 +204,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
           <button
             type="button"
             onClick={handleOpenExternal}
-            className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800"
+            className="ui-btn-secondary"
           >
             <FolderOpen className="h-3.5 w-3.5" />
             {t("parser.openFex")}
@@ -214,7 +214,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
             <button
               type="button"
               onClick={resetAll}
-              className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+              className="ui-btn-secondary"
             >
               <RotateCcw className="h-3.5 w-3.5" />
               {t("parser.resetConfig")}
@@ -225,7 +225,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
             type="button"
             disabled={!doc.entries.length && !sourceText}
             onClick={handleExport}
-            className="flex items-center gap-1 rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+            className="ui-btn-success"
           >
             <Download className="h-3.5 w-3.5" />
             {t("parser.exportFex")}
@@ -233,27 +233,23 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
         </div>
       </div>
 
-      {errorMsg && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
-          {errorMsg}
-        </div>
-      )}
+      {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
       {viewMode === "raw" ? (
-        <pre className="h-72 overflow-auto rounded border border-slate-200 bg-slate-900 p-3 font-mono text-[11px] text-slate-200 dark:border-slate-800 dark:bg-slate-950">
+        <pre className="ui-terminal h-72 overflow-auto p-3 text-[11px]">
           {serializedPreview || t("parser.noSysConfig")}
         </pre>
       ) : (
         <div className="grid grid-cols-12 gap-3">
           {/* Section filter sidebar */}
-          <div className="col-span-3 max-h-72 space-y-1 overflow-y-auto rounded border border-slate-200 bg-white p-1.5 dark:border-slate-800 dark:bg-slate-950">
+          <div className="ui-subcard col-span-3 max-h-72 space-y-1 overflow-y-auto p-1.5">
             <button
               type="button"
               onClick={() => setActiveSection("__all__")}
-              className={`flex w-full items-center justify-between rounded px-2 py-1 text-left text-xs ${
+              className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left text-xs transition ${
                 activeSection === "__all__"
-                  ? "bg-blue-600 text-white"
-                  : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-700 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-800"
               }`}
             >
               <span className="truncate">{t("parser.allSections")}</span>
@@ -266,10 +262,10 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                   key={sec}
                   type="button"
                   onClick={() => setActiveSection(sec)}
-                  className={`flex w-full items-center justify-between rounded px-2 py-1 text-left font-mono text-[11px] ${
+                  className={`flex w-full items-center justify-between rounded-md px-2.5 py-1.5 text-left font-mono text-[11px] transition ${
                     activeSection === sec
-                      ? "bg-blue-600 text-white"
-                      : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                      ? "bg-blue-600 text-white shadow-sm"
+                      : "text-slate-700 hover:bg-slate-200/70 dark:text-slate-300 dark:hover:bg-slate-800"
                   }`}
                 >
                   <span className="truncate">[{sec}]</span>
@@ -285,7 +281,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
           </div>
 
           {/* Entries table */}
-          <div className="col-span-9 flex max-h-72 flex-col overflow-y-auto rounded border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-950">
+          <div className="ui-subcard col-span-9 flex max-h-72 flex-col overflow-y-auto p-3">
             {filteredEntries.length === 0 ? (
               <div className="py-10 text-center text-xs text-slate-500">
                 {doc.entries.length === 0 ? t("parser.noSysConfig") : t("parser.noMatches")}
@@ -299,7 +295,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                     <div key={entry.id} className="space-y-1 py-2">
                       <div className="flex flex-wrap items-center gap-2">
                         {activeSection === "__all__" && (
-                          <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500 dark:bg-slate-900">
+                          <span className="rounded-md bg-slate-200/70 px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                             [{entry.section}]
                           </span>
                         )}
@@ -318,10 +314,8 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                                 )
                               }
                               title="GPIO Pin"
-                              className={`w-16 rounded border px-2 py-0.5 font-mono text-xs ${
-                                isChanged
-                                  ? "border-amber-500 bg-amber-500/5"
-                                  : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-900"
+                              className={`ui-input w-16 py-1 font-mono ${
+                                isChanged ? "border-amber-500 bg-amber-500/5" : ""
                               }`}
                             />
                             <input
@@ -334,7 +328,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                               }
                               title="Mux"
                               placeholder="mux"
-                              className="w-16 rounded border border-slate-300 bg-white px-2 py-0.5 font-mono text-xs dark:border-slate-700 dark:bg-slate-900"
+                              className="ui-input w-16 py-1 font-mono"
                             />
                             <select
                               value={gpio.pull}
@@ -345,7 +339,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                                 )
                               }
                               title="Pull"
-                              className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-900"
+                              className="ui-select py-1"
                             >
                               <option value="default">pull: default</option>
                               <option value="0">0: 无上下拉</option>
@@ -361,7 +355,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                                 )
                               }
                               title="Drive Level"
-                              className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-900"
+                              className="ui-select py-1"
                             >
                               <option value="default">drv: default</option>
                               <option value="0">drv: 0</option>
@@ -378,7 +372,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                                 )
                               }
                               title="Output Level"
-                              className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-900"
+                              className="ui-select py-1"
                             >
                               <option value="default">level: default</option>
                               <option value="0">level: 0</option>
@@ -389,10 +383,8 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                           <input
                             value={entry.value}
                             onChange={(e) => updateEntryValue(entry.id, e.target.value)}
-                            className={`flex-1 rounded border px-2 py-0.5 font-mono text-xs ${
-                              isChanged
-                                ? "border-amber-500 bg-amber-500/5"
-                                : "border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-900"
+                            className={`ui-input flex-1 py-1 font-mono ${
+                              isChanged ? "border-amber-500 bg-amber-500/5" : ""
                             }`}
                           />
                         )}
@@ -402,9 +394,9 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                             type="button"
                             onClick={() => resetEntry(entry.id)}
                             title={t("parser.resetConfig")}
-                            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+                            className="rounded-md p-1 text-slate-400 hover:bg-slate-200/70 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
                           >
-                            <RotateCcw className="h-3 w-3" />
+                            <RotateCcw className="h-3.5 w-3.5" />
                           </button>
                         )}
                       </div>
@@ -418,24 +410,24 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
             )}
 
             {activeSection !== "__all__" && (
-              <div className="mt-2 flex items-center gap-2 border-t border-slate-200 pt-2 dark:border-slate-800">
+              <div className="mt-2 flex items-center gap-2 border-t border-slate-200 pt-2.5 dark:border-slate-800">
                 <input
                   value={newKey}
                   onChange={(e) => setNewKey(e.target.value)}
                   placeholder={t("parser.newKeyPlaceholder")}
-                  className="w-40 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-900"
+                  className="ui-input w-40 font-mono"
                 />
                 <input
                   value={newValue}
                   onChange={(e) => setNewValue(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && addEntry()}
                   placeholder={t("parser.newValuePlaceholder")}
-                  className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs dark:border-slate-700 dark:bg-slate-900"
+                  className="ui-input flex-1 font-mono"
                 />
                 <button
                   type="button"
                   onClick={addEntry}
-                  className="flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-xs text-white hover:bg-blue-500"
+                  className="ui-btn-primary"
                 >
                   <Plus className="h-3.5 w-3.5" />
                   {t("parser.addParam")}

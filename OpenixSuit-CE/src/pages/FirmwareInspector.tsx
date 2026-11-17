@@ -100,17 +100,13 @@ export function FirmwareInspector({
 
   return (
     <div className="space-y-3 text-xs">
-      {errorMsg && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-600 dark:text-amber-400">
-          {errorMsg}
-        </div>
-      )}
+      {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
       {inspectInfo ? (
         <>
-          <div className="rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-1 font-semibold text-blue-500">{t("parser.imageInfo")}</div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <div className="ui-card p-4">
+            <div className="ui-title mb-2 text-blue-600 dark:text-blue-400">{t("parser.imageInfo")}</div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-700 dark:text-slate-300">
               <span>Magic: {inspectInfo.magic}</span>
               {inspectInfo.header_version && <span>Format: {inspectInfo.header_version}</span>}
               <span>Encrypted: {inspectInfo.encrypted ? "Yes" : "No"}</span>
@@ -118,48 +114,48 @@ export function FirmwareInspector({
               <span>Partitions: {inspectInfo.partitions.length}</span>
             </div>
             {inspectInfo.boot0 && (
-              <div className="mt-1 border-t border-slate-200 pt-1 text-slate-600 dark:border-slate-800 dark:text-slate-300">
+              <div className="mt-2 border-t border-slate-200 pt-2 text-slate-600 dark:border-slate-800 dark:text-slate-300">
                 Boot0 Magic: {inspectInfo.boot0.magic} | Platform: {inspectInfo.boot0.platform || "-"}
               </div>
             )}
           </div>
 
-          <div className="rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-2 flex items-center justify-between">
-              <span className="font-semibold text-blue-500">{t("parser.filesTitle")}</span>
+          <div className="ui-card p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <span className="ui-title text-blue-600 dark:text-blue-400">{t("parser.filesTitle")}</span>
               <button
                 disabled={unpacking || !firmwarePath}
                 onClick={unpackAll}
-                className="rounded bg-blue-600 px-3 py-1 text-white hover:bg-blue-500 disabled:opacity-50"
+                className="ui-btn-primary"
               >
                 {unpacking ? t("parser.unpacking") : t("parser.unpackAll")}
               </button>
             </div>
-            <div className="max-h-48 overflow-y-auto">
+            <div className="max-h-52 overflow-y-auto">
               <table className="w-full text-left">
-                <thead className="text-slate-500">
+                <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-800">
                   <tr>
-                    <th className="py-1">{t("sector.name")}</th>
-                    <th className="py-1">Type</th>
-                    <th className="py-1">Size</th>
-                    <th className="py-1 text-right">{t("sector.actions")}</th>
+                    <th className="py-1.5">{t("sector.name")}</th>
+                    <th className="py-1.5">Type</th>
+                    <th className="py-1.5">Size</th>
+                    <th className="py-1.5 text-right">{t("sector.actions")}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                   {inspectInfo.files.map((p) => (
                     <tr key={`${p.index}-${p.name}`}>
-                      <td className="py-1 font-mono">
+                      <td className="py-1.5 font-mono">
                         {p.name}
                         {p.sparse && (
-                          <span className="ml-1.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                          <span className="ml-1.5 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
                             sparse
                           </span>
                         )}
                       </td>
-                      <td className="py-1 font-mono text-slate-500">{p.type_guid}</td>
-                      <td className="py-1 font-mono">{(p.size_bytes / 1024).toFixed(1)} KB</td>
-                      <td className="py-1 text-right">
-                        <button onClick={() => extractItem(p.name)} className="text-blue-500 hover:underline">
+                      <td className="py-1.5 font-mono text-slate-500">{p.type_guid}</td>
+                      <td className="py-1.5 font-mono">{(p.size_bytes / 1024).toFixed(1)} KB</td>
+                      <td className="py-1.5 text-right">
+                        <button onClick={() => extractItem(p.name)} className="text-blue-600 hover:underline dark:text-blue-400">
                           {t("parser.extract")}
                         </button>
                       </td>
@@ -174,25 +170,25 @@ export function FirmwareInspector({
         </>
       ) : (
         <div className="space-y-3">
-          <div className="rounded border border-dashed border-slate-300 p-6 text-center text-slate-500 dark:border-slate-800">
+          <div className="ui-card border-dashed p-6 text-center text-slate-500">
             请在上方选择 `.img` 固件以查看 Boot0 信息与提取包内文件
           </div>
           <SysConfigEditor rawText="" onLog={onLog} />
         </div>
       )}
 
-      <div className="space-y-2">
+      <div className="ui-card space-y-2.5 p-4">
         <div className="flex items-center justify-between">
-          <span className="font-semibold text-blue-500">设备树反编译预览 (DTB → DTS)</span>
+          <span className="ui-title text-blue-600 dark:text-blue-400">设备树反编译预览 (DTB → DTS)</span>
           <button
             disabled={loading}
             onClick={pickDtb}
-            className="rounded border border-slate-300 bg-white px-3 py-1 text-slate-800 hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            className="ui-btn-secondary"
           >
             {t("parser.openDtb")}
           </button>
         </div>
-        <pre className="h-56 overflow-auto rounded border border-slate-200 bg-slate-900 p-4 font-mono text-xs text-emerald-400 dark:border-slate-800 dark:bg-slate-950">
+        <pre className="ui-terminal h-56 overflow-auto p-4 text-emerald-400">
           {dtsOutput || t("parser.dtbPlaceholder")}
         </pre>
       </div>

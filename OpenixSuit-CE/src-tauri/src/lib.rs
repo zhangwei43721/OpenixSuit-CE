@@ -5,10 +5,14 @@ mod efex;
 mod gpio;
 mod hotplug;
 mod ipc_server;
+mod monitor;
 mod packer;
 mod plugins;
+mod power;
+mod serial;
 mod state;
 mod system;
+mod triggers;
 
 use state::AppState;
 use tauri::Manager;
@@ -27,6 +31,7 @@ pub fn run() {
             }
             hotplug::watcher::start_hotplug_watcher(app.handle().clone());
             ipc_server::start_ipc_server(app.handle().clone());
+            triggers::start_trigger_watcher(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -63,6 +68,7 @@ pub fn run() {
             // adb
             adb::adb_list_devices,
             adb::adb_list_dir,
+            adb::adb_list_dir_detailed,
             adb::adb_push_file,
             adb::adb_pull_file,
             adb::adb_exec_shell,
@@ -75,6 +81,43 @@ pub fn run() {
             adb::adb_copy,
             adb::adb_read_text,
             adb::adb_write_text,
+            adb::adb_term_open,
+            adb::adb_term_write,
+            adb::adb_term_resize,
+            adb::adb_term_close,
+            adb::adb_screen_info,
+            adb::adb_screencap_png,
+            adb::adb_input_tap,
+            adb::adb_input_swipe,
+            adb::adb_input_keyevent,
+            // serial
+            serial::serial_list_ports,
+            serial::serial_open,
+            serial::serial_close,
+            serial::serial_list_sessions,
+            serial::serial_write,
+            serial::serial_set_signals,
+            serial::serial_get_buffer,
+            serial::serial_list_log_files,
+            serial::serial_read_log_file,
+            // power
+            power::power_list_profiles,
+            power::power_save_profiles,
+            power::power_execute,
+            // triggers
+            triggers::trigger_list_rules,
+            triggers::trigger_save_rules,
+            triggers::trigger_test_rule,
+            triggers::trigger_list_incidents,
+            triggers::trigger_clear_incidents,
+            // monitor & workspaces & flash history
+            monitor::adb_get_metrics,
+            monitor::workspace_list,
+            monitor::workspace_save,
+            monitor::flash_history_list,
+            monitor::flash_history_add,
+            monitor::flash_history_delete,
+            monitor::flash_history_clear,
             // system
             system::env_check::check_system_env,
             system::settings::load_settings,

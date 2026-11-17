@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -22,10 +22,12 @@ interface GenericImageInfo {
 }
 
 export function GenericFlash({
+  active = true,
   isFlashing,
   onFlashingChange,
   onLog,
 }: {
+  active?: boolean;
   isFlashing: boolean;
   onFlashingChange: (v: boolean) => void;
   onLog: (msg: string) => void;
@@ -40,20 +42,40 @@ export function GenericFlash({
   const [progress, setProgress] = useState<{ partition: string; percent: number } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const logBoxRef = useRef<HTMLPreElement | null>(null);
+
+  const appendLine = (msg: string) => {
+    setLogs((p) => [...p.slice(-499), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+  };
 
   const pushLog = (msg: string) => {
-    setLogs((p) => [...p.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`]);
+    appendLine(msg);
     onLog(msg);
   };
 
   useEffect(() => {
-    const unlisten = listen<{ partition: string; percent: number }>("flash-progress", (e) => {
+    const unlistenProgress = listen<{ partition: string; percent: number }>("flash-progress", (e) => {
       setProgress({ partition: e.payload.partition, percent: e.payload.percent });
     });
+    const unlistenLog = listen<{ stage: string; level: string; message: string }>(
+      "flash-log",
+      (e) => {
+        if (!active || !e.payload?.message) return;
+        const warnTag = e.payload.level === "warn" ? "[WARN] " : "";
+        appendLine(`[${e.payload.stage || "FLASH"}] ${warnTag}${e.payload.message}`);
+      }
+    );
     return () => {
-      unlisten.then((fn) => fn());
+      unlistenProgress.then((fn) => fn());
+      unlistenLog.then((fn) => fn());
     };
-  }, []);
+  }, [active]);
+
+  useEffect(() => {
+    if (logBoxRef.current) {
+      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+    }
+  }, [logs]);
 
   const pickBoot = async () => {
     try {
@@ -121,44 +143,44 @@ export function GenericFlash({
   };
 
   return (
-    <div className="grid h-full grid-cols-12 gap-4">
+    <div className="grid h-full min-h-0 grid-cols-12 gap-3">
       <div className="col-span-4 space-y-3 text-xs">
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-slate-500">{t("generic.bootImage")}</div>
+        <div className="ui-card space-y-2 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("generic.bootImage")}</div>
           <div className="flex gap-2">
             <input
               readOnly
               value={bootImage}
               placeholder={t("flash.unselected")}
-              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-950"
+              className="ui-input flex-1 font-mono"
             />
-            <button onClick={pickBoot} className="rounded bg-blue-600 px-3 py-1 text-white">
+            <button onClick={pickBoot} className="ui-btn-primary">
               {t("common.browse")}
             </button>
           </div>
         </div>
 
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-slate-500">{t("generic.genericImage")}</div>
+        <div className="ui-card space-y-2 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("generic.genericImage")}</div>
           <div className="flex gap-2">
             <input
               readOnly
               value={genericImage}
               placeholder={t("flash.unselected")}
-              className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-950"
+              className="ui-input flex-1 font-mono"
             />
-            <button onClick={pickGeneric} className="rounded bg-blue-600 px-3 py-1 text-white">
+            <button onClick={pickGeneric} className="ui-btn-primary">
               {t("common.browse")}
             </button>
           </div>
         </div>
 
-        <div className="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-900">
-          <div className="font-semibold text-slate-500">{t("generic.modeAndOffset")}</div>
+        <div className="ui-card space-y-2.5 p-4">
+          <div className="ui-title text-blue-600 dark:text-blue-400">{t("generic.modeAndOffset")}</div>
           <select
             value={mode}
             onChange={(e) => setMode(e.target.value as "logic-offset" | "command")}
-            className="w-full rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
+            className="ui-select w-full"
           >
             <option value="logic-offset">{t("generic.modeLogic")}</option>
             <option value="command">{t("generic.modeCmd")}</option>
@@ -166,7 +188,7 @@ export function GenericFlash({
           <select
             value={storageType}
             onChange={(e) => changeStorage(e.target.value as "sdmmc" | "nor" | "ufs")}
-            className="w-full rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-800"
+            className="ui-select w-full"
           >
             <option value="sdmmc">SD/MMC</option>
             <option value="ufs">UFS</option>
@@ -176,18 +198,18 @@ export function GenericFlash({
             type="number"
             value={logicOffset}
             onChange={(e) => setLogicOffset(Number(e.target.value))}
-            className="w-full rounded border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-950"
+            className="ui-input w-full font-mono"
           />
         </div>
 
         {progress && (
-          <div className="space-y-1">
+          <div className="ui-card space-y-1.5 p-3">
             <div className="flex justify-between text-[11px] text-slate-500">
               <span className="truncate">{progress.partition}</span>
-              <span>{progress.percent.toFixed(1)}%</span>
+              <span className="font-mono">{progress.percent.toFixed(1)}%</span>
             </div>
-            <div className="h-1.5 w-full overflow-hidden rounded bg-slate-200 dark:bg-slate-800">
-              <div className="h-full bg-emerald-600 transition-all" style={{ width: `${progress.percent}%` }} />
+            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+              <div className="h-full rounded-full bg-emerald-600 transition-all" style={{ width: `${progress.percent}%` }} />
             </div>
           </div>
         )}
@@ -196,30 +218,26 @@ export function GenericFlash({
           <button
             disabled={isFlashing || !bootImage || !genericImage}
             onClick={startFlash}
-            className="flex-1 rounded bg-emerald-600 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+            className="ui-btn-success flex-1 py-2"
           >
             {isFlashing ? t("flash.flashing") : t("generic.startFlash")}
           </button>
           {isFlashing && (
             <button
               onClick={cancelFlash}
-              className="rounded bg-red-600 px-3 py-2 text-xs text-white hover:bg-red-500"
+              className="ui-btn-danger py-2"
             >
               {t("common.cancel")}
             </button>
           )}
         </div>
 
-        {errorMsg && (
-          <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-600 dark:text-amber-400">
-            {errorMsg}
-          </div>
-        )}
+        {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
       </div>
 
-      <div className="col-span-8 flex flex-col space-y-3">
-        <div className="flex-1 rounded border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-900">
-          <div className="mb-3 text-xs font-semibold text-blue-500">{t("generic.infoTitle")}</div>
+      <div className="col-span-8 flex min-h-0 flex-col gap-3">
+        <div className="ui-card flex-1 p-4">
+          <div className="ui-title mb-3 text-blue-600 dark:text-blue-400">{t("generic.infoTitle")}</div>
           {diskInfo ? (
             <div className="space-y-4 text-xs">
               <div className="grid grid-cols-2 gap-2">
@@ -232,32 +250,51 @@ export function GenericFlash({
               <table className="w-full text-left">
                 <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-800">
                   <tr>
-                    <th className="py-1">Partition Name</th>
-                    <th className="py-1">Start LBA</th>
-                    <th className="py-1">Size</th>
-                    <th className="py-1">Type GUID</th>
+                    <th className="py-1.5">Partition Name</th>
+                    <th className="py-1.5">Start LBA</th>
+                    <th className="py-1.5">Size</th>
+                    <th className="py-1.5">Type GUID</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                   {diskInfo.partitions.map((p) => (
                     <tr key={`${p.index}-${p.name}`}>
-                      <td className="py-1 font-medium">{p.name}</td>
-                      <td className="py-1 font-mono">{p.start_sector}</td>
-                      <td className="py-1 font-mono">{(p.size_bytes / 1024 / 1024).toFixed(2)} MB</td>
-                      <td className="py-1 font-mono text-slate-500">{p.type_guid}</td>
+                      <td className="py-1.5 font-medium">{p.name}</td>
+                      <td className="py-1.5 font-mono">{p.start_sector}</td>
+                      <td className="py-1.5 font-mono">{(p.size_bytes / 1024 / 1024).toFixed(2)} MB</td>
+                      <td className="py-1.5 font-mono text-slate-500">{p.type_guid}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           ) : (
-            <div className="py-12 text-center text-sm text-slate-500">{t("generic.emptyHint")}</div>
+            <div className="py-12 text-center text-xs text-slate-500">{t("generic.emptyHint")}</div>
           )}
         </div>
 
-        <pre className="h-28 overflow-y-auto rounded border border-slate-200 bg-slate-900 p-2.5 font-mono text-xs text-slate-300 dark:border-slate-800 dark:bg-slate-950">
-          {logs.join("\n") || "LOG"}
-        </pre>
+        <div className="ui-card flex h-48 shrink-0 flex-col overflow-hidden">
+          <div className="ui-card-header py-2">
+            <span className="ui-title">
+              {t("log.live")} ({logs.length})
+            </span>
+            {logs.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setLogs([])}
+                className="text-[11px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+              >
+                {t("log.clear")}
+              </button>
+            )}
+          </div>
+          <pre
+            ref={logBoxRef}
+            className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3 text-slate-300"
+          >
+            {logs.join("\n") || "LOG"}
+          </pre>
+        </div>
       </div>
     </div>
   );

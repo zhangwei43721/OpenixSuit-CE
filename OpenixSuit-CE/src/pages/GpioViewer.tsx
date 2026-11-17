@@ -126,20 +126,20 @@ export function GpioViewer({
   };
 
   return (
-    <div className="flex h-full flex-col space-y-3 text-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="flex h-full min-h-0 flex-col gap-3 text-xs">
+      <div className="ui-toolbar">
         <div className="flex items-center gap-2">
           <select
             value={mode}
             onChange={(e) => setMode(e.target.value as "adb" | "fel")}
-            className="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+            className="ui-select"
           >
             <option value="adb">{t("gpio.adbMode")}</option>
             <option value="fel">{t("gpio.felMode")}</option>
           </select>
 
           {mode === "adb" && (
-            <span className="rounded bg-slate-200 px-2.5 py-1 dark:bg-slate-800">
+            <span className="rounded-md border border-slate-200 bg-slate-100 px-2.5 py-1 font-mono text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
               Chip: {chipName}
             </span>
           )}
@@ -149,34 +149,30 @@ export function GpioViewer({
           <button
             disabled={loading || !serial}
             onClick={() => loadRuntimeGpio(serial)}
-            className="flex items-center gap-1 rounded bg-blue-600 px-3 py-1.5 text-white hover:bg-blue-500 disabled:opacity-50"
+            className="ui-btn-primary"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             {t("gpio.refreshData")}
           </button>
         )}
       </div>
 
-      {errorMsg && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-600 dark:text-amber-400">
-          {errorMsg}
-        </div>
-      )}
+      {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
       {mode === "adb" ? (
         <>
-          <div className="flex-1 overflow-y-auto rounded border border-slate-200 dark:border-slate-800">
+          <div className="ui-card flex-1 overflow-y-auto">
             <table className="w-full text-left">
-              <thead className="sticky top-0 bg-slate-100 text-slate-600 dark:bg-slate-900 dark:text-slate-400">
+              <thead className="sticky top-0 border-b border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
                 <tr>
-                  <th className="px-3 py-2">GPIO Pin</th>
-                  <th className="px-3 py-2">GPIO ID</th>
-                  <th className="px-3 py-2">Pin Function</th>
-                  <th className="px-3 py-2">Pin MUX</th>
-                  <th className="px-3 py-2">Pin Pull</th>
-                  <th className="px-3 py-2">Pin Driver</th>
-                  <th className="px-3 py-2">Pin Data</th>
-                  <th className="px-3 py-2 text-right">{t("sector.actions")}</th>
+                  <th className="px-3 py-2.5">GPIO Pin</th>
+                  <th className="px-3 py-2.5">GPIO ID</th>
+                  <th className="px-3 py-2.5">Pin Function</th>
+                  <th className="px-3 py-2.5">Pin MUX</th>
+                  <th className="px-3 py-2.5">Pin Pull</th>
+                  <th className="px-3 py-2.5">Pin Driver</th>
+                  <th className="px-3 py-2.5">Pin Data</th>
+                  <th className="px-3 py-2.5 text-right">{t("sector.actions")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -190,15 +186,15 @@ export function GpioViewer({
                   runtimePins.map((pin) => {
                     const isEditing = editingPin === pin.pin_name;
                     return (
-                      <tr key={pin.pin_name} className={isEditing ? "bg-blue-500/10" : "hover:bg-slate-50 dark:hover:bg-slate-900/50"}>
-                        <td className="px-3 py-1.5 font-medium text-blue-600 dark:text-blue-400">{pin.pin_name}</td>
-                        <td className="px-3 py-1.5 font-mono">{pin.gpio_id}</td>
-                        <td className="px-3 py-1.5">
+                      <tr key={pin.pin_name} className={isEditing ? "bg-blue-500/10" : "hover:bg-slate-50 dark:hover:bg-slate-800/50"}>
+                        <td className="px-3 py-2 font-medium text-blue-600 dark:text-blue-400">{pin.pin_name}</td>
+                        <td className="px-3 py-2 font-mono">{pin.gpio_id}</td>
+                        <td className="px-3 py-2">
                           {isEditing ? (
                             <select
                               value={editDraft.mux}
                               onChange={(e) => setEditDraft({ ...editDraft, mux: Number(e.target.value) })}
-                              className="rounded border border-slate-400 bg-white px-2 py-0.5 text-slate-900 dark:bg-slate-800 dark:text-slate-100"
+                              className="ui-select py-1"
                             >
                               <option value={0}>(0): GPIO_IN</option>
                               <option value={1}>(1): GPIO_OUT</option>
@@ -208,13 +204,13 @@ export function GpioViewer({
                             <span className="font-semibold">{pin.function}</span>
                           )}
                         </td>
-                        <td className="px-3 py-1.5 font-mono">{isEditing ? editDraft.mux : pin.mux}</td>
-                        <td className="px-3 py-1.5">
+                        <td className="px-3 py-2 font-mono">{isEditing ? editDraft.mux : pin.mux}</td>
+                        <td className="px-3 py-2">
                           {isEditing ? (
                             <select
                               value={editDraft.pull}
                               onChange={(e) => setEditDraft({ ...editDraft, pull: e.target.value })}
-                              className="rounded border border-slate-400 bg-white px-2 py-0.5 text-slate-900 dark:bg-slate-800 dark:text-slate-100"
+                              className="ui-select py-1"
                             >
                               <option value="PULL DISABLE">PULL DISABLE</option>
                               <option value="Pull Up">Pull Up</option>
@@ -224,12 +220,12 @@ export function GpioViewer({
                             pin.pull
                           )}
                         </td>
-                        <td className="px-3 py-1.5 font-mono">
+                        <td className="px-3 py-2 font-mono">
                           {isEditing ? (
                             <select
                               value={editDraft.drv}
                               onChange={(e) => setEditDraft({ ...editDraft, drv: e.target.value })}
-                              className="rounded border border-slate-400 bg-white px-2 py-0.5 text-slate-900 dark:bg-slate-800 dark:text-slate-100"
+                              className="ui-select py-1"
                             >
                               <option value="0x0">0x0</option>
                               <option value="0x1">0x1</option>
@@ -240,14 +236,14 @@ export function GpioViewer({
                             pin.drv
                           )}
                         </td>
-                        <td className="px-3 py-1.5 font-semibold">{pin.data}</td>
-                        <td className="space-x-1 px-3 py-1.5 text-right">
+                        <td className="px-3 py-2 font-semibold">{pin.data}</td>
+                        <td className="space-x-1 px-3 py-2 text-right">
                           {isEditing ? (
                             <>
-                              <button onClick={() => saveEditPin(pin.pin_name)} className="rounded bg-emerald-500/20 p-1 text-emerald-500">
+                              <button onClick={() => saveEditPin(pin.pin_name)} className="rounded-md bg-emerald-500/20 p-1 text-emerald-600 dark:text-emerald-400">
                                 <Check className="h-3.5 w-3.5" />
                               </button>
-                              <button onClick={() => setEditingPin(null)} className="rounded bg-red-500/20 p-1 text-red-500">
+                              <button onClick={() => setEditingPin(null)} className="rounded-md bg-rose-500/20 p-1 text-rose-500">
                                 <X className="h-3.5 w-3.5" />
                               </button>
                             </>
@@ -257,7 +253,7 @@ export function GpioViewer({
                                 setEditingPin(pin.pin_name);
                                 setEditDraft({ mux: pin.mux, pull: pin.pull, drv: pin.drv });
                               }}
-                              className="rounded bg-slate-200 p-1 hover:bg-slate-300 dark:bg-slate-800"
+                              className="rounded-md bg-slate-100 p-1 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"
                             >
                               <Edit2 className="h-3.5 w-3.5" />
                             </button>
@@ -270,42 +266,48 @@ export function GpioViewer({
               </tbody>
             </table>
           </div>
-          <div className="text-slate-500">
+          <div className="px-1 text-slate-500">
             {runtimePins.length} pins | Editing: {editingPin ? 1 : 0} pins
           </div>
         </>
       ) : (
         <div className="space-y-3">
           {!felConnected && (
-            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-600 dark:text-amber-400">
+            <div className="ui-alert-warn">
               当前未检测到处于 FEL 模式的设备；如果板卡当前为 ADB 在线，可先点击右上角「切烧录模式」或手动进入 FEL 模式。
             </div>
           )}
-          <div className="flex items-center gap-2">
+          <div className="ui-card flex flex-wrap items-center gap-2 p-3">
             <input
               value={baseAddr}
               onChange={(e) => {
                 setBaseAddr(e.target.value);
                 localStorage.setItem("gpio_base_addr", e.target.value);
               }}
-              className="w-32 rounded border border-slate-300 bg-white px-2.5 py-1 font-mono dark:border-slate-700 dark:bg-slate-900"
+              className="ui-input w-32 font-mono"
             />
             {PORTS.map((p, idx) => (
               <button
                 key={p}
                 disabled={!felConnected || loading}
                 onClick={() => loadFelPort(idx)}
-                className={`rounded px-3 py-1 disabled:opacity-40 ${portIndex === idx ? "bg-blue-600 text-white" : "bg-slate-200 dark:bg-slate-800"}`}
+                className={
+                  portIndex === idx
+                    ? "ui-btn-primary"
+                    : "ui-btn-secondary"
+                }
               >
                 {p}
               </button>
             ))}
           </div>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-4 gap-2.5">
             {felPins.map((pin) => (
-              <div key={pin.name} className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-800 dark:bg-slate-900">
-                <div className="font-semibold text-blue-500">{pin.name}</div>
-                <div>MUX: {pin.mux} | DATA: {pin.data} | DRV: {pin.drv} | PULL: {pin.pull}</div>
+              <div key={pin.name} className="ui-card p-3">
+                <div className="font-semibold text-blue-600 dark:text-blue-400">{pin.name}</div>
+                <div className="mt-1 font-mono text-[11px] text-slate-600 dark:text-slate-300">
+                  MUX: {pin.mux} | DATA: {pin.data} | DRV: {pin.drv} | PULL: {pin.pull}
+                </div>
               </div>
             ))}
           </div>

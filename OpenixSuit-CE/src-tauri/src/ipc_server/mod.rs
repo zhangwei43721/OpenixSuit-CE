@@ -1,10 +1,15 @@
 use crate::adb;
 use crate::efex;
+use crate::monitor;
 use crate::packer;
 use crate::plugins;
+use crate::power;
+use crate::serial;
 use crate::state::{emit_ai_sync, AppState, UsbBackend};
+use crate::triggers;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -175,6 +180,25 @@ struct PluginRunReq {
     inputs: Map<String, Value>,
 }
 
+#[derive(Deserialize)]
+struct SerialWriteReq {
+    session_id: String,
+    data: String,
+    #[serde(default)]
+    append_newline: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PowerActionReq {
+    profile_id: String,
+    #[serde(default = "default_power_action")]
+    action: String,
+}
+
+fn default_power_action() -> String {
+    "cycle".to_string()
+}
+
 pub fn start_ipc_server(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let listener = match TcpListener::bind(IPC_LISTEN_ADDR).await {
@@ -204,7 +228,47 @@ pub fn start_ipc_server(app: AppHandle) {
 struct HttpRequest {
     method: String,
     path: String,
+    query: HashMap<String, String>,
     body: Vec<u8>,
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex_str) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(val) = u8::from_str_radix(hex_str, 16) {
+                    out.push(val);
+                    i += 3;
+                    continue;
+                }
+            }
+        } else if bytes[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn parse_query_string(qs: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for pair in qs.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = pair.split_once('=') {
+            map.insert(percent_decode(k), percent_decode(v));
+        } else {
+            map.insert(percent_decode(pair), String::new());
+        }
+    }
+    map
 }
 
 async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, (u16, String)> {
@@ -247,11 +311,10 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, (u16, 
     let raw_target = parts
         .next()
         .ok_or_else(|| (400, "Missing HTTP path".to_string()))?;
-    let path = raw_target
-        .split('?')
-        .next()
-        .unwrap_or(raw_target)
-        .to_string();
+    let (path, query) = match raw_target.split_once('?') {
+        Some((p, q)) => (p.to_string(), parse_query_string(q)),
+        None => (raw_target.to_string(), HashMap::new()),
+    };
 
     let mut content_length: usize = 0;
     for line in lines {
@@ -283,7 +346,12 @@ async fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, (u16, 
     }
     body.truncate(content_length);
 
-    Ok(HttpRequest { method, path, body })
+    Ok(HttpRequest {
+        method,
+        path,
+        query,
+        body,
+    })
 }
 
 async fn write_json_response(stream: &mut TcpStream, status: u16, payload: Value) {
@@ -910,6 +978,149 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                     }
                     (code, json!({ "ok": false, "error": msg }))
                 }
+            }
+        }
+
+        ("GET", "/api/serial/ports") => {
+            let res = run_blocking(serial::serial_list_ports).await;
+            match res {
+                Ok(ports) => (200, json!({ "ok": true, "ports": ports })),
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+            }
+        }
+
+        ("GET", "/api/serial/logs") => {
+            let tail_lines = req
+                .query
+                .get("tail_lines")
+                .and_then(|v| v.parse::<usize>().ok());
+            if let Some(session_id) = req.query.get("session_id").filter(|s| !s.is_empty()) {
+                match serial::serial_get_buffer_with_state(&state, session_id, tail_lines) {
+                    Ok(lines) => (
+                        200,
+                        json!({
+                            "ok": true,
+                            "session_id": session_id,
+                            "lines": lines,
+                        }),
+                    ),
+                    Err(e) => {
+                        let (c, msg) = map_op_error(e);
+                        (c, json!({ "ok": false, "error": msg }))
+                    }
+                }
+            } else if let Some(file_name) = req.query.get("file_name").filter(|s| !s.is_empty()) {
+                let fname = file_name.clone();
+                let fname_resp = fname.clone();
+                let res =
+                    run_blocking(move || serial::serial_read_log_file(fname, tail_lines)).await;
+                match res {
+                    Ok(content) => (
+                        200,
+                        json!({
+                            "ok": true,
+                            "file_name": fname_resp,
+                            "content": content,
+                        }),
+                    ),
+                    Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+                }
+            } else {
+                let sessions = state
+                    .serial_sessions
+                    .lock()
+                    .map(|g| g.values().map(|s| s.info()).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let res = run_blocking(serial::serial_list_log_files).await;
+                match res {
+                    Ok(files) => (
+                        200,
+                        json!({
+                            "ok": true,
+                            "sessions": sessions,
+                            "files": files,
+                        }),
+                    ),
+                    Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+                }
+            }
+        }
+
+        ("POST", "/api/serial/write") => {
+            let body: SerialWriteReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            emit_ai_sync(
+                app,
+                "ai",
+                "serial-write",
+                "started",
+                format!("Serial write -> {}", body.session_id),
+            );
+            match serial::serial_write_with_state(
+                &state,
+                &body.session_id,
+                &body.data,
+                body.append_newline.as_deref(),
+            ) {
+                Ok(()) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "serial-write",
+                        "completed",
+                        format!("Wrote to serial session {}", body.session_id),
+                    );
+                    (200, json!({ "ok": true }))
+                }
+                Err(e) => {
+                    emit_ai_sync(app, "ai", "serial-write", "error", e.clone());
+                    let (c, msg) = map_op_error(e);
+                    (c, json!({ "ok": false, "error": msg }))
+                }
+            }
+        }
+
+        ("POST", "/api/power/action") => {
+            let body: PowerActionReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            emit_ai_sync(
+                app,
+                "ai",
+                "power",
+                "started",
+                format!("Power '{}' on '{}'", body.action, body.profile_id),
+            );
+            match power::power_execute_async(&body.profile_id, &body.action).await {
+                Ok(msg) => {
+                    emit_ai_sync(app, "ai", "power", "completed", msg.clone());
+                    (200, json!({ "ok": true, "message": msg }))
+                }
+                Err(e) => {
+                    emit_ai_sync(app, "ai", "power", "error", e.clone());
+                    let (c, msg) = map_op_error(e);
+                    (c, json!({ "ok": false, "error": msg }))
+                }
+            }
+        }
+
+        ("GET", "/api/monitor/metrics") => {
+            let serial = req.query.get("serial").cloned().unwrap_or_default();
+            let res = run_blocking(move || monitor::adb_get_metrics(serial, None)).await;
+            match res {
+                Ok(metrics) => (200, json!({ "ok": true, "metrics": metrics })),
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+            }
+        }
+
+        ("GET", "/api/triggers/incidents") => {
+            let res = run_blocking(triggers::trigger_list_incidents).await;
+            match res {
+                Ok(incidents) => (200, json!({ "ok": true, "incidents": incidents })),
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
             }
         }
 
