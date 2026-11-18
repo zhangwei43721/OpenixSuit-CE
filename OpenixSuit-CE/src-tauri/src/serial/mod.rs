@@ -1,6 +1,8 @@
 use crate::state::{
     app_data_dir, epoch_ms, epoch_secs, format_compact_utc, format_utc_timestamp, AppState,
 };
+use base64::engine::general_purpose::STANDARD as B64_ENGINE;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serialport::SerialPortType;
 use std::collections::VecDeque;
@@ -42,6 +44,80 @@ pub struct SerialDataPayload {
     pub port_name: String,
     pub chunk: String,
     pub timestamp: String,
+    /// Raw received bytes (base64) so the UI can decode with the chosen charset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_base64: Option<String>,
+}
+
+/// Line coding parameters for opening a serial port.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SerialLineCoding {
+    pub data_bits: u8,
+    pub stop_bits: u8,
+    pub parity: String,
+    pub flow_control: String,
+}
+
+impl Default for SerialLineCoding {
+    fn default() -> Self {
+        Self {
+            data_bits: 8,
+            stop_bits: 1,
+            parity: "none".into(),
+            flow_control: "none".into(),
+        }
+    }
+}
+
+impl SerialLineCoding {
+    fn normalize(mut self) -> Self {
+        if self.data_bits < 5 || self.data_bits > 8 {
+            self.data_bits = 8;
+        }
+        if self.stop_bits != 2 {
+            self.stop_bits = 1;
+        }
+        if !matches!(self.parity.as_str(), "even" | "odd") {
+            self.parity = "none".into();
+        }
+        if !matches!(self.flow_control.as_str(), "software" | "hardware") {
+            self.flow_control = "none".into();
+        }
+        self
+    }
+
+    fn to_data_bits(&self) -> serialport::DataBits {
+        match self.data_bits {
+            5 => serialport::DataBits::Five,
+            6 => serialport::DataBits::Six,
+            7 => serialport::DataBits::Seven,
+            _ => serialport::DataBits::Eight,
+        }
+    }
+
+    fn to_stop_bits(&self) -> serialport::StopBits {
+        if self.stop_bits == 2 {
+            serialport::StopBits::Two
+        } else {
+            serialport::StopBits::One
+        }
+    }
+
+    fn to_parity(&self) -> serialport::Parity {
+        match self.parity.as_str() {
+            "even" => serialport::Parity::Even,
+            "odd" => serialport::Parity::Odd,
+            _ => serialport::Parity::None,
+        }
+    }
+
+    fn to_flow_control(&self) -> serialport::FlowControl {
+        match self.flow_control.as_str() {
+            "software" => serialport::FlowControl::Software,
+            "hardware" => serialport::FlowControl::Hardware,
+            _ => serialport::FlowControl::None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -238,6 +314,7 @@ pub fn serial_open(
     session_id: String,
     port_name: String,
     baud_rate: u32,
+    line_coding: Option<SerialLineCoding>,
 ) -> Result<SerialSessionInfo, String> {
     let sid = if session_id.trim().is_empty() {
         format!("serial-{}", epoch_ms())
@@ -260,7 +337,12 @@ pub fn serial_open(
     }
 
     let baud = if baud_rate == 0 { 115200 } else { baud_rate };
+    let coding = line_coding.unwrap_or_default().normalize();
     let port = serialport::new(&port_name, baud)
+        .data_bits(coding.to_data_bits())
+        .stop_bits(coding.to_stop_bits())
+        .parity(coding.to_parity())
+        .flow_control(coding.to_flow_control())
         .timeout(Duration::from_millis(100))
         .open()
         .map_err(|e| format!("Failed to open serial port '{}': {}", port_name, e))?;
@@ -324,6 +406,7 @@ pub fn serial_open(
                     let ts_str = format_utc_timestamp(now_ms);
                     let chunk_bytes = &read_buf[..n];
                     let chunk = String::from_utf8_lossy(chunk_bytes).to_string();
+                    let data_base64 = B64_ENGINE.encode(chunk_bytes);
 
                     let _ = app.emit(
                         "serial-data",
@@ -332,6 +415,7 @@ pub fn serial_open(
                             port_name: port_name.clone(),
                             chunk,
                             timestamp: ts_str.clone(),
+                            data_base64: Some(data_base64),
                         },
                     );
 

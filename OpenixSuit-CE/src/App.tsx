@@ -102,6 +102,7 @@ export default function App() {
   }, []);
   const [collapsed, setCollapsed] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
+  const [switchingEfex, setSwitchingEfex] = useState(false);
   const [aiSyncStatus, setAiSyncStatus] = useState<string | null>(null);
   const [felDevices, setFelDevices] = useState<FelDevice[]>([]);
   const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([]);
@@ -144,6 +145,7 @@ export default function App() {
     } else {
       setSelectedAdbSerial("");
     }
+    return { felList, adbList };
   };
 
   useEffect(() => {
@@ -299,13 +301,20 @@ export default function App() {
   };
 
   const handleSwitchEfex = async () => {
-    if (!selectedAdbSerial) return;
+    if (!selectedAdbSerial || switchingEfex) return;
+    setSwitchingEfex(true);
     try {
       const res = await invoke<string>("adb_reboot_efex", { serial: selectedAdbSerial });
       appendLog(res || `已发送重启进入烧录模式指令 -> ${selectedAdbSerial}`);
-      setTimeout(refreshAllDevices, 2500);
+      for (let i = 0; i < 8; i++) {
+        await new Promise((r) => setTimeout(r, 750));
+        const { felList } = await refreshAllDevices();
+        if (felList.length > 0) break;
+      }
     } catch (err) {
       appendLog(`切换烧录模式失败: ${String(err)}`);
+    } finally {
+      setSwitchingEfex(false);
     }
   };
 
@@ -364,6 +373,7 @@ export default function App() {
         adbDevices={adbDevices}
         selectedAdbSerial={selectedAdbSerial}
         aiSyncStatus={aiSyncStatus}
+        switchingEfex={switchingEfex}
         onSelectAdbSerial={handleSelectAdbSerial}
         onRefreshDevices={refreshAllDevices}
         onAdbRoot={handleAdbRoot}

@@ -8,6 +8,7 @@
     "noAdb": "No ADB Device",
     "reboot": "Reboot",
     "switchEfex": "To EFEX",
+    "switchingEfex": "Switching...",
     "aiSyncing": "AI Syncing: {{action}}"
   },
   "nav": {
@@ -203,7 +204,8 @@
     "modifiedTime": "Modified",
     "editorTab": "Editor",
     "ansiTab": "ANSI View",
-    "nonTextHint": "Binary/image files cannot be edited as text. Use Download instead."
+    "nonTextHint": "Binary/image files cannot be edited as text. Use Download instead.",
+    "invalidName": "Invalid file name"
   },
   "gpio": {
     "adbMode": "ADB Runtime Mode",
@@ -211,7 +213,10 @@
     "noAdb": "No ADB device",
     "refreshData": "Refresh Data",
     "noPins": "Connect ADB device and click Refresh Data (click Root if permission denied)",
-    "readingPins": "Reading chip GPIO status..."
+    "readingPins": "Reading chip GPIO status...",
+    "expandAll": "Expand All",
+    "collapseAll": "Collapse All",
+    "tapToRead": "Tap to read"
   },
   "driver": {
     "title": "Driver & Environment Self-Check",

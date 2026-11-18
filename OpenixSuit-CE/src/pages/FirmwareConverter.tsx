@@ -85,128 +85,160 @@ export function FirmwareConverter({
 
   return (
     <div className="grid h-full min-h-0 grid-cols-12 gap-3">
-      <div className="ui-card col-span-3 space-y-1.5 p-3">
-        <div className="px-2 py-1 text-xs font-semibold text-slate-500 dark:text-slate-400">{t("converter.tools")}</div>
-        {TARGET_DEFS.map((item) => (
-          <button
-            key={item.key}
-            onClick={() => {
-              setTarget(item.key);
-              setLogicOffset(item.defaultOffset);
-            }}
-            className={`w-full rounded-lg p-2.5 text-left text-xs transition ${
-              target === item.key
-                ? "bg-blue-600/15 text-blue-600 dark:text-blue-400"
-                : "text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
-            }`}
-          >
-            <div className="font-semibold">{t(item.titleKey)}</div>
-            <div className="mt-0.5 text-[11px] opacity-75">{t(item.descKey)}</div>
-          </button>
-        ))}
+      <div className="ui-card col-span-3 flex flex-col overflow-hidden">
+        <div className="ui-card-header">
+          <span className="ui-title">{t("converter.tools")}</span>
+        </div>
+        <div className="space-y-1.5 p-3">
+          {TARGET_DEFS.map((item) => (
+            <button
+              key={item.key}
+              onClick={() => {
+                setTarget(item.key);
+                setLogicOffset(item.defaultOffset);
+              }}
+              className={`w-full rounded-lg border p-2.5 text-left text-xs transition ${
+                target === item.key
+                  ? "border-blue-500/30 bg-blue-600/10 text-blue-600 dark:border-blue-500/40 dark:bg-blue-600/15 dark:text-blue-400"
+                  : "border-transparent text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              }`}
+            >
+              <div className="font-semibold">{t(item.titleKey)}</div>
+              <div className="mt-0.5 text-[11px] opacity-75">{t(item.descKey)}</div>
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="col-span-9 flex min-h-0 flex-col gap-3 text-xs">
-        <div className="ui-card space-y-3 p-4">
-          <div className="ui-title text-blue-600 dark:text-blue-400">{t(currentMeta.titleKey)}</div>
+        <div className="ui-card overflow-hidden">
+          <div className="ui-card-header">
+            <span className="ui-title text-blue-600 dark:text-blue-400">{t(currentMeta.titleKey)}</span>
+            <span className="font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
+              {progress.toFixed(0)}%
+            </span>
+          </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <div className="mb-1 text-[11px] text-slate-500">{t("converter.logicOffset")}</div>
-              <input
-                type="number"
-                value={logicOffset}
-                onChange={(e) => setLogicOffset(Number(e.target.value))}
-                className="ui-input w-full font-mono"
-              />
+          <div className="space-y-4 p-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  {t("converter.logicOffset")}
+                </span>
+                <input
+                  type="number"
+                  value={logicOffset}
+                  onChange={(e) => setLogicOffset(Number(e.target.value))}
+                  className="ui-input w-full font-mono tabular-nums"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  {t("converter.storageSize")}
+                </span>
+                <input
+                  type="text"
+                  list="converter-storage-presets"
+                  value={storageSize}
+                  onChange={(e) => setStorageSize(e.target.value)}
+                  placeholder="auto / 8GB / 512MB"
+                  className="ui-input w-full font-mono"
+                />
+                <datalist id="converter-storage-presets">
+                  <option value="auto" />
+                  <option value="512MB" />
+                  <option value="1GB" />
+                  <option value="4GB" />
+                  <option value="8GB" />
+                  <option value="16GB" />
+                </datalist>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  {t("converter.secureMode")}
+                </span>
+                <select
+                  value={secureMode}
+                  onChange={(e) => setSecureMode(e.target.value as "auto" | "enabled" | "disabled")}
+                  className="ui-select w-full"
+                >
+                  <option value="auto">{t("converter.secureAuto")}</option>
+                  <option value="enabled">{t("converter.secureEnabled")}</option>
+                  <option value="disabled">{t("converter.secureDisabled")}</option>
+                </select>
+              </div>
+              {target === "spinor" && (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                      {t("converter.norSize")}
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={norSize}
+                      onChange={(e) => setNorSize(Number(e.target.value))}
+                      className="ui-input w-full font-mono tabular-nums"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                      {t("converter.ubootStart")}
+                    </span>
+                    <input
+                      type="number"
+                      value={ubootStart}
+                      onChange={(e) => setUbootStart(e.target.value)}
+                      placeholder={t("converter.ubootStartPlaceholder")}
+                      className="ui-input w-full font-mono tabular-nums"
+                    />
+                  </div>
+                </>
+              )}
             </div>
-            <div>
-              <div className="mb-1 text-[11px] text-slate-500">{t("converter.storageSize")}</div>
-              <input
-                type="text"
-                list="converter-storage-presets"
-                value={storageSize}
-                onChange={(e) => setStorageSize(e.target.value)}
-                placeholder="auto / 8GB / 512MB"
-                className="ui-input w-full font-mono"
-              />
-              <datalist id="converter-storage-presets">
-                <option value="auto" />
-                <option value="512MB" />
-                <option value="1GB" />
-                <option value="4GB" />
-                <option value="8GB" />
-                <option value="16GB" />
-              </datalist>
-            </div>
-            <div>
-              <div className="mb-1 text-[11px] text-slate-500">{t("converter.secureMode")}</div>
-              <select
-                value={secureMode}
-                onChange={(e) => setSecureMode(e.target.value as "auto" | "enabled" | "disabled")}
-                className="ui-select w-full"
+
+            <div className="space-y-2">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${progress}%` }} />
+              </div>
+
+              <button
+                disabled={converting || !firmwarePath}
+                onClick={startConvert}
+                className="ui-btn-primary w-full py-2"
               >
-                <option value="auto">{t("converter.secureAuto")}</option>
-                <option value="enabled">{t("converter.secureEnabled")}</option>
-                <option value="disabled">{t("converter.secureDisabled")}</option>
-              </select>
+                {converting ? `${t("converter.converting")} (${progress.toFixed(0)}%)...` : t("converter.start")}
+              </button>
             </div>
-            {target === "spinor" && (
-              <>
-                <div>
-                  <div className="mb-1 text-[11px] text-slate-500">{t("converter.norSize")}</div>
-                  <input
-                    type="number"
-                    min={1}
-                    value={norSize}
-                    onChange={(e) => setNorSize(Number(e.target.value))}
-                    className="ui-input w-full font-mono"
-                  />
+
+            {partitions.length > 0 && (
+              <div className="ui-subcard max-h-36 overflow-y-auto p-3">
+                <div className="mb-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                  {t("converter.partList")} ({partitions.length})
                 </div>
-                <div>
-                  <div className="mb-1 text-[11px] text-slate-500">{t("converter.ubootStart")}</div>
-                  <input
-                    type="number"
-                    value={ubootStart}
-                    onChange={(e) => setUbootStart(e.target.value)}
-                    placeholder={t("converter.ubootStartPlaceholder")}
-                    className="ui-input w-full font-mono"
-                  />
-                </div>
-              </>
+                {partitions.map((p) => (
+                  <div key={p.name} className="flex justify-between py-0.5 font-mono tabular-nums">
+                    <span className="text-slate-700 dark:text-slate-200">{p.name}</span>
+                    <span className="text-slate-500 dark:text-slate-400">
+                      {(p.size_bytes / 1024 / 1024).toFixed(2)} MB
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
-
-          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-            <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${progress}%` }} />
-          </div>
-
-          <button
-            disabled={converting || !firmwarePath}
-            onClick={startConvert}
-            className="ui-btn-primary w-full py-2"
-          >
-            {converting ? `${t("converter.converting")} (${progress.toFixed(0)}%)...` : t("converter.start")}
-          </button>
-
-          {partitions.length > 0 && (
-            <div className="ui-subcard max-h-36 overflow-y-auto p-3">
-              <div className="mb-1.5 text-[11px] font-medium text-slate-500">
-                {t("converter.partList")} ({partitions.length})
-              </div>
-              {partitions.map((p) => (
-                <div key={p.name} className="flex justify-between py-0.5 font-mono">
-                  <span>{p.name}</span>
-                  <span>{(p.size_bytes / 1024 / 1024).toFixed(2)} MB</span>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
-        <pre className="ui-terminal h-28 overflow-y-auto p-3 text-slate-300">
-          {logs.join("\n") || t("converter.logTitle")}
-        </pre>
+        <div className="ui-card flex min-h-[140px] flex-1 flex-col overflow-hidden">
+          <div className="ui-card-header py-2">
+            <span className="ui-title">
+              {t("converter.logTitle")} ({logs.length})
+            </span>
+          </div>
+          <pre className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3 text-slate-300">
+            {logs.join("\n") || t("converter.logTitle")}
+          </pre>
+        </div>
       </div>
     </div>
   );

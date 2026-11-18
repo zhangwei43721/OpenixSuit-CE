@@ -392,6 +392,12 @@ pub fn fes_query_storage(state: State<'_, AppState>) -> Result<String, String> {
 pub fn fes_tool_mode(state: State<'_, AppState>, action: String) -> Result<(), String> {
     let _busy = state.try_acquire_busy("fes_tool_mode")?;
     let ctx = open_efex_session(None, None)?;
+    if ctx.get_device_mode() == DeviceMode::Fel {
+        return Err(
+            "当前设备处于 BROM FEL 模式，无法通过 FES 指令重启切回 ADB，请按板卡复位键或重新上电启动系统。"
+                .into(),
+        );
+    }
     let mode = match action.as_str() {
         "reboot" => FesToolMode::Reboot,
         "poweroff" | "shutdown" => FesToolMode::PowerOff,

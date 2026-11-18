@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FileUp, Play } from "lucide-react";
+import { FileUp, Play, Terminal, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ExtensionTabItem, PluginFileFilter, PluginInput } from "../types/plugin";
 import { ExtensionIcon } from "../components/ExtensionIcon";
@@ -177,14 +177,14 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
 
   return (
     <div className="flex h-full flex-col space-y-4">
-      <div className="ui-toolbar items-start py-3">
+      <div className="ui-toolbar items-start py-3 sm:items-center">
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <ExtensionIcon icon={item.icon} className="h-5 w-5 shrink-0 text-blue-500" />
             <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
               {title}
             </h2>
-            <span className="rounded-md bg-blue-600/15 px-2 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400">
+            <span className="rounded-md bg-blue-600/15 px-2 py-0.5 font-mono text-[11px] font-medium text-blue-600 dark:text-blue-400">
               {item.plugin.name} v{item.plugin.version}
             </span>
           </div>
@@ -195,9 +195,9 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
           )}
         </div>
 
-        <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+        <div className="flex shrink-0 items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
           <span>{t("plugins.targetDevice")}:</span>
-          <code className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
+          <code className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono tabular-nums text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
             {serial || t("plugins.noDevice")}
           </code>
         </div>
@@ -205,9 +205,9 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
 
       {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
-      <div className="ui-card p-4">
+      <div className="ui-card overflow-hidden p-4">
         {inputSpecs.length === 0 ? (
-          <div className="ui-subcard border-dashed p-3 text-xs text-slate-500 dark:text-slate-400">
+          <div className="ui-subcard border-dashed p-4 text-center text-xs text-slate-400">
             {t("plugins.noInputs")}
           </div>
         ) : (
@@ -220,7 +220,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
               const options = normalizeOptions(field.options);
 
               return (
-                <div key={key} className="space-y-1.5">
+                <div key={key} className="flex flex-col gap-1.5">
                   <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-200">
                     <span>{label}</span>
                     {field.required && <span className="text-rose-500">*</span>}
@@ -279,14 +279,14 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
                   )}
 
                   {fType === "boolean" && (
-                    <label className="ui-subcard inline-flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200">
+                    <label className="ui-subcard inline-flex w-fit cursor-pointer items-center gap-2 px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200">
                       <input
                         type="checkbox"
                         checked={Boolean(val)}
                         onChange={(e) => setFieldValue(key, e.target.checked)}
                         className="h-4 w-4 accent-blue-600"
                       />
-                      <span>{Boolean(val) ? "ON" : "OFF"}</span>
+                      <span className="font-mono text-[11px]">{Boolean(val) ? "ON" : "OFF"}</span>
                     </label>
                   )}
                 </div>
@@ -295,7 +295,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
           </div>
         )}
 
-        <div className="mt-4 flex justify-end">
+        <div className="mt-4 flex justify-end border-t border-slate-200 pt-3 dark:border-slate-800">
           <button
             type="button"
             disabled={running}
@@ -308,32 +308,38 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
         </div>
       </div>
 
-      <div className="ui-card flex min-h-0 flex-1 flex-col p-4">
-        <div className="mb-2 flex items-center justify-between text-xs font-medium text-slate-600 dark:text-slate-300">
-          <span>{t("plugins.logs")}</span>
+      <div className="ui-card flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="ui-card-header">
+          <span className="ui-title">
+            <Terminal className="h-4 w-4 text-blue-500" />
+            <span>{t("plugins.logs")}</span>
+          </span>
           {logs.length > 0 && (
             <button
               type="button"
               onClick={() => setLogs([])}
-              className="text-[11px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+              className="ui-btn-secondary px-2 py-1 text-[11px]"
             >
+              <Trash2 className="h-3 w-3" />
               {t("log.clear")}
             </button>
           )}
         </div>
-        <div
-          ref={logBoxRef}
-          className="ui-terminal min-h-[160px] flex-1 overflow-auto p-3"
-        >
-          {logs.length === 0 ? (
-            <span className="text-slate-500">{t("log.empty")}</span>
-          ) : (
-            logs.map((line, i) => (
-              <div key={i} className="whitespace-pre-wrap break-all leading-5">
-                {line}
-              </div>
-            ))
-          )}
+        <div className="flex min-h-0 flex-1 flex-col p-4">
+          <div
+            ref={logBoxRef}
+            className="ui-terminal min-h-[160px] flex-1 overflow-auto p-3"
+          >
+            {logs.length === 0 ? (
+              <span className="text-slate-500">{t("log.empty")}</span>
+            ) : (
+              logs.map((line, i) => (
+                <div key={i} className="whitespace-pre-wrap break-all leading-5">
+                  {line}
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -25,6 +25,7 @@ import { useTranslation } from "react-i18next";
 import {
   DeviceWorkspace,
   SerialDataPayload,
+  SerialLineCoding,
   SerialLogEntry,
   SerialPortInfo,
   SerialSessionInfo,
@@ -46,6 +47,9 @@ interface SerialPaneState {
   label: string;
   portName: string;
   baudRate: number;
+  customBaud: boolean;
+  coding: SerialLineCoding;
+  charset: Charset;
   sessionId: string | null;
   connected: boolean;
   connecting: boolean;
@@ -66,7 +70,64 @@ interface SerialPaneState {
   error: string | null;
 }
 
-const BAUD_RATES = [9600, 115200, 460800, 921600, 1500000];
+const BAUD_RATES = [
+  1200,
+  2400,
+  4800,
+  9600,
+  14400,
+  19200,
+  38400,
+  57600,
+  74880,
+  115200,
+  230400,
+  250000,
+  460800,
+  500000,
+  576000,
+  921600,
+  1000000,
+  1500000,
+  2000000,
+  3000000,
+];
+const CUSTOM_BAUD = "__custom__";
+
+const DATA_BITS_OPTIONS = [5, 6, 7, 8];
+const STOP_BITS_OPTIONS = [1, 2];
+const PARITY_OPTIONS = ["none", "even", "odd"] as const;
+const FLOW_CONTROL_OPTIONS = ["none", "software", "hardware"] as const;
+const CHARSET_OPTIONS = ["utf-8", "gb18030", "big5", "latin1"] as const;
+type Charset = (typeof CHARSET_OPTIONS)[number];
+
+const b64ToBytes = (b64: string): Uint8Array => {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+};
+
+const decodeChunk = (bytes: Uint8Array, charset: Charset): string => {
+  try {
+    if (charset === "latin1") {
+      let out = "";
+      for (const b of bytes) out += String.fromCharCode(b);
+      return out;
+    }
+    return new TextDecoder(charset).decode(bytes);
+  } catch {
+    return new TextDecoder().decode(bytes);
+  }
+};
+
+const defaultCoding = (): SerialLineCoding => ({
+  data_bits: 8,
+  stop_bits: 1,
+  parity: "none",
+  flow_control: "none",
+});
+
 const MAX_BUFFER_LINES = 4000;
 
 function formatNowTime(): string {
@@ -91,6 +152,9 @@ function createPane(idx: number, portName = "", baudRate = 115200, label?: strin
     label: label || `UART ${idx + 1}`,
     portName,
     baudRate,
+    customBaud: !BAUD_RATES.includes(baudRate),
+    coding: defaultCoding(),
+    charset: "utf-8",
     sessionId: null,
     connected: false,
     connecting: false,
@@ -208,6 +272,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
               ...next[existingIdx],
               portName: sess.port_name,
               baudRate: sess.baud_rate,
+              customBaud: !BAUD_RATES.includes(sess.baud_rate),
               sessionId: sess.id,
               connected: true,
             };
@@ -230,6 +295,26 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
     syncExistingSessions();
   }, [refreshPorts, syncExistingSessions]);
 
+  // Charset decoder state per pane (TextDecoder keeps incomplete multibyte
+  // trailing bytes between chunks internally via stream: true)
+  const decoderRefs = useRef<Record<string, { decoder: TextDecoder | null; charset: Charset }>>({});
+
+  const getDecoder = (paneId: string, charset: Charset) => {
+    let entry = decoderRefs.current[paneId];
+    if (!entry || entry.charset !== charset) {
+      entry = {
+        decoder: charset === "latin1" ? null : new TextDecoder(charset, { fatal: false }),
+        charset,
+      };
+      decoderRefs.current[paneId] = entry;
+    }
+    return entry;
+  };
+
+  const clearDecoder = (paneId: string) => {
+    delete decoderRefs.current[paneId];
+  };
+
   // Listen to serial-data events
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -239,10 +324,26 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
       setPanes((prev) =>
         prev.map((pane) => {
           if (pane.sessionId !== payload.session_id) return pane;
+          // Prefer raw bytes decoded with the pane charset; fall back to backend lossy chunk.
+          let text = payload.chunk;
+          if (payload.data_base64 && payload.data_base64.length > 0) {
+            try {
+              const bytes = b64ToBytes(payload.data_base64);
+              if (pane.charset === "latin1") {
+                text = decodeChunk(bytes, pane.charset);
+              } else {
+                const entry = getDecoder(pane.paneId, pane.charset);
+                // stream: true retains incomplete multibyte trailing bytes
+                text = entry.decoder!.decode(bytes, { stream: true });
+              }
+            } catch {
+              text = payload.chunk;
+            }
+          }
           const updated = appendChunkToLines(
             pane.lines,
             pane.endsWithNewline,
-            payload.chunk,
+            text,
             payload.timestamp
           );
           return {
@@ -313,7 +414,9 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
         sessionId: requestedId,
         portName: port,
         baudRate: pane.baudRate,
+        lineCoding: pane.coding,
       });
+      clearDecoder(pane.paneId);
       updatePane(pane.paneId, {
         sessionId: session.id,
         connected: true,
@@ -338,6 +441,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
     if (!pane.sessionId) return;
     try {
       await invoke("serial_close", { sessionId: pane.sessionId });
+      clearDecoder(pane.paneId);
       updatePane(pane.paneId, { connected: false, sessionId: null, dtr: false, rts: false });
       onLog(isEn ? `Serial closed: ${pane.portName}` : `串口已断开: ${pane.portName}`);
     } catch (err) {
@@ -489,49 +593,51 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
   }, [logContent, logSearch]);
 
   return (
-    <div className="h-full flex flex-col gap-3 min-h-0">
+    <div className="h-full flex flex-col gap-4 min-h-0">
       {/* Top Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 shadow-sm">
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setSubView("live")}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-              subView === "live"
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
-            }`}
-          >
-            <Terminal className="w-3.5 h-3.5" />
-            {t("serial.liveTab", { defaultValue: isEn ? "Live Multi-Pane" : "实时串口分屏" })}
-          </button>
-          <button
-            onClick={() => setSubView("logs")}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-              subView === "logs"
-                ? "bg-blue-600 text-white shadow-sm"
-                : "text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
-            }`}
-          >
-            <History className="w-3.5 h-3.5" />
-            {t("serial.logsTab", { defaultValue: isEn ? "Saved Logs" : "历史日志浏览" })}
-          </button>
+      <div className="ui-toolbar">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="ui-segmented">
+            <button
+              onClick={() => setSubView("live")}
+              className={`ui-segmented-btn ${
+                subView === "live"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+              }`}
+            >
+              <Terminal className="w-3.5 h-3.5" />
+              {t("serial.liveTab", { defaultValue: isEn ? "Live Multi-Pane" : "实时串口分屏" })}
+            </button>
+            <button
+              onClick={() => setSubView("logs")}
+              className={`ui-segmented-btn ${
+                subView === "logs"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              {t("serial.logsTab", { defaultValue: isEn ? "Saved Logs" : "历史日志浏览" })}
+            </button>
+          </div>
 
           {activeWorkspace && (
-            <div className="hidden md:flex items-center gap-2 pl-2 ml-2 border-l border-slate-200 dark:border-slate-700">
-              <span className="text-xs px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+            <div className="hidden md:flex items-center gap-2 pl-2 ml-1 border-l border-slate-200 dark:border-slate-700">
+              <span className="text-xs px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-medium">
                 {activeWorkspace.name} {activeWorkspace.chip ? `(${activeWorkspace.chip})` : ""}
               </span>
               {activeWorkspace.serial_ports.length > 0 && subView === "live" && (
                 <>
                   <button
                     onClick={handleLoadFromWorkspace}
-                    className="text-xs px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition"
+                    className="ui-btn-secondary py-1 px-2.5"
                   >
                     {isEn ? "Load Workspace Ports" : "载入工作区串口"}
                   </button>
                   <button
                     onClick={handleConnectAllWorkspace}
-                    className="text-xs px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white transition"
+                    className="ui-btn-success py-1 px-2.5"
                   >
                     {isEn ? "Connect All" : "一键全连"}
                   </button>
@@ -546,7 +652,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
             <button
               onClick={refreshPorts}
               disabled={loadingPorts}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition"
+              className="ui-btn-secondary"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loadingPorts ? "animate-spin" : ""}`} />
               {isEn ? "Refresh Ports" : "刷新串口"}
@@ -554,7 +660,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
             <button
               onClick={handleAddPane}
               disabled={panes.length >= 4}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white shadow-sm disabled:opacity-40 transition"
+              className="ui-btn-primary"
             >
               <Plus className="w-3.5 h-3.5" />
               {isEn ? `Add Pane (${panes.length}/4)` : `新增分屏 (${panes.length}/4)`}
@@ -564,7 +670,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
           <button
             onClick={loadLogList}
             disabled={loadingLogs}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition"
+            className="ui-btn-secondary"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loadingLogs ? "animate-spin" : ""}`} />
             {isEn ? "Refresh Logs" : "刷新日志列表"}
@@ -574,9 +680,9 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
 
       {/* Live Multi-pane Serial Console */}
       {subView === "live" ? (
-        <div className="flex-1 flex flex-col gap-2.5 min-h-0">
+        <div className="flex-1 flex flex-col gap-3 min-h-0">
           {visiblePanes.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-8 text-slate-500">
+            <div className="ui-card flex-1 flex flex-col items-center justify-center p-8 text-slate-500 dark:text-slate-400">
               <EyeOff className="w-8 h-8 mb-2 opacity-60" />
               <p className="text-sm">
                 {isEn
@@ -585,7 +691,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
               </p>
             </div>
           ) : (
-            <div className={`flex-1 grid ${gridColsClass} gap-3 min-h-0 auto-rows-fr`}>
+            <div className={`flex-1 grid ${gridColsClass} gap-4 min-h-0 auto-rows-fr`}>
               {visiblePanes.map((pane) => {
                 const displayLines = pane.lines
                   .filter((l) =>
@@ -599,17 +705,17 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                 return (
                   <div
                     key={pane.paneId}
-                    className="flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm min-h-[260px]"
+                    className="ui-card flex flex-col overflow-hidden min-h-[260px]"
                   >
                     {/* Pane Header */}
-                    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
+                    <div className="ui-card-header px-3 py-2">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span
                           className={`w-2 h-2 rounded-full ${
                             pane.connected ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
                           }`}
                         />
-                        <span className="text-xs font-semibold text-slate-700 dark:text-slate-200 mr-1">
+                        <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 mr-1">
                           {pane.label}
                         </span>
 
@@ -617,7 +723,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                           value={pane.portName}
                           disabled={pane.connected}
                           onChange={(e) => updatePane(pane.paneId, { portName: e.target.value })}
-                          className="text-xs px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 max-w-[160px] disabled:opacity-60"
+                          className="ui-select py-1 max-w-[160px] font-mono"
                         >
                           <option value="">{isEn ? "-- Port --" : "-- 选择串口 --"}</option>
                           {ports.map((p) => (
@@ -633,35 +739,63 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                         </select>
 
                         <select
-                          value={pane.baudRate}
+                          value={pane.customBaud ? CUSTOM_BAUD : pane.baudRate}
                           disabled={pane.connected}
-                          onChange={(e) =>
-                            updatePane(pane.paneId, { baudRate: Number(e.target.value) })
-                          }
-                          className="text-xs px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 disabled:opacity-60"
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (v === CUSTOM_BAUD) {
+                              updatePane(pane.paneId, { customBaud: true });
+                            } else {
+                              updatePane(pane.paneId, {
+                                customBaud: false,
+                                baudRate: Number(v),
+                              });
+                            }
+                          }}
+                          className="ui-select py-1 font-mono tabular-nums"
                         >
                           {BAUD_RATES.map((b) => (
                             <option key={b} value={b}>
                               {b}
                             </option>
                           ))}
+                          <option value={CUSTOM_BAUD}>
+                            {isEn ? "Custom..." : "自定义..."}
+                          </option>
                         </select>
+
+                        {pane.customBaud && (
+                          <input
+                            type="number"
+                            min={1}
+                            max={4000000}
+                            value={pane.baudRate}
+                            disabled={pane.connected}
+                            onChange={(e) =>
+                              updatePane(pane.paneId, {
+                                baudRate: Math.max(1, Math.floor(Number(e.target.value) || 0)),
+                              })
+                            }
+                            title={isEn ? "Custom baud rate" : "自定义波特率"}
+                            className="ui-input w-24 py-1 font-mono tabular-nums border-blue-400 dark:border-blue-600"
+                          />
+                        )}
 
                         {pane.connected ? (
                           <button
                             onClick={() => handleDisconnect(pane)}
-                            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-rose-500 hover:bg-rose-600 text-white transition"
+                            className="ui-btn-danger py-1 px-2.5"
                           >
-                            <PlugZap className="w-3 h-3" />
+                            <PlugZap className="w-3.5 h-3.5" />
                             {isEn ? "Disconnect" : "断开"}
                           </button>
                         ) : (
                           <button
                             onClick={() => handleConnect(pane)}
                             disabled={pane.connecting}
-                            className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 transition"
+                            className="ui-btn-success py-1 px-2.5"
                           >
-                            <Plug className="w-3 h-3" />
+                            <Plug className="w-3.5 h-3.5" />
                             {pane.connecting
                               ? isEn
                                 ? "Opening..."
@@ -705,7 +839,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                             updatePane(pane.paneId, { showTimestamps: !pane.showTimestamps })
                           }
                           title={isEn ? "Toggle Timestamps" : "时间戳开关"}
-                          className={`p-1 rounded-md border transition ${
+                          className={`p-1.5 rounded-md border transition ${
                             pane.showTimestamps
                               ? "bg-blue-500/15 border-blue-500/40 text-blue-600 dark:text-blue-400"
                               : "border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
@@ -719,7 +853,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                             updatePane(pane.paneId, { ansiEnabled: !pane.ansiEnabled })
                           }
                           title={isEn ? "Toggle ANSI Colors" : "ANSI 彩色开关"}
-                          className={`p-1 rounded-md border transition ${
+                          className={`p-1.5 rounded-md border transition ${
                             pane.ansiEnabled
                               ? "bg-purple-500/15 border-purple-500/40 text-purple-600 dark:text-purple-400"
                               : "border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
@@ -730,7 +864,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
 
                         <button
                           onClick={() => updatePane(pane.paneId, { autoScroll: !pane.autoScroll })}
-                          className={`px-1.5 py-0.5 rounded-md text-[11px] border transition ${
+                          className={`px-1.5 py-0.5 rounded-md text-[11px] font-medium border transition ${
                             pane.autoScroll
                               ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
                               : "border-slate-200 dark:border-slate-700 text-slate-400"
@@ -742,7 +876,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                         <button
                           onClick={() => updatePane(pane.paneId, { lines: [], endsWithNewline: true })}
                           title={isEn ? "Clear" : "清空"}
-                          className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                          className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -750,7 +884,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                         <button
                           onClick={() => handleExportLog(pane)}
                           title={isEn ? "Export .log" : "导出 .log"}
-                          className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                          className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
                         >
                           <Download className="w-3.5 h-3.5" />
                         </button>
@@ -758,7 +892,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                         <button
                           onClick={() => updatePane(pane.paneId, { hidden: true })}
                           title={isEn ? "Hide Pane" : "隐藏分屏"}
-                          className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                          className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
                         >
                           <EyeOff className="w-3.5 h-3.5" />
                         </button>
@@ -767,7 +901,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                           <button
                             onClick={() => handleRemovePane(pane)}
                             title={isEn ? "Close Pane" : "关闭分屏"}
-                            className="p-1 rounded-md text-slate-400 hover:text-rose-500"
+                            className="p-1.5 rounded-md text-slate-400 hover:text-rose-500 transition"
                           >
                             <X className="w-3.5 h-3.5" />
                           </button>
@@ -778,7 +912,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                     {/* Search Sub-bar */}
                     <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900">
                       <div className="flex items-center gap-1.5 flex-1">
-                        <Search className="w-3.5 h-3.5 text-slate-400" />
+                        <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                         <input
                           type="text"
                           value={pane.searchQuery}
@@ -791,11 +925,11 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                             onClick={() => updatePane(pane.paneId, { searchQuery: "" })}
                             className="text-slate-400 hover:text-slate-600"
                           >
-                            <X className="w-3 h-3" />
+                            <X className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
-                      <label className="flex items-center gap-1 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+                      <label className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer select-none">
                         <input
                           type="checkbox"
                           checked={pane.filterOnly}
@@ -806,8 +940,110 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                       </label>
                     </div>
 
+                    {/* Line coding / charset sub-bar (applied on next connect) */}
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900">
+                      <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                        {isEn ? "Line" : "线路参数"}
+                      </span>
+                      <select
+                        value={pane.coding.data_bits}
+                        disabled={pane.connected}
+                        onChange={(e) =>
+                          updatePane(pane.paneId, {
+                            coding: { ...pane.coding, data_bits: Number(e.target.value) },
+                          })
+                        }
+                        title={isEn ? "Data bits" : "数据位"}
+                        className="ui-select py-0.5 px-1.5 text-[11px] font-mono tabular-nums"
+                      >
+                        {DATA_BITS_OPTIONS.map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={pane.coding.parity}
+                        disabled={pane.connected}
+                        onChange={(e) =>
+                          updatePane(pane.paneId, {
+                            coding: { ...pane.coding, parity: e.target.value },
+                          })
+                        }
+                        title={isEn ? "Parity" : "校验位"}
+                        className="ui-select py-0.5 px-1.5 text-[11px]"
+                      >
+                        {PARITY_OPTIONS.map((p) => (
+                          <option key={p} value={p}>
+                            {p === "none" ? (isEn ? "No parity" : "无校验") : p === "even" ? (isEn ? "Even" : "偶校验") : isEn ? "Odd" : "奇校验"}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={pane.coding.stop_bits}
+                        disabled={pane.connected}
+                        onChange={(e) =>
+                          updatePane(pane.paneId, {
+                            coding: { ...pane.coding, stop_bits: Number(e.target.value) },
+                          })
+                        }
+                        title={isEn ? "Stop bits" : "停止位"}
+                        className="ui-select py-0.5 px-1.5 text-[11px] font-mono tabular-nums"
+                      >
+                        {STOP_BITS_OPTIONS.map((n) => (
+                          <option key={n} value={n}>
+                            {n === 1 ? "1" : "2"}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        value={pane.coding.flow_control}
+                        disabled={pane.connected}
+                        onChange={(e) =>
+                          updatePane(pane.paneId, {
+                            coding: { ...pane.coding, flow_control: e.target.value },
+                          })
+                        }
+                        title={isEn ? "Flow control" : "流控"}
+                        className="ui-select py-0.5 px-1.5 text-[11px]"
+                      >
+                        {FLOW_CONTROL_OPTIONS.map((f) => (
+                          <option key={f} value={f}>
+                            {f === "none"
+                              ? isEn
+                                ? "No flow"
+                                : "无流控"
+                              : f === "software"
+                              ? isEn
+                                ? "XON/XOFF"
+                                : "软流控"
+                              : isEn
+                              ? "RTS/CTS"
+                              : "硬流控"}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="ml-auto text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                        {isEn ? "Charset" : "字符集"}
+                      </span>
+                      <select
+                        value={pane.charset}
+                        onChange={(e) =>
+                          updatePane(pane.paneId, { charset: e.target.value as Charset })
+                        }
+                        title={isEn ? "Receive charset (live)" : "接收字符集（实时生效）"}
+                        className="ui-select py-0.5 px-1.5 text-[11px] font-mono"
+                      >
+                        {CHARSET_OPTIONS.map((c) => (
+                          <option key={c} value={c}>
+                            {c.toUpperCase()}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     {pane.error && (
-                      <div className="px-3 py-1.5 text-xs bg-rose-500/10 text-rose-600 dark:text-rose-400 border-b border-rose-500/20">
+                      <div className="px-3 py-2 text-xs bg-rose-500/10 text-rose-600 dark:text-rose-400 border-b border-rose-500/20">
                         {pane.error}
                       </div>
                     )}
@@ -840,7 +1076,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                     </div>
 
                     {/* Bottom Command Input */}
-                    <div className="flex items-center gap-1.5 px-2.5 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
+                    <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60">
                       <select
                         value={pane.lineEnding}
                         onChange={(e) =>
@@ -848,7 +1084,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                             lineEnding: e.target.value as "\n" | "\r\n" | "",
                           })
                         }
-                        className="text-xs px-1.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 font-mono"
+                        className="ui-select font-mono"
                       >
                         <option value={"\n"}>\n</option>
                         <option value={"\r\n"}>\r\n</option>
@@ -893,12 +1129,12 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                             ? "Connect serial port to send..."
                             : "连接串口后可发送指令..."
                         }
-                        className="flex-1 text-xs font-mono px-2.5 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50"
+                        className="ui-input flex-1 font-mono"
                       />
                       <button
                         onClick={() => handleSendCommand(pane)}
                         disabled={!pane.connected}
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition"
+                        className="ui-btn-primary shrink-0"
                       >
                         <Send className="w-3.5 h-3.5" />
                         {isEn ? "Send" : "发送"}
@@ -911,7 +1147,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
           )}
 
           {/* Bottom Pane Chip Bar */}
-          <div className="flex flex-wrap items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2">
+          <div className="ui-card flex flex-wrap items-center gap-2 px-3 py-2">
             <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mr-1">
               {isEn ? "Active Panes:" : "串口分屏:"}
             </span>
@@ -955,10 +1191,12 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
         </div>
       ) : (
         /* Saved Log Browser */
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-3 min-h-0">
-          <div className="lg:col-span-4 xl:col-span-3 flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
-            <div className="px-3 py-2.5 border-b border-slate-200 dark:border-slate-800 text-xs font-semibold text-slate-700 dark:text-slate-200">
-              {isEn ? `Saved Log Files (${logFiles.length})` : `历史日志文件 (${logFiles.length})`}
+        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-0">
+          <div className="ui-card lg:col-span-4 xl:col-span-3 flex flex-col overflow-hidden">
+            <div className="ui-card-header">
+              <span className="ui-title">
+                {isEn ? `Saved Log Files (${logFiles.length})` : `历史日志文件 (${logFiles.length})`}
+              </span>
             </div>
             <div className="flex-1 overflow-auto divide-y divide-slate-100 dark:divide-slate-800">
               {logFiles.length === 0 ? (
@@ -987,7 +1225,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                       <FileText className="w-4 h-4 mt-0.5 shrink-0 opacity-70" />
                       <div className="min-w-0 flex-1">
                         <div className="text-xs font-mono truncate">{entry.file_name}</div>
-                        <div className="text-[11px] text-slate-400 mt-0.5 flex justify-between">
+                        <div className="text-[11px] font-mono tabular-nums text-slate-400 mt-0.5 flex justify-between">
                           <span>{formatBytes(entry.size_bytes)}</span>
                           <span>{formatUnixSecs(entry.modified_secs)}</span>
                         </div>
@@ -999,8 +1237,8 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
             </div>
           </div>
 
-          <div className="lg:col-span-8 xl:col-span-9 flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden min-h-0">
-            <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
+          <div className="ui-card lg:col-span-8 xl:col-span-9 flex flex-col overflow-hidden min-h-0">
+            <div className="ui-card-header">
               <div className="text-xs font-mono text-slate-700 dark:text-slate-200 truncate">
                 {selectedLogFile
                   ? `${selectedLogFile.file_name} (${isEn ? "last 1000 lines" : "末尾 1000 行"})`
@@ -1009,19 +1247,19 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                   : "请在左侧选择一个日志文件"}
               </div>
               <div className="flex items-center gap-2">
-                <div className="flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
-                  <Search className="w-3.5 h-3.5 text-slate-400" />
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="text"
                     value={logSearch}
                     onChange={(e) => setLogSearch(e.target.value)}
                     placeholder={isEn ? "Filter lines..." : "过滤关键字..."}
-                    className="text-xs bg-transparent text-slate-700 dark:text-slate-200 focus:outline-none w-36"
+                    className="ui-input pl-7 w-40"
                   />
                 </div>
                 <button
                   onClick={() => setLogShowTimestamps((v) => !v)}
-                  className={`p-1.5 rounded-md border text-xs ${
+                  className={`p-1.5 rounded-md border text-xs transition ${
                     logShowTimestamps
                       ? "bg-blue-500/15 border-blue-500/40 text-blue-600 dark:text-blue-400"
                       : "border-slate-200 dark:border-slate-700 text-slate-400"
@@ -1032,7 +1270,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                 </button>
                 <button
                   onClick={() => setLogAnsi((v) => !v)}
-                  className={`p-1.5 rounded-md border text-xs ${
+                  className={`p-1.5 rounded-md border text-xs transition ${
                     logAnsi
                       ? "bg-purple-500/15 border-purple-500/40 text-purple-600 dark:text-purple-400"
                       : "border-slate-200 dark:border-slate-700 text-slate-400"
@@ -1044,7 +1282,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
               </div>
             </div>
 
-            <div className="flex-1 overflow-auto p-3 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100">
+            <div className="flex-1 overflow-auto p-4 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100">
               {loadingLogContent ? (
                 <div className="text-xs text-slate-400 font-mono">
                   {isEn ? "Loading log..." : "正在读取日志..."}

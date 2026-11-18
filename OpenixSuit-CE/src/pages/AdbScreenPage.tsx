@@ -263,33 +263,33 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
       : null);
 
   return (
-    <div className="h-full flex flex-col gap-3 min-h-0">
+    <div className="flex h-full min-h-0 flex-col gap-3">
       {/* Top Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 shadow-sm">
+      <div className="ui-toolbar">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-100">
-            <MonitorSmartphone className="w-4 h-4 text-blue-500" />
+          <div className="ui-title">
+            <MonitorSmartphone className="h-4 w-4 text-blue-500" />
             <span>{isEn ? "ADB Screen Mirror" : "ADB 屏幕控制"}</span>
           </div>
 
           <span
-            className={`text-xs font-mono px-2 py-0.5 rounded-md border ${
+            className={`rounded-md border px-2 py-0.5 font-mono text-xs tabular-nums ${
               serial
-                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
-                : "bg-slate-100 dark:bg-slate-800 text-slate-500 border-slate-200 dark:border-slate-700"
+                ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                : "border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"
             }`}
           >
             {serial || (isEn ? "No Device" : "未连接")}
           </span>
 
           {displayRes && (
-            <span className="text-xs font-mono px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+            <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-xs tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
               {displayRes.width} × {displayRes.height}
             </span>
           )}
 
           {lastGesture && (
-            <span className="hidden md:inline-block text-[11px] font-mono text-slate-400">
+            <span className="hidden font-mono text-[11px] tabular-nums text-slate-400 md:inline-block">
               {lastGesture}
             </span>
           )}
@@ -297,7 +297,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Auto refresh interval */}
-          <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-slate-950">
+          <div className="ui-segmented">
             {[
               { label: isEn ? "Manual" : "手动", value: 0 },
               { label: "1s", value: 1000 },
@@ -306,10 +306,10 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
               <button
                 key={opt.value}
                 onClick={() => setIntervalMs(opt.value)}
-                className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${
+                className={`ui-segmented-btn ${
                   intervalMs === opt.value
                     ? "bg-blue-600 text-white shadow-sm"
-                    : "text-slate-600 dark:text-slate-300"
+                    : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
                 }`}
               >
                 {opt.label}
@@ -320,100 +320,97 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
           <button
             onClick={captureScreen}
             disabled={!serial || loading}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40 transition"
+            className="ui-btn-secondary"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
             {isEn ? "Refresh" : "刷新画面"}
           </button>
 
           <button
             onClick={handleExportScreenshot}
             disabled={!imageSrc}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white shadow-sm disabled:opacity-40 transition"
+            className="ui-btn-primary"
           >
-            <Camera className="w-3.5 h-3.5" />
+            <Camera className="h-3.5 w-3.5" />
             {isEn ? "Export PNG" : "导出截图"}
           </button>
         </div>
       </div>
 
       {/* Hardware Key Buttons */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+      <div className="ui-card flex flex-wrap items-center justify-between gap-2 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="mr-1 text-[11px] font-medium text-slate-500 dark:text-slate-400">
             {isEn ? "Hardware Keys:" : "实体按键:"}
           </span>
           <button
             onClick={() => sendKeyEvent(4, "Back")}
             disabled={!serial}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+            className="ui-btn-secondary !px-2.5 !py-1"
           >
-            <ArrowLeft className="w-3.5 h-3.5" />
+            <ArrowLeft className="h-3.5 w-3.5" />
             Back
           </button>
           <button
             onClick={() => sendKeyEvent(3, "Home")}
             disabled={!serial}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+            className="ui-btn-secondary !px-2.5 !py-1"
           >
-            <Home className="w-3.5 h-3.5" />
+            <Home className="h-3.5 w-3.5" />
             Home
           </button>
           <button
             onClick={() => sendKeyEvent(187, "Recent")}
             disabled={!serial}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+            className="ui-btn-secondary !px-2.5 !py-1"
           >
-            <LayoutGrid className="w-3.5 h-3.5" />
+            <LayoutGrid className="h-3.5 w-3.5" />
             Recent
           </button>
           <button
             onClick={() => sendKeyEvent(25, "Vol-")}
             disabled={!serial}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+            className="ui-btn-secondary !px-2.5 !py-1"
           >
-            <Volume1 className="w-3.5 h-3.5" />
+            <Volume1 className="h-3.5 w-3.5" />
             Vol-
           </button>
           <button
             onClick={() => sendKeyEvent(24, "Vol+")}
             disabled={!serial}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40"
+            className="ui-btn-secondary !px-2.5 !py-1"
           >
-            <Volume2 className="w-3.5 h-3.5" />
+            <Volume2 className="h-3.5 w-3.5" />
             Vol+
           </button>
           <button
             onClick={() => sendKeyEvent(26, "Power")}
             disabled={!serial}
-            className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 disabled:opacity-40"
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-600 transition hover:bg-rose-500/20 disabled:pointer-events-none disabled:opacity-45 dark:text-rose-400"
           >
-            <Power className="w-3.5 h-3.5" />
+            <Power className="h-3.5 w-3.5" />
             Power
           </button>
         </div>
 
-        <span className="text-[11px] text-slate-400">
+        <span className="text-[11px] text-slate-500 dark:text-slate-400">
           {isEn
             ? "Click to tap · Drag to swipe"
             : "点击屏幕发送 Tap · 按住拖拽发送 Swipe 滑动"}
         </span>
       </div>
 
-      {error && (
-        <div className="px-3 py-2 rounded-lg text-xs bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400">
-          {error}
-        </div>
-      )}
+      {error && <div className="ui-alert-err">{error}</div>}
 
       {/* Screen Canvas */}
-      <div className="flex-1 flex items-center justify-center bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl p-4 overflow-auto min-h-[280px]">
+      <div className="ui-card flex min-h-[280px] flex-1 items-center justify-center overflow-auto bg-slate-100/80 p-4 dark:bg-slate-950">
         {!serial ? (
-          <div className="text-xs text-slate-400">
-            {isEn ? "Please connect an ADB device first." : "请先连接一台 ADB 设备。"}
+          <div className="flex flex-col items-center justify-center gap-2 text-center text-xs text-slate-500 dark:text-slate-400">
+            <MonitorSmartphone className="h-8 w-8 text-slate-300 dark:text-slate-700" />
+            <span>{isEn ? "Please connect an ADB device first." : "请先连接一台 ADB 设备。"}</span>
           </div>
         ) : imageSrc ? (
-          <div className="relative inline-block rounded-lg overflow-hidden shadow-xl border border-slate-300 dark:border-slate-700 bg-black">
+          <div className="relative inline-block overflow-hidden rounded-lg border border-slate-300 bg-black shadow-xl dark:border-slate-700">
             <img
               ref={imgRef}
               src={imageSrc}
@@ -429,24 +426,27 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
                   });
                 }
               }}
-              className="max-h-[calc(100vh-260px)] max-w-full w-auto h-auto object-contain select-none cursor-crosshair block"
+              className="block h-auto max-h-[calc(100vh-260px)] w-auto max-w-full cursor-crosshair select-none object-contain"
             />
             {tapMarker && (
               <span
-                className="pointer-events-none absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-blue-400 bg-blue-400/30 animate-ping"
+                className="pointer-events-none absolute -ml-3 -mt-3 h-6 w-6 animate-ping rounded-full border-2 border-blue-400 bg-blue-400/30"
                 style={{ left: `${tapMarker.xPct}%`, top: `${tapMarker.yPct}%` }}
               />
             )}
           </div>
         ) : (
-          <div className="text-xs text-slate-400">
-            {loading
-              ? isEn
-                ? "Capturing screen..."
-                : "正在抓取设备屏幕..."
-              : isEn
-              ? "No screen frame yet. Click Refresh."
-              : "暂无画面，请点击刷新画面。"}
+          <div className="flex flex-col items-center justify-center gap-2 text-center text-xs text-slate-500 dark:text-slate-400">
+            <RefreshCw className={`h-6 w-6 text-slate-300 dark:text-slate-700 ${loading ? "animate-spin" : ""}`} />
+            <span>
+              {loading
+                ? isEn
+                  ? "Capturing screen..."
+                  : "正在抓取设备屏幕..."
+                : isEn
+                ? "No screen frame yet. Click Refresh."
+                : "暂无画面，请点击刷新画面。"}
+            </span>
           </div>
         )}
       </div>

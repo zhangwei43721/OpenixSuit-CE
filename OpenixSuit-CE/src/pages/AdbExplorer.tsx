@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import Editor from "@monaco-editor/react";
 import {
   ArrowLeft,
+  Check,
   Download,
   Edit3,
   File as FileIcon,
@@ -15,9 +17,11 @@ import {
   RefreshCw,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AdbDetailedFileEntry } from "../types/workbench";
+import Selecto from "react-selecto";
 import { AnsiText } from "../utils/ansi";
 
 const STORAGE_PATHS_KEY = "adb_paths_by_serial";
@@ -79,7 +83,6 @@ function savePathForSerial(serial: string, path: string) {
 
 type PromptModal =
   | { type: "mkdir"; value: string }
-  | { type: "rename"; oldName: string; value: string }
   | { type: "delete"; names: string[] }
   | null;
 
@@ -108,6 +111,14 @@ export function AdbExplorer({
   const [editingFile, setEditingFile] = useState<{ path: string; content: string } | null>(null);
   const [fileViewTab, setFileViewTab] = useState<"editor" | "ansi">("editor");
   const [modal, setModal] = useState<PromptModal>(null);
+  const [renamingName, setRenamingName] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [lastClickedName, setLastClickedName] = useState<string | null>(null);
+  const lastClickRef = useRef<{ name: string | null; ts: number }>({ name: null, ts: 0 });
+  const renameBusyRef = useRef(false);
+  const listWrapRef = useRef<HTMLDivElement | null>(null);
+  const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
   const reqIdRef = useRef(0);
   const serialRef = useRef(serial);
   const currentPathRef = useRef(currentPath);
@@ -203,11 +214,173 @@ export function AdbExplorer({
 
   const joinPath = (name: string) => (currentPath === "/" ? `/${name}` : `${currentPath}/${name}`);
 
-  const toggleSelect = (name: string) => {
-    setSelectedNames((prev) =>
-      prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]
+  const beginRename = (name: string) => {
+    setRenamingName(name);
+    setRenameDraft(name);
+    // Preselect the base name (without extension), like desktop file managers.
+    requestAnimationFrame(() => {
+      const input = renameInputRef.current;
+      if (!input) return;
+      const dot = name.lastIndexOf(".");
+      if (dot > 0) {
+        input.setSelectionRange(0, dot);
+      } else {
+        input.select();
+      }
+    });
+  };
+
+  const cancelRename = () => {
+    setRenamingName(null);
+    setRenameDraft("");
+  };
+
+  const commitRename = async () => {
+    if (renameBusyRef.current) return;
+    const oldName = renamingName;
+    if (!oldName || !serial) return cancelRename();
+    renameBusyRef.current = true;
+    try {
+    const newName = renameDraft.trim();
+    setRenamingName(null);
+    setRenameDraft("");
+    if (!newName || newName === oldName) return;
+      if (newName.includes("/")) {
+        setErrorMsg(t("adb.invalidName"));
+        return;
+      }
+      await invoke("adb_rename", {
+        serial,
+        oldPath: joinPath(oldName),
+        newPath: joinPath(newName),
+      });
+      onLog(`Renamed: ${oldName} -> ${newName}`);
+      await loadDir(serial, currentPath, false, newName);
+    } catch (err) {
+      setErrorMsg(String(err));
+    } finally {
+      renameBusyRef.current = false;
+    }
+  };
+
+  const handleRenameKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void commitRename();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancelRename();
+    }
+  };
+
+  const itemMouseDown = (e: ReactMouseEvent, name: string) => {
+    if (e.button !== 0) return;
+    if (renamingName && renamingName !== name) {
+      void commitRename();
+    }
+    if (e.ctrlKey || e.metaKey) {
+      // Ctrl+click toggles the item without starting a rubber band.
+      e.stopPropagation();
+      setSelectedNames((prev) =>
+        prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]
+      );
+      setLastClickedName(name);
+      lastClickRef.current = { name: null, ts: 0 };
+      return;
+    }
+    if (e.shiftKey && lastClickedName) {
+      e.stopPropagation();
+      const names = entries.map((entry) => entry.name);
+      const from = names.indexOf(lastClickedName);
+      const to = names.indexOf(name);
+      if (from >= 0 && to >= 0) {
+        const [lo, hi] = from < to ? [from, to] : [to, from];
+        setSelectedNames(names.slice(lo, hi + 1));
+      }
+      lastClickRef.current = { name: null, ts: 0 };
+      return;
+    }
+    e.stopPropagation();
+    if (!selectedNames.includes(name)) {
+      setSelectedNames([name]);
+    }
+    setLastClickedName(name);
+  };
+
+  const itemClick = (name: string) => {
+    const now = Date.now();
+    const prev = lastClickRef.current;
+    if (prev.name === name && now - prev.ts > 400 && renamingName !== name) {
+      // Two clicks on the same name spaced wider than a double-click: inline rename.
+      lastClickRef.current = { name: null, ts: 0 };
+      beginRename(name);
+      return;
+    }
+    lastClickRef.current = { name, ts: now };
+  };
+
+  const containerMouseDown = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    if (renamingName) void commitRename();
+    const target = e.target as HTMLElement;
+    if (!target.closest("[data-item-name]") && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      // Blank area: plain press clears the selection.
+      setSelectedNames([]);
+      setLastClickedName(null);
+      lastClickRef.current = { name: null, ts: 0 };
+    }
+  };
+
+  const renderItemName = (
+    item: AdbDetailedFileEntry,
+    display: ReactNode,
+    options?: { suffix?: ReactNode }
+  ) => {
+    if (renamingName === item.name) {
+      return (
+        <span
+          className="inline-flex items-center gap-1"
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <input
+            ref={renameInputRef}
+            autoFocus
+            value={renameDraft}
+            onChange={(e) => setRenameDraft(e.target.value)}
+            onBlur={commitRename}
+            onKeyDown={handleRenameKeyDown}
+            className="w-full rounded border border-blue-500 bg-white px-1 py-0.5 text-xs text-slate-900 outline-none dark:bg-slate-900 dark:text-slate-100"
+          />
+          <button
+            title={t("common.save")}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={commitRename}
+            className="rounded bg-emerald-500/20 p-0.5 text-emerald-600 dark:text-emerald-400"
+          >
+            <Check className="h-3 w-3" />
+          </button>
+          <button
+            title={t("common.cancel")}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={cancelRename}
+            className="rounded bg-rose-500/20 p-0.5 text-rose-500"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </span>
+      );
+    }
+    return (
+      <>
+        {display}
+        {options?.suffix}
+      </>
     );
   };
+
+
 
   const goParent = () => {
     if (!serial || currentPath === "/") return;
@@ -221,12 +394,6 @@ export function AdbExplorer({
     try {
       if (modal.type === "mkdir" && modal.value.trim()) {
         await invoke("adb_mkdir", { serial, remotePath: joinPath(modal.value.trim()) });
-      } else if (modal.type === "rename" && modal.value.trim() && modal.value.trim() !== modal.oldName) {
-        await invoke("adb_rename", {
-          serial,
-          oldPath: joinPath(modal.oldName),
-          newPath: joinPath(modal.value.trim()),
-        });
       } else if (modal.type === "delete") {
         for (const name of modal.names) {
           await invoke("adb_delete", { serial, remotePath: joinPath(name) });
@@ -335,10 +502,12 @@ export function AdbExplorer({
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 text-xs">
       <div className="ui-toolbar">
-        <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
-          <Folder className="h-4 w-4 text-blue-500" />
-          <span className="font-semibold text-slate-800 dark:text-slate-100">{t("nav.adb")}</span>
-          <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 text-[11px] font-mono text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+        <div className="flex items-center gap-2.5 text-slate-600 dark:text-slate-300">
+          <div className="ui-title">
+            <Folder className="h-4 w-4 text-blue-500" />
+            <span>{t("nav.adb")}</span>
+          </div>
+          <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-[11px] tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
             {folderCount} folders · {fileCount} files
           </span>
         </div>
@@ -360,6 +529,7 @@ export function AdbExplorer({
                 <Trash2 className="h-3.5 w-3.5" />
                 {t("common.delete")} ({selectedNames.length})
               </button>
+              <div className="mx-0.5 hidden h-4 w-px bg-slate-200 dark:bg-slate-700 sm:block" />
             </>
           )}
           <button
@@ -378,35 +548,69 @@ export function AdbExplorer({
             <Upload className="h-3.5 w-3.5" />
             {t("common.upload")}
           </button>
-          <button
-            onClick={() => setViewMode((v) => (v === "grid" ? "list" : "grid"))}
-            className="ui-btn-secondary px-2"
-          >
-            {viewMode === "grid" ? <List className="h-3.5 w-3.5" /> : <LayoutGrid className="h-3.5 w-3.5" />}
-          </button>
+          <div className="mx-0.5 hidden h-4 w-px bg-slate-200 dark:bg-slate-700 sm:block" />
+          <div className="ui-segmented">
+            <button
+              type="button"
+              onClick={() => setViewMode("grid")}
+              title="Grid"
+              className={`ui-segmented-btn !px-2 ${
+                viewMode === "grid"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+              }`}
+            >
+              <LayoutGrid className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("list")}
+              title="List"
+              className={`ui-segmented-btn !px-2 ${
+                viewMode === "list"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+              }`}
+            >
+              <List className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       </div>
 
-      <div className="ui-card flex items-center justify-between px-3 py-2">
-        <div className="flex flex-wrap items-center gap-1">
-          <button disabled={!serial || currentPath === "/"} onClick={goParent} className="rounded-md p-1 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-slate-800">
+      <div className="ui-card flex items-center justify-between gap-2 px-4 py-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+          <button
+            disabled={!serial || currentPath === "/"}
+            onClick={goParent}
+            className="rounded-md p-1 text-slate-600 transition hover:bg-slate-100 disabled:opacity-40 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
             <ArrowLeft className="h-3.5 w-3.5" />
           </button>
           <button
             disabled={!serial}
             onClick={() => loadDir(serial, "/")}
-            className="rounded-md px-1.5 py-0.5 font-mono hover:bg-slate-100 dark:hover:bg-slate-800"
+            className={`rounded-md px-1.5 py-0.5 font-mono transition hover:bg-slate-100 dark:hover:bg-slate-800 ${
+              crumbs.length === 0
+                ? "font-semibold text-slate-900 dark:text-slate-100"
+                : "text-slate-600 dark:text-slate-300"
+            }`}
           >
             /
           </button>
           {crumbs.map((seg, i) => {
             const target = "/" + crumbs.slice(0, i + 1).join("/");
+            const isLast = i === crumbs.length - 1;
             return (
               <span key={target} className="flex items-center gap-1">
                 <span className="text-slate-400">&gt;</span>
                 <button
                   onClick={() => loadDir(serial, target)}
-                  className="rounded-md px-1.5 py-0.5 font-mono hover:bg-slate-100 dark:hover:bg-slate-800"
+                  className={`rounded-md px-1.5 py-0.5 font-mono transition hover:bg-slate-100 dark:hover:bg-slate-800 ${
+                    isLast
+                      ? "font-semibold text-slate-900 dark:text-slate-100"
+                      : "text-slate-600 dark:text-slate-300"
+                  }`}
                 >
                   {seg}
                 </button>
@@ -414,7 +618,7 @@ export function AdbExplorer({
             );
           })}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5">
           {entries.length > 0 && (
             <button
               onClick={() =>
@@ -422,12 +626,16 @@ export function AdbExplorer({
                   selectedNames.length === entries.length ? [] : entries.map((e) => e.name)
                 )
               }
-              className="rounded-md px-2 py-0.5 text-[11px] hover:bg-slate-100 dark:hover:bg-slate-800"
+              className="ui-btn-secondary !px-2.5 !py-1 text-[11px]"
             >
               {selectedNames.length === entries.length ? "取消全选" : "全选"}
             </button>
           )}
-          <button disabled={!serial} onClick={() => loadDir(serial, currentPath)} className="rounded-md p-1 hover:bg-slate-100 disabled:opacity-40 dark:hover:bg-slate-800">
+          <button
+            disabled={!serial}
+            onClick={() => loadDir(serial, currentPath)}
+            className="ui-btn-secondary !p-1.5"
+          >
             <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
           </button>
         </div>
@@ -435,33 +643,78 @@ export function AdbExplorer({
 
       {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
-      <div className="ui-card flex-1 overflow-y-auto p-3.5">
+      <div
+        ref={(el) => {
+          listWrapRef.current = el;
+          setListEl(el);
+        }}
+        onMouseDown={containerMouseDown}
+        className="ui-card relative flex-1 overflow-y-auto p-4"
+      >
+        <Selecto
+          dragContainer={listEl ?? undefined}
+          selectableTargets={["[data-item-name]"]}
+          selectFromInside={false}
+          selectByClick={false}
+          hitRate={20}
+          checkInput
+          toggleContinueSelect={["ctrl"]}
+          onDragStart={(e) => {
+            // Renaming or pressing on an item itself: never start a rubber band.
+            const src = e.inputEvent.target as HTMLElement | null;
+            if (renamingName || (src && src.closest("[data-item-name]"))) {
+              e.stop();
+            }
+          }}
+          onSelect={(e) => {
+            const added = e.added
+              .map((el) => el.dataset.itemName)
+              .filter((n): n is string => !!n);
+            const removed = e.removed
+              .map((el) => el.dataset.itemName)
+              .filter((n): n is string => !!n);
+            setSelectedNames((prev) => {
+              const set = new Set(prev);
+              for (const n of added) set.add(n);
+              for (const n of removed) set.delete(n);
+              return [...set];
+            });
+          }}
+        />
         {loading ? (
-          <div className="py-12 text-center text-slate-500">{t("common.loading")}</div>
+          <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 py-12 text-center text-slate-500 dark:text-slate-400">
+            <RefreshCw className="h-6 w-6 animate-spin text-slate-400" />
+            <span>{t("common.loading")}</span>
+          </div>
         ) : entries.length === 0 ? (
-          <div className="py-12 text-center text-slate-500">{serial ? t("adb.emptyDir") : t("adb.waitConnect")}</div>
+          <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 py-12 text-center text-slate-500 dark:text-slate-400">
+            <Folder className="h-8 w-8 text-slate-300 dark:text-slate-700" />
+            <span>{serial ? t("adb.emptyDir") : t("adb.waitConnect")}</span>
+          </div>
         ) : viewMode === "grid" ? (
-          <div className="grid grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
             {entries.map((item) => {
               const editable = !item.is_dir && isEditableTextFile(item.name);
               const checked = selectedNames.includes(item.name);
               return (
                 <div
                   key={item.name}
-                  onDoubleClick={() => (item.is_dir ? loadDir(serial, joinPath(item.name)) : handleOpenFile(item.name))}
+                  data-item-name={item.name}
+                  onMouseDown={(e) => itemMouseDown(e, item.name)}
+                  onClick={() => itemClick(item.name)}
+                  onDoubleClick={() => {
+                    if (renamingName === item.name) {
+                      cancelRename();
+                      return;
+                    }
+                    item.is_dir ? loadDir(serial, joinPath(item.name)) : handleOpenFile(item.name);
+                  }}
                   className={`group relative flex cursor-pointer flex-col items-center rounded-lg border p-2.5 text-center transition ${
                     checked
                       ? "border-blue-500 bg-blue-500/10"
                       : "border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/70"
                   }`}
                 >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleSelect(item.name)}
-                    onClick={(e) => e.stopPropagation()}
-                    className={`absolute left-2 top-2 accent-blue-600 ${checked ? "block" : "hidden group-hover:block"}`}
-                  />
                   {item.is_dir ? (
                     <Folder
                       onClick={() => loadDir(serial, joinPath(item.name))}
@@ -470,32 +723,31 @@ export function AdbExplorer({
                   ) : (
                     <FileIcon className="h-10 w-10 text-slate-400" />
                   )}
-                  <div title={item.name} className="mt-1.5 w-full truncate font-medium">{item.name}</div>
-                  {!item.is_dir && <div className="text-[10px] text-slate-400">{item.size} B</div>}
+                  <div title={item.name} className="mt-1.5 w-full truncate font-medium text-slate-800 dark:text-slate-100">
+                    {renderItemName(item, item.name)}
+                  </div>
+                  {!item.is_dir && renamingName !== item.name && (
+                    <div className="mt-0.5 font-mono text-[10px] tabular-nums text-slate-400">{item.size} B</div>
+                  )}
                   <div className="mt-1.5 hidden gap-1 group-hover:flex">
                     {!item.is_dir && (
-                      <button onClick={() => handleDownload(item.name)} title={t("common.download")} className="rounded-md bg-slate-200 p-1 dark:bg-slate-800">
+                      <button
+                        onClick={() => handleDownload(item.name)}
+                        title={t("common.download")}
+                        className="rounded-md border border-slate-200 bg-white p-1 text-slate-600 shadow-sm hover:text-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                      >
                         <Download className="h-3 w-3" />
                       </button>
                     )}
                     {editable && (
-                      <button onClick={() => handleOpenFile(item.name)} title={t("common.edit")} className="rounded-md bg-slate-200 p-1 dark:bg-slate-800">
+                      <button
+                        onClick={() => handleOpenFile(item.name)}
+                        title={t("common.edit")}
+                        className="rounded-md border border-slate-200 bg-white p-1 text-slate-600 shadow-sm hover:text-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                      >
                         <Edit3 className="h-3 w-3" />
                       </button>
                     )}
-                    <button
-                      onClick={() => setModal({ type: "rename", oldName: item.name, value: item.name })}
-                      className="rounded-md bg-slate-200 px-1.5 text-[10px] dark:bg-slate-800"
-                    >
-                      {t("common.rename")}
-                    </button>
-                    <button
-                      onClick={() => setModal({ type: "delete", names: [item.name] })}
-                      title={t("common.delete")}
-                      className="rounded-md bg-rose-500/20 p-1 text-rose-500"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
                   </div>
                 </div>
               );
@@ -503,53 +755,57 @@ export function AdbExplorer({
           </div>
         ) : (
           <table className="w-full text-left">
-            <thead className="border-b border-slate-200 text-slate-500 dark:border-slate-800">
+            <thead className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-400">
               <tr>
-                <th className="w-8 py-2">
-                  <input
-                    type="checkbox"
-                    checked={entries.length > 0 && selectedNames.length === entries.length}
-                    onChange={() =>
-                      setSelectedNames(
-                        selectedNames.length === entries.length ? [] : entries.map((e) => e.name)
-                      )
-                    }
-                    className="accent-blue-600"
-                  />
-                </th>
-                <th className="py-2">{t("sector.name")}</th>
-                <th className="py-2">Size</th>
-                <th className="py-2">{t("adb.modifiedTime")}</th>
-                <th className="py-2">{t("adb.permissions")}</th>
-                <th className="py-2 text-right">{t("sector.actions")}</th>
+                <th className="px-3 py-2">{t("sector.name")}</th>
+                <th className="px-3 py-2">Size</th>
+                <th className="px-3 py-2">{t("adb.modifiedTime")}</th>
+                <th className="px-3 py-2">{t("adb.permissions")}</th>
+                <th className="px-3 py-2 text-right">{t("sector.actions")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {entries.map((item) => {
                 const editable = !item.is_dir && isEditableTextFile(item.name);
+                const checked = selectedNames.includes(item.name);
                 return (
-                  <tr key={item.name} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                    <td className="py-1.5">
-                      <input
-                        type="checkbox"
-                        checked={selectedNames.includes(item.name)}
-                        onChange={() => toggleSelect(item.name)}
-                        className="accent-blue-600"
-                      />
-                    </td>
-                    <td className="py-1.5">
+                  <tr
+                    key={item.name}
+                    data-item-name={item.name}
+                    onMouseDown={(e) => itemMouseDown(e, item.name)}
+                    onClick={() => itemClick(item.name)}
+                    onDoubleClick={() => {
+                      if (renamingName === item.name) {
+                        cancelRename();
+                        return;
+                      }
+                      item.is_dir ? loadDir(serial, joinPath(item.name)) : handleOpenFile(item.name);
+                    }}
+                    className={checked ? "bg-blue-500/10 hover:bg-blue-500/15" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}
+                  >
+                    <td className="px-3 py-1.5 font-medium text-slate-800 dark:text-slate-100">
                       {item.is_dir ? (
-                        <button onClick={() => loadDir(serial, joinPath(item.name))} className="text-blue-600 hover:underline dark:text-blue-400">
-                          {item.name}/
-                        </button>
+                        <span
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            if (renamingName === item.name) {
+                              cancelRename();
+                              return;
+                            }
+                            loadDir(serial, joinPath(item.name));
+                          }}
+                          className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
+                        >
+                          {renderItemName(item, <>{item.name}/</>)}
+                        </span>
                       ) : (
-                        item.name
+                        renderItemName(item, item.name)
                       )}
                     </td>
-                    <td className="py-1.5 font-mono text-slate-500">{item.is_dir ? "-" : `${item.size} B`}</td>
-                    <td className="py-1.5 font-mono text-slate-500">{item.modified_time || "-"}</td>
-                    <td className="py-1.5 font-mono text-slate-500">{item.permissions || "-"}</td>
-                    <td className="space-x-2 py-1.5 text-right">
+                    <td className="px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.is_dir ? "-" : `${item.size} B`}</td>
+                    <td className="px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.modified_time || "-"}</td>
+                    <td className="px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.permissions || "-"}</td>
+                    <td className="space-x-2 whitespace-nowrap px-3 py-1.5 text-right">
                       {!item.is_dir && (
                         <button onClick={() => handleDownload(item.name)} className="text-blue-600 hover:underline dark:text-blue-400">
                           {t("common.download")}
@@ -560,18 +816,6 @@ export function AdbExplorer({
                           {t("common.edit")}
                         </button>
                       )}
-                      <button
-                        onClick={() => setModal({ type: "rename", oldName: item.name, value: item.name })}
-                        className="text-slate-500 hover:underline"
-                      >
-                        {t("common.rename")}
-                      </button>
-                      <button
-                        onClick={() => setModal({ type: "delete", names: [item.name] })}
-                        className="text-rose-500 hover:underline"
-                      >
-                        {t("common.delete")}
-                      </button>
                     </td>
                   </tr>
                 );
@@ -581,7 +825,7 @@ export function AdbExplorer({
         )}
       </div>
 
-      <div className="ui-card flex gap-2 p-2.5">
+      <div className="ui-card flex items-center gap-2 px-4 py-2.5">
         <input
           value={cmd}
           onChange={(e) => setCmd(e.target.value)}
@@ -601,10 +845,9 @@ export function AdbExplorer({
 
       {modal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6 backdrop-blur-[1px]">
-          <div className="ui-card w-full max-w-sm space-y-3 p-5 shadow-xl">
-            <div className="text-sm font-semibold">
+          <div className="ui-card w-full max-w-sm space-y-4 p-5 shadow-xl">
+            <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
               {modal.type === "mkdir" && t("adb.newFolderPrompt")}
-              {modal.type === "rename" && t("adb.renamePrompt")}
               {modal.type === "delete" && `${t("adb.deleteConfirm")} (${modal.names.join(", ")})`}
             </div>
             {modal.type !== "delete" && (

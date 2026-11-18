@@ -8,6 +8,7 @@
     "noAdb": "无 ADB 设备",
     "reboot": "重启设备",
     "switchEfex": "切烧录模式",
+    "switchingEfex": "正在切换...",
     "aiSyncing": "AI 同步执行中: {{action}}"
   },
   "nav": {
@@ -32,7 +33,7 @@
     "globalDefault": "全局默认",
     "groupFirmware": "烧录与底层",
     "groupDebug": "实时联调",
-    "groupAutomation": "自动化与协同",
+    "groupAutomation": "自动化",
     "groupUncommon": "不常用功能",
     "customizeOrder": "排序",
     "doneEditing": "完成",
@@ -203,7 +204,8 @@
     "modifiedTime": "修改时间",
     "editorTab": "编辑器",
     "ansiTab": "ANSI 视图",
-    "nonTextHint": "二进制或图片文件不支持文本编辑，请使用下载功能"
+    "nonTextHint": "二进制或图片文件不支持文本编辑，请使用下载功能",
+    "invalidName": "无效的文件名"
   },
   "gpio": {
     "adbMode": "ADB 运行时模式",
@@ -211,7 +213,10 @@
     "noAdb": "无 ADB 设备",
     "refreshData": "刷新引脚数据",
     "noPins": "请连接 ADB 设备并点击「刷新引脚数据」（若无权限请先点 Root）",
-    "readingPins": "正在读取芯片 GPIO 状态..."
+    "readingPins": "正在读取芯片 GPIO 状态...",
+    "expandAll": "全部展开",
+    "collapseAll": "全部收起",
+    "tapToRead": "点击读取"
   },
   "driver": {
     "title": "驱动与环境自检助手",
@@ -237,7 +242,7 @@
     "usb": "USB 驱动后端",
     "usbDesc": "Windows 默认 WinUSB，Linux/macOS 默认 libusb",
     "version": "应用版本",
-    "latest": "已是最新架构",
+    "latest": "已是最新版本",
     "aiTitle": "AI 本地控制接口 (CLI 同步)",
     "aiDesc": "供外部 AI Agent / openixsuit-ce ai（单二进制 CLI 模式）或 openixsuit-ai CLI 实时协同并同步状态到界面",
     "aiExamples": "调用示例命令"
@@ -245,7 +250,7 @@
   "plugins": {
     "title": "扩展插件管理",
     "settingsTitle": "项目拓展插件",
-    "settingsDesc": "安装 .oixplugin / .zip 插件包后，将在左侧边栏「项目拓展」分组自动新增对应选项卡",
+    "settingsDesc": "安装 .oixplugin / .zip 插件包后，左侧边栏「项目拓展」分组会自动新增对应选项卡",
     "tabCount": "{{count}} 个选项卡",
     "import": "导入插件包",
     "importDir": "导入源码目录",

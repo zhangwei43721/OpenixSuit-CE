@@ -187,14 +187,19 @@ export function FlashHub({
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       {/* 公共 .img 固件选择栏（标准刷机 / 扇区 MBR / 格式转换 / 解包查看共用） */}
-      <div className="ui-card px-4 py-3 text-xs">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="truncate font-mono text-slate-800 dark:text-slate-100">
-              {t("flash.filePath")}: {firmwarePath || t("flash.unselected")}
+      <div className="ui-card p-4 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex items-center gap-2 truncate">
+              <span className="shrink-0 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                {t("flash.filePath")}
+              </span>
+              <span className="truncate font-mono font-medium text-slate-800 dark:text-slate-100">
+                {firmwarePath || t("flash.unselected")}
+              </span>
             </div>
             {inspectInfo && (
-              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
                 <span>{(inspectInfo.file_size / 1024 / 1024).toFixed(2)} MB</span>
                 <span>Storage: {inspectInfo.sys_config.storage_type}</span>
                 <span>Debug: {inspectInfo.sys_config.debug_print}</span>
@@ -228,29 +233,29 @@ export function FlashHub({
           </div>
         </div>
         {historyOpen && (
-          <div className="ui-subcard mt-2.5 space-y-1.5 p-2.5">
-            <div className="flex items-center justify-between text-[11px] text-slate-500">
-              <span>{t("flash.history")}</span>
+          <div className="ui-subcard mt-3 space-y-2 p-3">
+            <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+              <span className="font-medium">{t("flash.history")}</span>
               {historyList.length > 0 && (
                 <button
                   onClick={async () => {
                     await invoke("flash_history_clear").catch(() => {});
                     refreshHistory();
                   }}
-                  className="text-rose-500 hover:underline"
+                  className="font-medium text-rose-500 transition hover:text-rose-600 dark:hover:text-rose-400"
                 >
                   {t("log.clear")}
                 </button>
               )}
             </div>
             {historyList.length === 0 ? (
-              <div className="py-2 text-center text-[11px] text-slate-400">暂无烧录历史</div>
+              <div className="py-3 text-center text-[11px] text-slate-400">暂无烧录历史</div>
             ) : (
               <div className="max-h-32 space-y-1 overflow-y-auto">
                 {historyList.map((item) => (
                   <div
                     key={item.id}
-                    className="flex items-center justify-between gap-2 rounded-lg px-2 py-1 hover:bg-slate-200/70 dark:hover:bg-slate-900"
+                    className="flex items-center justify-between gap-2 rounded-lg px-2 py-1 transition hover:bg-slate-200/70 dark:hover:bg-slate-900"
                   >
                     <button
                       onClick={() => {
@@ -275,7 +280,7 @@ export function FlashHub({
                         await invoke("flash_history_delete", { id: item.id }).catch(() => {});
                         refreshHistory();
                       }}
-                      className="text-slate-400 hover:text-rose-500"
+                      className="rounded p-1 text-slate-400 transition hover:bg-rose-500/10 hover:text-rose-500"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -285,7 +290,7 @@ export function FlashHub({
             )}
           </div>
         )}
-        {errorMsg && <div className="ui-alert-warn mt-2.5">{errorMsg}</div>}
+        {errorMsg && <div className="ui-alert-warn mt-3">{errorMsg}</div>}
       </div>
 
       {/* 子功能分段选项卡 */}
@@ -310,10 +315,10 @@ export function FlashHub({
         <button
           type="button"
           onClick={() => setShowSerialSide((v) => !v)}
-          className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+          className={`ui-btn-secondary ${
             showSerialSide
-              ? "border-blue-500 bg-blue-600/10 text-blue-600 dark:text-blue-400"
-              : "border-slate-200 bg-white text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700/80"
+              ? "border-blue-500 bg-blue-600/10 text-blue-600 hover:bg-blue-600/15 dark:border-blue-500 dark:bg-blue-600/15 dark:text-blue-400"
+              : ""
           }`}
         >
           <Cable className="h-3.5 w-3.5" />
@@ -369,10 +374,10 @@ export function FlashHub({
         </div>
 
         {showSerialSide && (
-          <div className="ui-card col-span-5 flex min-h-0 flex-col gap-2.5 p-3.5 text-xs">
-            <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <div className="ui-card col-span-5 flex min-h-0 flex-col overflow-hidden text-xs">
+            <div className="ui-card-header">
               <span className="ui-title text-blue-600 dark:text-blue-400">{t("flash.serialMonitor")}</span>
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 <select
                   disabled={monConnected}
                   value={monPort}
@@ -390,7 +395,7 @@ export function FlashHub({
                   disabled={monConnected}
                   value={monBaud}
                   onChange={(e) => setMonBaud(Number(e.target.value))}
-                  className="ui-select"
+                  className="ui-select font-mono tabular-nums"
                 >
                   {[115200, 921600, 1500000].map((b) => (
                     <option key={b} value={b}>
@@ -412,7 +417,7 @@ export function FlashHub({
                 </button>
               </div>
             </div>
-            <div className="ui-terminal min-h-0 flex-1 overflow-auto p-3 text-[11px]">
+            <div className="ui-terminal min-h-0 flex-1 overflow-auto rounded-none border-0 p-3 text-[11px]">
               {monText ? (
                 <AnsiText text={monText} showTimestamps={false} />
               ) : (

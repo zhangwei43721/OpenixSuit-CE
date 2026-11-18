@@ -1109,7 +1109,9 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
 
         ("GET", "/api/monitor/metrics") => {
             let serial = req.query.get("serial").cloned().unwrap_or_default();
-            let res = run_blocking(move || monitor::adb_get_metrics(serial, None)).await;
+            let res =
+                run_blocking(move || monitor::adb_get_metrics(serial, None, None, None, None))
+                    .await;
             match res {
                 Ok(metrics) => (200, json!({ "ok": true, "metrics": metrics })),
                 Err((c, e)) => (c, json!({ "ok": false, "error": e })),

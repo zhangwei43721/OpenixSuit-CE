@@ -135,85 +135,101 @@ export function FirmwareFlash({
       {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
       <div className="grid min-h-0 flex-1 grid-cols-12 gap-3">
-        <div className="ui-card col-span-4 flex flex-col gap-3 p-4 text-xs">
-          <div className="ui-title text-blue-600 dark:text-blue-400">{t("flash.config")}</div>
-          <select
-            disabled={isFlashing}
-            value={mode}
-            onChange={(e) => {
-              const next = e.target.value as "full_erase" | "keep_data" | "partition_erase" | "partition";
-              setMode(next);
-              localStorage.setItem("flash_mode", next);
-            }}
-            className="ui-select w-full"
-          >
-            <option value="full_erase">{t("flash.fullErase")}</option>
-            <option value="keep_data">{t("flash.keepData")}</option>
-            <option value="partition_erase">{t("flash.partitionErase")}</option>
-            <option value="partition">{t("flash.partitionOnly")}</option>
-          </select>
+        <div className="ui-card col-span-4 flex min-h-0 flex-col overflow-hidden text-xs">
+          <div className="ui-card-header">
+            <span className="ui-title text-blue-600 dark:text-blue-400">{t("flash.config")}</span>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+            <select
+              disabled={isFlashing}
+              value={mode}
+              onChange={(e) => {
+                const next = e.target.value as "full_erase" | "keep_data" | "partition_erase" | "partition";
+                setMode(next);
+                localStorage.setItem("flash_mode", next);
+              }}
+              className="ui-select w-full"
+            >
+              <option value="full_erase">{t("flash.fullErase")}</option>
+              <option value="keep_data">{t("flash.keepData")}</option>
+              <option value="partition_erase">{t("flash.partitionErase")}</option>
+              <option value="partition">{t("flash.partitionOnly")}</option>
+            </select>
 
-          <div className="max-h-64 flex-1 space-y-1.5 overflow-y-auto pt-1">
-            {(inspectInfo?.partitions || []).map((p) => (
-              <label
-                key={p.name}
-                className="ui-subcard flex cursor-pointer items-center justify-between px-2.5 py-1.5 transition hover:border-blue-500/40"
-              >
-                <span className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    disabled={isFlashing}
-                    checked={selected.includes(p.name)}
-                    onChange={(e) =>
-                      setSelected((prev) =>
-                        e.target.checked ? [...prev, p.name] : prev.filter((x) => x !== p.name)
-                      )
-                    }
-                    className="accent-blue-600"
-                  />
-                  <span className="font-medium text-slate-800 dark:text-slate-200">{p.name}</span>
-                </span>
-                <span className="font-mono text-[11px] text-slate-500">{(p.size_bytes / 1024).toFixed(0)} KB</span>
-              </label>
-            ))}
+            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto">
+              {(inspectInfo?.partitions || []).length === 0 ? (
+                <div className="flex h-full min-h-[120px] items-center justify-center rounded-lg border border-dashed border-slate-200 p-4 text-center text-[11px] text-slate-400 dark:border-slate-800">
+                  {t("flash.unselected")}
+                </div>
+              ) : (
+                (inspectInfo?.partitions || []).map((p) => (
+                  <label
+                    key={p.name}
+                    className="ui-subcard flex cursor-pointer items-center justify-between px-3 py-2 transition hover:border-blue-500/40"
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      <input
+                        type="checkbox"
+                        disabled={isFlashing}
+                        checked={selected.includes(p.name)}
+                        onChange={(e) =>
+                          setSelected((prev) =>
+                            e.target.checked ? [...prev, p.name] : prev.filter((x) => x !== p.name)
+                          )
+                        }
+                        className="accent-blue-600"
+                      />
+                      <span className="truncate font-medium text-slate-800 dark:text-slate-200">{p.name}</span>
+                    </span>
+                    <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
+                      {(p.size_bytes / 1024).toFixed(0)} KB
+                    </span>
+                  </label>
+                ))
+              )}
+            </div>
           </div>
         </div>
 
         <div className="col-span-8 flex min-h-0 flex-col gap-3">
           <div className="grid grid-cols-2 gap-3">
-            <div className="ui-card space-y-2.5 p-4 text-xs">
-              <div className="ui-title text-blue-600 dark:text-blue-400">{t("flash.options")}</div>
-              <label className="flex cursor-pointer items-center gap-2 text-slate-700 dark:text-slate-200">
-                <input
-                  type="checkbox"
-                  disabled={isFlashing}
-                  checked={verify}
-                  onChange={(e) => setVerify(e.target.checked)}
-                  className="accent-blue-600"
-                />
-                {t("flash.verify")}
-              </label>
-              <div className="flex items-center justify-between gap-2 pt-1">
-                <span className="text-slate-600 dark:text-slate-300">{t("flash.postAction")}</span>
-                <select
-                  disabled={isFlashing}
-                  value={postAction}
-                  onChange={(e) => setPostAction(e.target.value as "keep" | "reboot" | "poweroff")}
-                  className="ui-select"
-                >
-                  <option value="reboot">{t("flash.reboot")}</option>
-                  <option value="poweroff">{t("flash.poweroff")}</option>
-                  <option value="keep">{t("flash.keepState")}</option>
-                </select>
+            <div className="ui-card flex flex-col overflow-hidden text-xs">
+              <div className="ui-card-header">
+                <span className="ui-title text-blue-600 dark:text-blue-400">{t("flash.options")}</span>
+              </div>
+              <div className="flex flex-1 flex-col justify-center gap-3 p-4">
+                <label className="flex cursor-pointer items-center gap-2 text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    disabled={isFlashing}
+                    checked={verify}
+                    onChange={(e) => setVerify(e.target.checked)}
+                    className="accent-blue-600"
+                  />
+                  {t("flash.verify")}
+                </label>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-600 dark:text-slate-300">{t("flash.postAction")}</span>
+                  <select
+                    disabled={isFlashing}
+                    value={postAction}
+                    onChange={(e) => setPostAction(e.target.value as "keep" | "reboot" | "poweroff")}
+                    className="ui-select"
+                  >
+                    <option value="reboot">{t("flash.reboot")}</option>
+                    <option value="poweroff">{t("flash.poweroff")}</option>
+                    <option value="keep">{t("flash.keepState")}</option>
+                  </select>
+                </div>
               </div>
             </div>
 
-            <div className="ui-card space-y-2.5 p-4 text-xs">
-              <div className="flex items-center justify-between gap-2">
+            <div className="ui-card flex flex-col overflow-hidden text-xs">
+              <div className="ui-card-header">
                 <span className="ui-title truncate text-blue-600 dark:text-blue-400">
                   {progress?.partition || t("flash.control")}
                 </span>
-                <span className="shrink-0 font-mono text-slate-600 dark:text-slate-300">
+                <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-slate-600 dark:text-slate-300">
                   {progress
                     ? `${progress.percent.toFixed(1)}%${
                         progress.total > 100
@@ -227,28 +243,30 @@ export function FirmwareFlash({
                     : "0.0%"}
                 </span>
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-                <div
-                  className="h-full rounded-full bg-blue-600 transition-all"
-                  style={{ width: `${progress?.percent ?? 0}%` }}
-                />
-              </div>
-              <div className="flex gap-2 pt-1">
-                <button
-                  disabled={isFlashing || !firmwarePath}
-                  onClick={startFlash}
-                  className="ui-btn-primary flex-1 py-2"
-                >
-                  {isFlashing ? t("flash.flashing") : t("flash.start")}
-                </button>
-                {isFlashing && (
+              <div className="flex flex-1 flex-col justify-center gap-3 p-4">
+                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                  <div
+                    className="h-full rounded-full bg-blue-600 transition-all"
+                    style={{ width: `${progress?.percent ?? 0}%` }}
+                  />
+                </div>
+                <div className="flex gap-2">
                   <button
-                    onClick={cancelFlash}
-                    className="ui-btn-danger py-2"
+                    disabled={isFlashing || !firmwarePath}
+                    onClick={startFlash}
+                    className="ui-btn-primary flex-1 py-2"
                   >
-                    {t("common.cancel")}
+                    {isFlashing ? t("flash.flashing") : t("flash.start")}
                   </button>
-                )}
+                  {isFlashing && (
+                    <button
+                      onClick={cancelFlash}
+                      className="ui-btn-danger py-2"
+                    >
+                      {t("common.cancel")}
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -262,7 +280,7 @@ export function FirmwareFlash({
                 <button
                   type="button"
                   onClick={() => setFlashLogs([])}
-                  className="text-[11px] text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                  className="text-[11px] font-medium text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
                 >
                   {t("log.clear")}
                 </button>

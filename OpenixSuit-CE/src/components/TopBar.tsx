@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { RefreshCw, RotateCw, Shield, Zap } from "lucide-react";
+import { Loader2, RefreshCw, RotateCw, Shield, Zap } from "lucide-react";
 
 export interface FelDevice {
   id: string;
@@ -17,6 +17,7 @@ interface TopBarProps {
   adbDevices: AdbDevice[];
   selectedAdbSerial: string;
   aiSyncStatus?: string | null;
+  switchingEfex?: boolean;
   onSelectAdbSerial: (serial: string) => void;
   onRefreshDevices: () => void;
   onAdbRoot: () => void;
@@ -29,6 +30,7 @@ export function TopBar({
   adbDevices,
   selectedAdbSerial,
   aiSyncStatus,
+  switchingEfex = false,
   onSelectAdbSerial,
   onRefreshDevices,
   onAdbRoot,
@@ -120,14 +122,22 @@ export function TopBar({
               <RotateCw className="h-3.5 w-3.5" />
               {t("status.reboot")}
             </button>
-            <button
-              onClick={onSwitchEfex}
-              className="ui-btn-primary"
-            >
-              <Zap className="h-3.5 w-3.5" />
-              {t("status.switchEfex")}
-            </button>
           </>
+        )}
+
+        {(adbDevices.length > 0 || switchingEfex) && (
+          <button
+            onClick={onSwitchEfex}
+            disabled={switchingEfex}
+            className="ui-btn-primary"
+          >
+            {switchingEfex ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Zap className="h-3.5 w-3.5" />
+            )}
+            {switchingEfex ? t("status.switchingEfex") : t("status.switchEfex")}
+          </button>
         )}
       </div>
     </header>

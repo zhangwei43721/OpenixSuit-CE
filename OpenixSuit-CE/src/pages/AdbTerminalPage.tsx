@@ -379,24 +379,24 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
   };
 
   return (
-    <div className="h-full flex flex-col gap-3 min-h-0">
+    <div className="flex h-full min-h-0 flex-col gap-3">
       {/* Top Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 shadow-sm">
+      <div className="ui-toolbar">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-100">
-            <TerminalIcon className="w-4 h-4 text-blue-500" />
+          <div className="ui-title">
+            <TerminalIcon className="h-4 w-4 text-blue-500" />
             <span>{isEn ? "ADB PTY Terminal" : "ADB 终端"}</span>
           </div>
 
-          <span className="text-xs font-mono px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+          <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-xs tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
             {serial || (isEn ? "No device" : "未连接设备")}
           </span>
 
           <span
-            className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${
+            className={`rounded-full px-2 py-0.5 font-mono text-[11px] font-medium tabular-nums ${
               sessionId
                 ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                : "bg-slate-200 dark:bg-slate-800 text-slate-500"
+                : "bg-slate-200 text-slate-500 dark:bg-slate-800 dark:text-slate-400"
             }`}
           >
             {sessionId
@@ -407,30 +407,30 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
           </span>
 
           {sessionId ? (
-            <>
+            <div className="flex items-center gap-1.5">
               <button
                 onClick={openSession}
                 disabled={connecting}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition"
+                className="ui-btn-secondary"
               >
-                <RefreshCw className={`w-3.5 h-3.5 ${connecting ? "animate-spin" : ""}`} />
+                <RefreshCw className={`h-3.5 w-3.5 ${connecting ? "animate-spin" : ""}`} />
                 {isEn ? "Reconnect" : "重连"}
               </button>
               <button
                 onClick={() => closeSession()}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-rose-500 hover:bg-rose-600 text-white transition"
+                className="ui-btn-danger"
               >
-                <PlugZap className="w-3.5 h-3.5" />
+                <PlugZap className="h-3.5 w-3.5" />
                 {isEn ? "Disconnect" : "断开"}
               </button>
-            </>
+            </div>
           ) : (
             <button
               onClick={openSession}
               disabled={!serial || connecting}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 transition"
+              className="ui-btn-success"
             >
-              <Plug className="w-3.5 h-3.5" />
+              <Plug className="h-3.5 w-3.5" />
               {connecting
                 ? isEn
                   ? "Connecting..."
@@ -447,51 +447,47 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
           <button
             onClick={() => sendRawData("\x03")}
             disabled={!sessionId}
-            className="px-2 py-1 rounded-md text-xs font-mono border border-rose-500/30 bg-rose-500/10 text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 disabled:opacity-40 transition"
+            className="inline-flex items-center justify-center rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1.5 font-mono text-xs font-medium text-rose-600 transition hover:bg-rose-500/20 disabled:pointer-events-none disabled:opacity-45 dark:text-rose-400"
           >
             Ctrl+C
           </button>
           <button
             onClick={() => sendRawData("\x04")}
             disabled={!sessionId}
-            className="px-2 py-1 rounded-md text-xs font-mono border border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 disabled:opacity-40 transition"
+            className="inline-flex items-center justify-center rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 font-mono text-xs font-medium text-amber-600 transition hover:bg-amber-500/20 disabled:pointer-events-none disabled:opacity-45 dark:text-amber-400"
           >
             Ctrl+D
           </button>
           <button
             onClick={() => setBuffer("")}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-xs border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+            className="ui-btn-secondary"
           >
-            <Eraser className="w-3.5 h-3.5" />
+            <Eraser className="h-3.5 w-3.5" />
             Clear
           </button>
 
-          <div className="h-4 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block" />
+          <div className="mx-1 hidden h-4 w-px bg-slate-200 dark:bg-slate-700 sm:block" />
 
           <button
             type="button"
             onClick={() => setShowShortcutDrawer((v) => !v)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs border transition ${
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
               showShortcutDrawer
                 ? "border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400"
-                : "border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+                : "border-slate-200 bg-white text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700/80"
             }`}
           >
-            <ListChecks className="w-3.5 h-3.5" />
+            <ListChecks className="h-3.5 w-3.5" />
             {isEn ? `Shortcuts (${quickCommands.length})` : `快捷指令 (${quickCommands.length})`}
           </button>
         </div>
       </div>
 
-      {error && (
-        <div className="px-3 py-2 rounded-lg text-xs bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400">
-          {error}
-        </div>
-      )}
+      {error && <div className="ui-alert-err">{error}</div>}
 
       {/* Main Split: Terminal + Quick Commands List */}
-      <div className="flex-1 min-h-0 flex gap-3">
-        <div className="flex-1 min-w-0 flex flex-col gap-2.5 min-h-0">
+      <div className="flex min-h-0 flex-1 gap-3">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
           {/* Interactive Terminal Viewport */}
           <div
             ref={termContainerRef}
@@ -501,16 +497,16 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
             onKeyDown={handleTerminalKeyDown}
             onPaste={handleTerminalPaste}
             onClick={() => termContainerRef.current?.focus()}
-            className={`flex-1 overflow-auto p-3 rounded-xl border bg-slate-950 text-slate-100 font-mono text-xs cursor-text outline-none transition min-h-[260px] ${
+            className={`ui-terminal min-h-[260px] flex-1 cursor-text overflow-auto rounded-xl p-4 text-slate-100 outline-none transition ${
               focused
                 ? "border-blue-500 ring-2 ring-blue-500/20"
-                : "border-slate-200 dark:border-slate-800"
+                : ""
             }`}
           >
             {buffer ? (
               <AnsiText text={buffer} ansiEnabled={true} className="text-slate-100" />
             ) : (
-              <div className="text-slate-500 select-none">
+              <div className="select-none text-slate-400">
                 {sessionId
                   ? isEn
                     ? "Terminal ready. Click here and start typing..."
@@ -523,8 +519,8 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
           </div>
 
           {/* Bottom Paste / IME Command Bar */}
-          <div className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2">
-            <span className="text-[11px] text-slate-500 dark:text-slate-400 shrink-0">
+          <div className="ui-card flex items-center gap-2 px-4 py-2.5">
+            <span className="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
               {isEn ? "Command:" : "发送指令:"}
             </span>
             <input
@@ -546,34 +542,34 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                   ? "Connect terminal to run (you can still save shortcuts)..."
                   : "连接终端后可直接发送（未连接也可先输入并存为快捷指令）..."
               }
-              className="flex-1 text-xs font-mono px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="ui-input flex-1 font-mono"
             />
             <button
               type="button"
               onClick={() => openShortcutCreator(imeInput.trim())}
               disabled={!imeInput.trim()}
               title={isEn ? "Save current command to list" : "将当前输入保存到右侧快捷指令列表"}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-40 transition"
+              className="ui-btn-secondary"
             >
-              <BookmarkPlus className="w-3.5 h-3.5 text-blue-500" />
+              <BookmarkPlus className="h-3.5 w-3.5 text-blue-500" />
               {isEn ? "Save" : "存为快捷"}
             </button>
             <button
               onClick={handleSendImeBar}
               disabled={!sessionId}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition"
+              className="ui-btn-primary"
             >
-              <Send className="w-3.5 h-3.5" />
+              <Send className="h-3.5 w-3.5" />
               {isEn ? "Send" : "发送"}
             </button>
           </div>
         </div>
 
         {showShortcutDrawer && (
-          <div className="w-80 shrink-0 flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm">
-            <div className="flex items-center justify-between gap-2 px-3 py-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
-              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-100">
-                <ListChecks className="w-4 h-4 text-blue-500" />
+          <div className="ui-card flex w-80 shrink-0 flex-col overflow-hidden">
+            <div className="ui-card-header">
+              <div className="ui-title">
+                <ListChecks className="h-4 w-4 text-blue-500" />
                 <span>{isEn ? "Quick Commands" : "快捷指令列表"}</span>
               </div>
               <div className="flex items-center gap-1">
@@ -581,36 +577,36 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                   type="button"
                   onClick={() => setQuickCommands(DEFAULT_QUICK_COMMANDS)}
                   title={isEn ? "Restore defaults" : "恢复默认指令"}
-                  className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800"
+                  className="rounded-md p-1.5 text-slate-400 transition hover:bg-slate-200 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
                 >
-                  <RotateCcw className="w-3.5 h-3.5" />
+                  <RotateCcw className="h-3.5 w-3.5" />
                 </button>
                 <button
                   type="button"
                   onClick={() => openShortcutCreator(imeInput.trim())}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-medium"
+                  className="ui-btn-primary !px-2.5 !py-1 text-[11px]"
                 >
-                  <Plus className="w-3 h-3" />
+                  <Plus className="h-3 w-3" />
                   {isEn ? "New" : "新建"}
                 </button>
               </div>
             </div>
 
-            <div className="p-2 border-b border-slate-200 dark:border-slate-800">
+            <div className="border-b border-slate-200 p-3 dark:border-slate-800">
               <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2 pointer-events-none" />
+                <Search className="pointer-events-none absolute left-2.5 top-2 h-3.5 w-3.5 text-slate-400" />
                 <input
                   value={shortcutQuery}
                   onChange={(e) => setShortcutQuery(e.target.value)}
                   placeholder={isEn ? "Search name or command..." : "搜索名称或长命令..."}
-                  className="w-full pl-8 pr-2.5 py-1 text-xs rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950"
+                  className="ui-input w-full pl-8"
                 />
               </div>
             </div>
 
             {shortcutEditorOpen && (
-              <div className="p-2.5 space-y-2 border-b border-blue-500/30 bg-blue-500/5 text-xs">
-                <div className="font-medium text-blue-600 dark:text-blue-400">
+              <div className="space-y-2.5 border-b border-blue-500/30 bg-blue-500/5 p-3 text-xs">
+                <div className="font-semibold text-blue-600 dark:text-blue-400">
                   {editingShortcutId
                     ? isEn
                       ? "Edit Shortcut"
@@ -624,7 +620,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                   value={shortcutLabel}
                   onChange={(e) => setShortcutLabel(e.target.value)}
                   placeholder={isEn ? "Label (e.g. Pinmux Dump)" : "名称（如 查看 GPIO 复用）"}
-                  className="w-full px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950"
+                  className="ui-input w-full bg-white dark:bg-slate-950"
                 />
                 <textarea
                   rows={3}
@@ -635,7 +631,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                       ? "Long shell command..."
                       : "输入完整命令（支持长命令或管道组合）..."
                   }
-                  className="w-full font-mono text-[11px] px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 resize-y"
+                  className="ui-input w-full resize-y bg-white font-mono text-[11px] dark:bg-slate-950"
                 />
                 <div className="flex justify-end gap-1.5">
                   <button
@@ -644,7 +640,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                       setShortcutEditorOpen(false);
                       setEditingShortcutId(null);
                     }}
-                    className="px-2.5 py-1 rounded-md border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
+                    className="ui-btn-secondary !px-2.5 !py-1"
                   >
                     {isEn ? "Cancel" : "取消"}
                   </button>
@@ -652,7 +648,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                     type="button"
                     onClick={handleSaveShortcut}
                     disabled={!shortcutCmd.trim()}
-                    className="px-3 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-medium disabled:opacity-40"
+                    className="ui-btn-primary !px-3 !py-1"
                   >
                     {isEn ? "Save" : "保存"}
                   </button>
@@ -660,20 +656,20 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
               </div>
             )}
 
-            <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
+            <div className="flex-1 space-y-2 overflow-y-auto p-3">
               {filteredShortcuts.length === 0 ? (
-                <div className="py-8 text-center text-xs text-slate-400">
+                <div className="py-10 text-center text-xs text-slate-400">
                   {isEn ? "No saved shortcuts" : "暂无匹配的快捷指令，点击上方「新建」添加"}
                 </div>
               ) : (
                 filteredShortcuts.map((item) => (
                   <div
                     key={item.id}
-                    className="group rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60 p-2 hover:border-blue-500/40 transition"
+                    className="ui-subcard group p-2.5 transition hover:border-blue-500/40"
                   >
                     <div className="flex items-center justify-between gap-1.5">
                       <span
-                        className="text-xs font-medium text-slate-800 dark:text-slate-100 truncate"
+                        className="truncate text-xs font-medium text-slate-800 dark:text-slate-100"
                         title={item.label}
                       >
                         {item.label}
@@ -684,33 +680,33 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                           disabled={!sessionId}
                           onClick={() => sendRawData(`${item.cmd}\r`)}
                           title={isEn ? "Run now" : "立即执行"}
-                          className="p-1 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/15 disabled:opacity-35"
+                          className="rounded-md p-1 text-emerald-600 transition hover:bg-emerald-500/15 disabled:opacity-35 dark:text-emerald-400"
                         >
-                          <Play className="w-3.5 h-3.5" />
+                          <Play className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
                           onClick={() => setImeInput(item.cmd)}
                           title={isEn ? "Fill into input bar" : "填入下方输入框修改"}
-                          className="p-1 rounded-md text-slate-500 hover:text-blue-500 hover:bg-blue-500/10"
+                          className="rounded-md p-1 text-slate-500 transition hover:bg-blue-500/10 hover:text-blue-500"
                         >
-                          <CornerDownLeft className="w-3.5 h-3.5" />
+                          <CornerDownLeft className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
                           onClick={() => openShortcutEditor(item)}
                           title={isEn ? "Edit" : "编辑"}
-                          className="p-1 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800"
+                          className="rounded-md p-1 text-slate-400 transition hover:bg-slate-200 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
                         >
-                          <Pencil className="w-3 h-3" />
+                          <Pencil className="h-3 w-3" />
                         </button>
                         <button
                           type="button"
                           onClick={() => handleDeleteShortcut(item.id)}
                           title={isEn ? "Delete" : "删除"}
-                          className="p-1 rounded-md text-slate-400 hover:text-rose-500 hover:bg-rose-500/10"
+                          className="rounded-md p-1 text-slate-400 transition hover:bg-rose-500/10 hover:text-rose-500"
                         >
-                          <Trash2 className="w-3 h-3" />
+                          <Trash2 className="h-3 w-3" />
                         </button>
                       </div>
                     </div>
@@ -719,7 +715,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                       disabled={!sessionId}
                       onClick={() => sendRawData(`${item.cmd}\r`)}
                       title={item.cmd}
-                      className="mt-1 w-full text-left font-mono text-[11px] leading-4 text-slate-500 dark:text-slate-400 break-all line-clamp-2 hover:text-blue-600 dark:hover:text-blue-400 disabled:hover:text-slate-500"
+                      className="mt-1 line-clamp-2 w-full break-all text-left font-mono text-[11px] leading-4 text-slate-500 transition hover:text-blue-600 disabled:hover:text-slate-500 dark:text-slate-400 dark:hover:text-blue-400"
                     >
                       {item.cmd}
                     </button>

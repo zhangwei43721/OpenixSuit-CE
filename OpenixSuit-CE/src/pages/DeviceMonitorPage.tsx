@@ -1,22 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Activity,
+  Battery,
   Cpu,
   FolderOpen,
-  History,
+  Gauge,
+  HardDrive,
   LayoutGrid,
   List,
   MemoryStick,
+  Network,
   Pause,
   Play,
   RefreshCw,
   Search,
   Thermometer,
   Trash2,
+  Timer,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { CpuSnapshot, DeviceMetrics } from "../types/workbench";
+import { CpuSnapshot, DeviceMetrics, StorageUsage } from "../types/workbench";
 
 interface DeviceMonitorPageProps {
   serial: string;
@@ -110,49 +114,150 @@ function parseTopSnapshot(raw: string): ParsedTopSnapshot {
 }
 
 const MAX_HISTORY_POINTS = 300;
-const REALTIME_WINDOW = 30;
 
 function kbToMb(kb: number): string {
   return (kb / 1024).toFixed(1);
 }
 
-function buildPolylinePoints(
-  values: number[],
-  width: number,
-  height: number,
-  padX = 8,
-  padY = 10
-): string {
-  if (values.length === 0) return "";
-  const usableW = width - padX * 2;
-  const usableH = height - padY * 2;
-  if (values.length === 1) {
-    const y = padY + usableH * (1 - Math.min(100, Math.max(0, values[0])) / 100);
-    return `${padX},${y.toFixed(1)} ${width - padX},${y.toFixed(1)}`;
-  }
-  return values
-    .map((val, idx) => {
-      const x = padX + (idx / (values.length - 1)) * usableW;
-      const clamped = Math.min(100, Math.max(0, val));
-      const y = padY + usableH * (1 - clamped / 100);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
+function formatRate(kbps: number): string {
+  if (kbps >= 1024) return `${(kbps / 1024).toFixed(1)} MB/s`;
+  return `${kbps.toFixed(1)} KB/s`;
 }
 
-function buildAreaPath(
-  values: number[],
-  width: number,
-  height: number,
-  padX = 8,
-  padY = 10
-): string {
-  const pts = buildPolylinePoints(values, width, height, padX, padY);
-  if (!pts) return "";
-  const baseY = height - padY;
-  const firstX = padX;
-  const lastX = width - padX;
-  return `M ${firstX},${baseY} L ${pts.replace(/ /g, " L ")} L ${lastX},${baseY} Z`;
+function formatUptime(seconds: number): string {
+  if (seconds < 60) return `${Math.floor(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+}
+
+function storageSize(kb: number): string {
+  if (kb >= 1024 * 1024) return `${(kb / 1024 / 1024).toFixed(1)} GB`;
+  if (kb >= 1024) return `${(kb / 1024).toFixed(0)} MB`;
+  return `${kb} KB`;
+}
+
+// 统一图表：按容器实际像素宽度 1:1 渲染（viewBox = 实际宽高），
+// 卡片缩放时折线重新排布，字号/线宽保持固定，不再整体机械缩放。
+function LineChart({
+  id,
+  series,
+  max,
+  labelFor,
+  height = 84,
+}: {
+  id: string;
+  series: {
+    values: number[];
+    color: string;
+    strokeWidth?: number;
+    dashed?: boolean;
+    area?: boolean;
+  }[];
+  max: number;
+  labelFor: (value: number) => string;
+  height?: number;
+}) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(0);
+
+  useLayoutEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () =>
+      setW((prev) => (Math.abs(prev - el.clientWidth) > 1 ? el.clientWidth : prev));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const padX = 8;
+  const padY = 10;
+  const svgW = Math.max(w, 1);
+  const svgH = height;
+  const safeMax = max > 0 ? max : 1;
+  const areaColor = series.find((s) => s.area)?.color ?? series[0]?.color ?? "#0ea5e9";
+
+  const yOf = (v: number) => {
+    const t = Math.min(100, Math.max(0, (v / safeMax) * 100));
+    return padY + (svgH - padY * 2) * (1 - t / 100);
+  };
+  const pointsOf = (values: number[]) =>
+    values
+      .map((v, i) => {
+        const x =
+          values.length === 1
+            ? padX
+            : padX + (i / (values.length - 1)) * (svgW - padX * 2);
+        return `${x.toFixed(1)},${yOf(v).toFixed(1)}`;
+      })
+      .join(" ");
+  const areaOf = (values: number[]) => {
+    if (values.length === 0) return "";
+    const baseY = svgH - padY;
+    return `M ${padX},${baseY} L ${pointsOf(values).replace(/ /g, " L ")} L ${svgW - padX},${baseY} Z`;
+  };
+
+  return (
+    <div ref={wrapRef} className="w-full">
+      {w > 0 && (
+        <svg
+          width={svgW}
+          height={svgH}
+          viewBox={`0 0 ${svgW} ${svgH}`}
+          className="block overflow-visible"
+        >
+          <defs>
+            <linearGradient id={`${id}Grad`} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={areaColor} stopOpacity="0.35" />
+              <stop offset="100%" stopColor={areaColor} stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
+          {[0, 25, 50, 75, 100].map((pct) => {
+            const y = padY + (svgH - padY * 2) * (1 - pct / 100);
+            return (
+              <g key={pct}>
+                <line
+                  x1={padX}
+                  y1={y}
+                  x2={svgW - padX}
+                  y2={y}
+                  stroke="currentColor"
+                  className="text-slate-200 dark:text-slate-800"
+                  strokeDasharray="3 3"
+                />
+                <text
+                  x={padX + 2}
+                  y={y - 3}
+                  fontSize="9"
+                  className="fill-slate-400 dark:fill-slate-600 font-mono"
+                >
+                  {labelFor((max * pct) / 100)}
+                </text>
+              </g>
+            );
+          })}
+          {series.map((s, i) =>
+            s.values.length === 0 ? null : (
+              <g key={i}>
+                {s.area && <path d={areaOf(s.values)} fill={`url(#${id}Grad)`} />}
+                <polyline
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth={s.strokeWidth ?? 1.4}
+                  strokeDasharray={s.dashed ? "4 2" : undefined}
+                  strokeOpacity={s.area ? 1 : 0.85}
+                  strokeLinejoin="round"
+                  points={pointsOf(s.values)}
+                />
+              </g>
+            )
+          )}
+        </svg>
+      )}
+    </div>
+  );
 }
 
 export function DeviceMonitorPage({
@@ -165,75 +270,164 @@ export function DeviceMonitorPage({
 
   const [samples, setSamples] = useState<DeviceMetrics[]>([]);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [pollIntervalMs, setPollIntervalMs] = useState<number>(2000);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<"realtime" | "history">("realtime");
   const [statMode, setStatMode] = useState<"avg" | "max">("avg");
   const [layoutMode, setLayoutMode] = useState<"grid" | "list">("grid");
   const [topViewMode, setTopViewMode] = useState<"table" | "raw">("table");
   const [topQuery, setTopQuery] = useState("");
+  const [selectedNetIface, setSelectedNetIface] = useState<string>("__all__");
+  const [selectedDiskDev, setSelectedDiskDev] = useState<string>("__all__");
+  const [storageBusy, setStorageBusy] = useState<string | null>(null);
+  // 已卸载但记住的挂载点，用于重新挂载（df 不再列出它们）
+  const [unmountedEntries, setUnmountedEntries] = useState<StorageUsage[]>([]);
+
+  // 与后端同一白名单：只允许操作 /mnt/、/media/、/storage/ 下的路径
+  const canManage = (mount: string) =>
+    ["/mnt/", "/media/", "/storage/"].some((p) => mount.startsWith(p));
 
   const prevSnapshotRef = useRef<CpuSnapshot | null>(null);
+  const cachedSlowRef = useRef<{
+    kernel: string;
+    storage: StorageUsage[];
+    battery: BatteryInfo | null;
+    top_output: string;
+    lastSlowAt: number;
+  }>({
+    kernel: "",
+    storage: [],
+    battery: null,
+    top_output: "",
+    lastSlowAt: 0,
+  });
   const onLogRef = useRef(onLog);
   onLogRef.current = onLog;
   const fetchingRef = useRef(false);
   const lastErrRef = useRef<string | null>(null);
 
-  const fetchMetrics = useCallback(async () => {
-    if (!serial || fetchingRef.current) return;
-    fetchingRef.current = true;
-    setLoading(true);
-    try {
-      const data = await invoke<DeviceMetrics>("adb_get_metrics", {
-        serial,
-        prevSnapshot: prevSnapshotRef.current,
-      });
-      prevSnapshotRef.current = data.snapshot;
-      setSamples((prev) => {
-        const next = [...prev, data];
-        return next.length > MAX_HISTORY_POINTS
-          ? next.slice(next.length - MAX_HISTORY_POINTS)
-          : next;
-      });
-      setError(null);
-      lastErrRef.current = null;
-    } catch (err) {
-      const msg = String(err);
-      setError(msg);
-      if (lastErrRef.current !== msg) {
-        lastErrRef.current = msg;
-        onLogRef.current(`adb_get_metrics error: ${msg}`);
+  const fetchMetrics = useCallback(
+    async (forceSlow = false) => {
+      if (!serial || fetchingRef.current) return;
+      fetchingRef.current = true;
+      setLoading(true);
+      try {
+        const now = Date.now();
+        const needStatic = !cachedSlowRef.current.kernel;
+        const needSlow = forceSlow || now - cachedSlowRef.current.lastSlowAt >= 10000;
+        const data = await invoke<DeviceMetrics>("adb_get_metrics", {
+          serial,
+          prevSnapshot: prevSnapshotRef.current,
+          includeStatic: needStatic,
+          includeStorage: needSlow,
+          includeTop: needSlow,
+        });
+        prevSnapshotRef.current = data.snapshot;
+        if (needStatic && data.kernel) {
+          cachedSlowRef.current.kernel = data.kernel;
+        }
+        if (needSlow) {
+          cachedSlowRef.current.storage = data.storage;
+          cachedSlowRef.current.battery = data.battery;
+          cachedSlowRef.current.top_output = data.top_output;
+          cachedSlowRef.current.lastSlowAt = now;
+        }
+        const merged: DeviceMetrics = {
+          ...data,
+          kernel: data.kernel || cachedSlowRef.current.kernel,
+          storage: needSlow ? data.storage : cachedSlowRef.current.storage,
+          battery: needSlow ? data.battery : cachedSlowRef.current.battery,
+          top_output: needSlow ? data.top_output : cachedSlowRef.current.top_output,
+        };
+        // 已重新出现的挂载点从“已卸载”列表移除
+        if (needSlow) {
+          setUnmountedEntries((prev) =>
+            prev.filter((u) => !merged.storage.some((s) => s.mount === u.mount))
+          );
+        }
+        setSamples((prev) => {
+          const next = [...prev, merged];
+          return next.length > MAX_HISTORY_POINTS
+            ? next.slice(next.length - MAX_HISTORY_POINTS)
+            : next;
+        });
+        setError(null);
+        lastErrRef.current = null;
+      } catch (err) {
+        const msg = String(err);
+        setError(msg);
+        if (lastErrRef.current !== msg) {
+          lastErrRef.current = msg;
+          onLogRef.current(`adb_get_metrics error: ${msg}`);
+        }
+      } finally {
+        fetchingRef.current = false;
+        setLoading(false);
       }
-    } finally {
-      fetchingRef.current = false;
-      setLoading(false);
-    }
-  }, [serial]);
+    },
+    [serial]
+  );
+
+  const runStorageOp = useCallback(
+    async (action: "mount" | "umount", entry: StorageUsage) => {
+      if (!serial || storageBusy) return;
+      setStorageBusy(entry.mount);
+      try {
+        const msg = await invoke<string>("adb_storage_mount", {
+          serial,
+          device: entry.device,
+          mount: entry.mount,
+          fstype: entry.fstype,
+          mountIt: action === "mount",
+        });
+        onLogRef.current(`storage ${action} ${entry.mount}: ${msg || "OK"}`);
+        setUnmountedEntries((prev) => {
+          const rest = prev.filter((u) => u.mount !== entry.mount);
+          return action === "umount" ? [...rest, entry] : rest;
+        });
+        setError(null);
+        await fetchMetrics(true);
+      } catch (err) {
+        const m = String(err);
+        setError(m);
+        onLogRef.current(`storage ${action} ${entry.mount} error: ${m}`);
+      } finally {
+        setStorageBusy(null);
+      }
+    },
+    [serial, storageBusy, fetchMetrics]
+  );
 
   // Reset samples when serial changes
   useEffect(() => {
     setSamples([]);
+    setUnmountedEntries([]);
     prevSnapshotRef.current = null;
+    cachedSlowRef.current = {
+      kernel: "",
+      storage: [],
+      battery: null,
+      top_output: "",
+      lastSlowAt: 0,
+    };
     lastErrRef.current = null;
     setError(null);
     if (serial) {
-      fetchMetrics();
+      fetchMetrics(true);
     }
   }, [serial, fetchMetrics]);
 
-  // Poll every 2s
+  // Poll at configured interval
   useEffect(() => {
     if (!serial || !autoRefresh) return;
     const timer = setInterval(() => {
-      fetchMetrics();
-    }, 2000);
+      fetchMetrics(false);
+    }, pollIntervalMs);
     return () => clearInterval(timer);
-  }, [serial, autoRefresh, fetchMetrics]);
+  }, [serial, autoRefresh, pollIntervalMs, fetchMetrics]);
 
-  const activeWindow = useMemo(() => {
-    if (viewMode === "history") return samples;
-    return samples.slice(-REALTIME_WINDOW);
-  }, [samples, viewMode]);
+  // 无窗口切换：始终展示全部保留采样
+  const activeWindow = samples;
 
   const latest = samples[samples.length - 1] ?? null;
 
@@ -257,26 +451,84 @@ export function DeviceMonitorPage({
         cpuMax: 0,
         memAvg: 0,
         memMax: 0,
+        netAvg: 0,
+        netMax: 0,
+        diskAvg: 0,
+        diskMax: 0,
       };
     }
     let cpuSum = 0;
     let cpuMax = 0;
     let memSum = 0;
     let memMax = 0;
+    let netSum = 0;
+    let netMax = 0;
+    let diskSum = 0;
+    let diskMax = 0;
     for (const s of activeWindow) {
       cpuSum += s.cpu_total_pct;
       if (s.cpu_total_pct > cpuMax) cpuMax = s.cpu_total_pct;
       const memPct = s.mem_total_kb > 0 ? (s.mem_used_kb / s.mem_total_kb) * 100 : 0;
       memSum += memPct;
       if (memPct > memMax) memMax = memPct;
+      const net =
+        selectedNetIface === "__all__"
+          ? { rx: s.net_rx_kbps, tx: s.net_tx_kbps }
+          : (() => {
+              const found = s.net_ifaces.find((i) => i.name === selectedNetIface);
+              return { rx: found?.rx_kbps ?? 0, tx: found?.tx_kbps ?? 0 };
+            })();
+      const netRate = net.rx + net.tx;
+      netSum += netRate;
+      if (netRate > netMax) netMax = netRate;
+      const disk =
+        selectedDiskDev === "__all__"
+          ? { r: s.disk_read_kbps, w: s.disk_write_kbps }
+          : (() => {
+              const found = s.disk_devices.find((d) => d.name === selectedDiskDev);
+              return { r: found?.read_kbps ?? 0, w: found?.write_kbps ?? 0 };
+            })();
+      const diskRate = disk.r + disk.w;
+      diskSum += diskRate;
+      if (diskRate > diskMax) diskMax = diskRate;
     }
+    const n = activeWindow.length;
     return {
-      cpuAvg: cpuSum / activeWindow.length,
+      cpuAvg: cpuSum / n,
       cpuMax,
-      memAvg: memSum / activeWindow.length,
+      memAvg: memSum / n,
       memMax,
+      netAvg: netSum / n,
+      netMax,
+      diskAvg: diskSum / n,
+      diskMax,
     };
+  }, [activeWindow, selectedNetIface, selectedDiskDev]);
+
+  const netIfaceNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const s of activeWindow) {
+      for (const iface of s.net_ifaces) names.add(iface.name);
+    }
+    return Array.from(names);
   }, [activeWindow]);
+
+  const diskDevNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const s of activeWindow) {
+      for (const dev of s.disk_devices) names.add(dev.name);
+    }
+    return Array.from(names);
+  }, [activeWindow]);
+
+  const activeNetIface =
+    selectedNetIface === "__all__" || netIfaceNames.includes(selectedNetIface)
+      ? selectedNetIface
+      : "__all__";
+  const activeDiskDev =
+    selectedDiskDev === "__all__" || diskDevNames.includes(selectedDiskDev)
+      ? selectedDiskDev
+      : "__all__";
 
   const cpuTotalSeries = useMemo(() => activeWindow.map((s) => s.cpu_total_pct), [activeWindow]);
   const cpuUserSeries = useMemo(() => activeWindow.map((s) => s.cpu_user_pct), [activeWindow]);
@@ -298,8 +550,63 @@ export function DeviceMonitorPage({
     [activeWindow]
   );
 
-  const svgW = 560;
-  const svgH = 170;
+  const netRxSeries = useMemo(
+    () =>
+      activeWindow.map((s) =>
+        activeNetIface === "__all__"
+          ? s.net_rx_kbps
+          : s.net_ifaces.find((i) => i.name === activeNetIface)?.rx_kbps ?? 0
+      ),
+    [activeWindow, activeNetIface]
+  );
+  const netTxSeries = useMemo(
+    () =>
+      activeWindow.map((s) =>
+        activeNetIface === "__all__"
+          ? s.net_tx_kbps
+          : s.net_ifaces.find((i) => i.name === activeNetIface)?.tx_kbps ?? 0
+      ),
+    [activeWindow, activeNetIface]
+  );
+  const diskReadSeries = useMemo(
+    () =>
+      activeWindow.map((s) =>
+        activeDiskDev === "__all__"
+          ? s.disk_read_kbps
+          : s.disk_devices.find((d) => d.name === activeDiskDev)?.read_kbps ?? 0
+      ),
+    [activeWindow, activeDiskDev]
+  );
+  const diskWriteSeries = useMemo(
+    () =>
+      activeWindow.map((s) =>
+        activeDiskDev === "__all__"
+          ? s.disk_write_kbps
+          : s.disk_devices.find((d) => d.name === activeDiskDev)?.write_kbps ?? 0
+      ),
+    [activeWindow, activeDiskDev]
+  );
+
+  const latestNetRx = latest
+    ? activeNetIface === "__all__"
+      ? latest.net_rx_kbps
+      : latest.net_ifaces.find((i) => i.name === activeNetIface)?.rx_kbps ?? 0
+    : 0;
+  const latestNetTx = latest
+    ? activeNetIface === "__all__"
+      ? latest.net_tx_kbps
+      : latest.net_ifaces.find((i) => i.name === activeNetIface)?.tx_kbps ?? 0
+    : 0;
+  const latestDiskRead = latest
+    ? activeDiskDev === "__all__"
+      ? latest.disk_read_kbps
+      : latest.disk_devices.find((d) => d.name === activeDiskDev)?.read_kbps ?? 0
+    : 0;
+  const latestDiskWrite = latest
+    ? activeDiskDev === "__all__"
+      ? latest.disk_write_kbps
+      : latest.disk_devices.find((d) => d.name === activeDiskDev)?.write_kbps ?? 0
+    : 0;
 
   const latestMemPct =
     latest && latest.mem_total_kb > 0
@@ -317,22 +624,22 @@ export function DeviceMonitorPage({
   return (
     <div className="h-full flex flex-col gap-3 min-h-0 overflow-auto pr-0.5">
       {/* Top Control Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 shadow-sm">
+      <div className="ui-toolbar">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-2 text-xs font-semibold text-slate-800 dark:text-slate-100">
+          <div className="ui-title">
             <Activity className="w-4 h-4 text-blue-500" />
             <span>{isEn ? "Device Performance Monitor" : "设备性能监控"}</span>
           </div>
-          <span className="text-xs font-mono px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+          <span className="text-xs font-mono tabular-nums px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700">
             {serial || (isEn ? "No ADB Device" : "未连接设备")}
           </span>
           {latest && (
             <>
-              <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-mono">
+              <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-mono tabular-nums">
                 {latest.cpu_cores} Cores · {latest.kernel || "Linux"}
               </span>
               <span
-                className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md border font-mono ${
+                className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md border font-mono tabular-nums ${
                   latest.temp_celsius !== null && latest.temp_celsius >= 75
                     ? "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
                     : "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
@@ -341,54 +648,65 @@ export function DeviceMonitorPage({
                 <Thermometer className="w-3 h-3" />
                 {latest.temp_celsius !== null ? `${latest.temp_celsius.toFixed(1)} °C` : "-- °C"}
               </span>
+              <span
+                className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md border font-mono tabular-nums bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-500/20"
+                title={isEn ? "Load average (1/5/15 min)" : "负载均值（1/5/15 分钟）"}
+              >
+                <Gauge className="w-3 h-3" />
+                {latest.load1.toFixed(2)} / {latest.load5.toFixed(2)} / {latest.load15.toFixed(2)}
+              </span>
+              <span
+                className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md border font-mono tabular-nums bg-slate-500/10 text-slate-600 dark:text-slate-300 border-slate-500/20"
+                title={isEn ? "Uptime" : "运行时长"}
+              >
+                <Timer className="w-3 h-3" />
+                {latest.uptime_s > 0 ? formatUptime(latest.uptime_s) : "--"}
+              </span>
+              {latest.battery && (
+                <span
+                  className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-md border font-mono tabular-nums bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                  title={`${latest.battery.name} · ${latest.battery.status}${
+                    latest.battery.voltage_v != null
+                      ? ` · ${latest.battery.voltage_v.toFixed(2)} V`
+                      : ""
+                  }${
+                    latest.battery.current_ma != null
+                      ? ` · ${latest.battery.current_ma.toFixed(0)} mA`
+                      : ""
+                  }${
+                    latest.battery.temp_c != null ? ` · ${latest.battery.temp_c.toFixed(1)} °C` : ""
+                  }`}
+                >
+                  <Battery className="w-3 h-3" />
+                  {latest.battery.capacity_pct != null
+                    ? `${latest.battery.capacity_pct.toFixed(0)}%`
+                    : "--%"}
+                  {latest.battery.status && ` · ${latest.battery.status}`}
+                </span>
+              )}
             </>
           )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Realtime vs History */}
-          <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-slate-950">
-            <button
-              onClick={() => setViewMode("realtime")}
-              className={`px-2.5 py-1 rounded-md text-xs font-medium transition ${
-                viewMode === "realtime"
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-slate-600 dark:text-slate-300"
-              }`}
-            >
-              {isEn ? "Realtime" : "实时监控"}
-            </button>
-            <button
-              onClick={() => setViewMode("history")}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition ${
-                viewMode === "history"
-                  ? "bg-blue-600 text-white shadow-sm"
-                  : "text-slate-600 dark:text-slate-300"
-              }`}
-            >
-              <History className="w-3 h-3" />
-              {isEn ? `History (${samples.length})` : `历史记录 (${samples.length})`}
-            </button>
-          </div>
-
           {/* Avg vs Max */}
-          <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-slate-950">
+          <div className="ui-segmented">
             <button
               onClick={() => setStatMode("avg")}
-              className={`px-2 py-1 rounded-md text-xs font-medium transition ${
+              className={`ui-segmented-btn ${
                 statMode === "avg"
-                  ? "bg-slate-800 dark:bg-slate-700 text-white"
-                  : "text-slate-600 dark:text-slate-300"
+                  ? "bg-slate-800 text-white shadow-sm dark:bg-slate-700"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
               }`}
             >
               {isEn ? "Avg" : "均值"}
             </button>
             <button
               onClick={() => setStatMode("max")}
-              className={`px-2 py-1 rounded-md text-xs font-medium transition ${
+              className={`ui-segmented-btn ${
                 statMode === "max"
-                  ? "bg-slate-800 dark:bg-slate-700 text-white"
-                  : "text-slate-600 dark:text-slate-300"
+                  ? "bg-slate-800 text-white shadow-sm dark:bg-slate-700"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
               }`}
             >
               {isEn ? "Max" : "峰值"}
@@ -396,14 +714,14 @@ export function DeviceMonitorPage({
           </div>
 
           {/* Grid vs List */}
-          <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-700 p-0.5 bg-slate-50 dark:bg-slate-950">
+          <div className="ui-segmented">
             <button
               onClick={() => setLayoutMode("grid")}
               title={isEn ? "Grid View" : "网格布局"}
-              className={`p-1.5 rounded-md transition ${
+              className={`ui-segmented-btn px-2 ${
                 layoutMode === "grid"
-                  ? "bg-slate-800 dark:bg-slate-700 text-white"
-                  : "text-slate-500 dark:text-slate-400"
+                  ? "bg-slate-800 text-white shadow-sm dark:bg-slate-700"
+                  : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
               }`}
             >
               <LayoutGrid className="w-3.5 h-3.5" />
@@ -411,33 +729,47 @@ export function DeviceMonitorPage({
             <button
               onClick={() => setLayoutMode("list")}
               title={isEn ? "List View" : "列表布局"}
-              className={`p-1.5 rounded-md transition ${
+              className={`ui-segmented-btn px-2 ${
                 layoutMode === "list"
-                  ? "bg-slate-800 dark:bg-slate-700 text-white"
-                  : "text-slate-500 dark:text-slate-400"
+                  ? "bg-slate-800 text-white shadow-sm dark:bg-slate-700"
+                  : "text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white"
               }`}
             >
               <List className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* Auto-refresh toggle */}
+          {/* Auto-refresh toggle + interval */}
+          <select
+            value={pollIntervalMs}
+            onChange={(e) => setPollIntervalMs(Number(e.target.value))}
+            title={isEn ? "Sampling interval" : "采样间隔"}
+            className="ui-select py-1 px-2 text-xs font-mono"
+          >
+            <option value={2000}>2s</option>
+            <option value={5000}>5s</option>
+            <option value={10000}>10s</option>
+          </select>
+
           <button
             onClick={() => setAutoRefresh((v) => !v)}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${
+            className={
               autoRefresh
-                ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
-                : "border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
-            }`}
+                ? "inline-flex items-center justify-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-3 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-500/20 dark:text-emerald-300"
+                : "ui-btn-secondary"
+            }
           >
+            {autoRefresh ? (
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+            ) : null}
             {autoRefresh ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-            {autoRefresh ? (isEn ? "Live 2s" : "暂停轮询") : isEn ? "Resume" : "恢复轮询"}
+            {autoRefresh ? (isEn ? "Pause" : "暂停轮询") : isEn ? "Resume" : "恢复轮询"}
           </button>
 
           <button
-            onClick={fetchMetrics}
+            onClick={() => fetchMetrics(true)}
             disabled={!serial || loading}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 disabled:opacity-40 transition"
+            className="ui-btn-secondary"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
             {isEn ? "Refresh" : "刷新"}
@@ -446,34 +778,30 @@ export function DeviceMonitorPage({
           <button
             onClick={() => setSamples([])}
             title={isEn ? "Clear History" : "清空记录"}
-            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-rose-500 transition"
+            className="ui-btn-secondary px-2 text-slate-500 hover:text-rose-500"
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {error && (
-        <div className="px-3 py-2 rounded-lg text-xs bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400">
-          {error}
-        </div>
-      )}
+      {error && <div className="ui-alert-err">{error}</div>}
 
-      {/* Charts Section */}
+      {/* Metrics Grid: 3-col aligned (CPU/Mem/Net on row 1, Disk 1/3 + Storage 2/3 on row 2) */}
       <div
         className={`grid gap-3 ${
-          layoutMode === "grid" ? "grid-cols-1 lg:grid-cols-2" : "grid-cols-1"
+          layoutMode === "grid" ? "grid-cols-1 lg:grid-cols-3" : "grid-cols-1"
         }`}
       >
         {/* CPU Chart Card */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex flex-col gap-3">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
+        <div className="ui-card p-3 flex flex-col gap-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="ui-title">
                 <Cpu className="w-4 h-4 text-blue-500" />
                 <span>{isEn ? "CPU Usage" : "CPU 使用率"}</span>
               </div>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap gap-3 font-mono">
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap gap-x-2.5 gap-y-0.5 font-mono tabular-nums">
                 <span className="text-blue-600 dark:text-blue-400">
                   Total: {latest ? `${latest.cpu_total_pct.toFixed(1)}%` : "--"}
                 </span>
@@ -489,11 +817,11 @@ export function DeviceMonitorPage({
               </div>
             </div>
 
-            <div className="text-right">
-              <div className="text-xl font-bold font-mono text-slate-900 dark:text-white">
+            <div className="text-right shrink-0 whitespace-nowrap">
+              <div className="text-lg leading-tight font-bold font-mono tabular-nums text-slate-900 dark:text-white">
                 {latest ? `${latest.cpu_total_pct.toFixed(1)}%` : "--"}
               </div>
-              <div className="text-[11px] text-slate-400 font-mono">
+              <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {statMode === "avg"
                   ? `${isEn ? "Avg" : "均值"}: ${stats.cpuAvg.toFixed(1)}%`
                   : `${isEn ? "Max" : "峰值"}: ${stats.cpuMax.toFixed(1)}%`}
@@ -501,89 +829,62 @@ export function DeviceMonitorPage({
             </div>
           </div>
 
-          <div className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg p-2">
-            <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full h-40 overflow-visible">
-              <defs>
-                <linearGradient id="cpuAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#0ea5e9" stopOpacity="0.35" />
-                  <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0.02" />
-                </linearGradient>
-              </defs>
-              {[0, 25, 50, 75, 100].map((pct) => {
-                const y = 10 + (svgH - 20) * (1 - pct / 100);
-                return (
-                  <g key={pct}>
-                    <line
-                      x1={8}
-                      y1={y}
-                      x2={svgW - 8}
-                      y2={y}
-                      stroke="currentColor"
-                      className="text-slate-200 dark:text-slate-800"
-                      strokeDasharray="3 3"
-                    />
-                    <text
-                      x={10}
-                      y={y - 3}
-                      fontSize="9"
-                      className="fill-slate-400 dark:fill-slate-600 font-mono"
-                    >
-                      {pct}%
-                    </text>
-                  </g>
-                );
-              })}
-
-              {cpuTotalSeries.length > 0 && (
-                <>
-                  <path
-                    d={buildAreaPath(cpuTotalSeries, svgW, svgH)}
-                    fill="url(#cpuAreaGrad)"
-                  />
-                  <polyline
-                    fill="none"
-                    stroke="#0ea5e9"
-                    strokeWidth="2.2"
-                    strokeLinejoin="round"
-                    points={buildPolylinePoints(cpuTotalSeries, svgW, svgH)}
-                  />
-                  <polyline
-                    fill="none"
-                    stroke="#10b981"
-                    strokeWidth="1.4"
-                    strokeOpacity="0.85"
-                    points={buildPolylinePoints(cpuUserSeries, svgW, svgH)}
-                  />
-                  <polyline
-                    fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth="1.4"
-                    strokeOpacity="0.85"
-                    points={buildPolylinePoints(cpuSysSeries, svgW, svgH)}
-                  />
-                  <polyline
-                    fill="none"
-                    stroke="#f43f5e"
-                    strokeWidth="1.3"
-                    strokeDasharray="3 2"
-                    strokeOpacity="0.85"
-                    points={buildPolylinePoints(cpuIoSeries, svgW, svgH)}
-                  />
-                </>
-              )}
-            </svg>
+          <div className="ui-subcard w-full px-1.5 py-1">
+            <LineChart
+              id="cpuChart"
+              max={100}
+              labelFor={(v) => `${Math.round(v)}%`}
+              series={[
+                { values: cpuTotalSeries, color: "#0ea5e9", strokeWidth: 2.2, area: true },
+                { values: cpuUserSeries, color: "#10b981" },
+                { values: cpuSysSeries, color: "#f59e0b" },
+                { values: cpuIoSeries, color: "#f43f5e", strokeWidth: 1.3, dashed: true },
+              ]}
+            />
           </div>
+
+          {/* Per-core usage bars */}
+          {latest && latest.cpu_core_pcts.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {latest.cpu_core_pcts.map((pct, idx) => (
+                <div
+                  key={idx}
+                  title={`CPU${idx}: ${pct.toFixed(1)}%`}
+                  className="ui-subcard flex items-center gap-1.5 px-2 py-1"
+                >
+                  <span className="text-[10px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                    C{idx}
+                  </span>
+                  <div className="w-14 h-1.5 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-800">
+                    <div
+                      className={`h-full rounded-full transition-all duration-300 ${
+                        pct >= 80
+                          ? "bg-rose-500"
+                          : pct >= 50
+                          ? "bg-amber-500"
+                          : "bg-blue-500"
+                      }`}
+                      style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
+                    />
+                  </div>
+                  <span className="text-[10px] font-mono tabular-nums text-slate-600 dark:text-slate-300 w-8 text-right">
+                    {pct.toFixed(0)}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Memory Chart Card */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm flex flex-col gap-3">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
+        <div className="ui-card p-3 flex flex-col gap-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="ui-title">
                 <MemoryStick className="w-4 h-4 text-violet-500" />
                 <span>{isEn ? "Memory Usage" : "内存使用率"}</span>
               </div>
-              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap gap-3 font-mono">
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap gap-x-2.5 gap-y-0.5 font-mono tabular-nums">
                 <span className="text-violet-600 dark:text-violet-400">
                   Used: {latest ? `${kbToMb(latest.mem_used_kb)} MB` : "--"}
                 </span>
@@ -599,11 +900,11 @@ export function DeviceMonitorPage({
               </div>
             </div>
 
-            <div className="text-right">
-              <div className="text-xl font-bold font-mono text-slate-900 dark:text-white">
+            <div className="text-right shrink-0 whitespace-nowrap">
+              <div className="text-lg leading-tight font-bold font-mono tabular-nums text-slate-900 dark:text-white">
                 {latest ? `${latestMemPct.toFixed(1)}%` : "--"}
               </div>
-              <div className="text-[11px] text-slate-400 font-mono">
+              <div className="text-[11px] text-slate-400 font-mono tabular-nums">
                 {statMode === "avg"
                   ? `${isEn ? "Avg" : "均值"}: ${stats.memAvg.toFixed(1)}%`
                   : `${isEn ? "Max" : "峰值"}: ${stats.memMax.toFixed(1)}%`}
@@ -611,59 +912,16 @@ export function DeviceMonitorPage({
             </div>
           </div>
 
-          <div className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg p-2">
-            <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full h-40 overflow-visible">
-              <defs>
-                <linearGradient id="memAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.35" />
-                  <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.02" />
-                </linearGradient>
-              </defs>
-              {[0, 25, 50, 75, 100].map((pct) => {
-                const y = 10 + (svgH - 20) * (1 - pct / 100);
-                return (
-                  <g key={pct}>
-                    <line
-                      x1={8}
-                      y1={y}
-                      x2={svgW - 8}
-                      y2={y}
-                      stroke="currentColor"
-                      className="text-slate-200 dark:text-slate-800"
-                      strokeDasharray="3 3"
-                    />
-                    <text
-                      x={10}
-                      y={y - 3}
-                      fontSize="9"
-                      className="fill-slate-400 dark:fill-slate-600 font-mono"
-                    >
-                      {pct}%
-                    </text>
-                  </g>
-                );
-              })}
-
-              {memPctSeries.length > 0 && (
-                <>
-                  <path d={buildAreaPath(memPctSeries, svgW, svgH)} fill="url(#memAreaGrad)" />
-                  <polyline
-                    fill="none"
-                    stroke="#8b5cf6"
-                    strokeWidth="2.2"
-                    strokeLinejoin="round"
-                    points={buildPolylinePoints(memPctSeries, svgW, svgH)}
-                  />
-                  <polyline
-                    fill="none"
-                    stroke="#06b6d4"
-                    strokeWidth="1.4"
-                    strokeDasharray="4 2"
-                    points={buildPolylinePoints(memCachedSeries, svgW, svgH)}
-                  />
-                </>
-              )}
-            </svg>
+          <div className="ui-subcard w-full px-1.5 py-1">
+            <LineChart
+              id="memChart"
+              max={100}
+              labelFor={(v) => `${Math.round(v)}%`}
+              series={[
+                { values: memPctSeries, color: "#8b5cf6", strokeWidth: 2.2, area: true },
+                { values: memCachedSeries, color: "#06b6d4", dashed: true },
+              ]}
+            />
           </div>
 
           {/* Memory Distribution Bar */}
@@ -690,17 +948,263 @@ export function DeviceMonitorPage({
             />
           </div>
         </div>
+
+        {/* Network Throughput Card */}
+        <div className="ui-card p-3 flex flex-col gap-2">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="ui-title">
+                <Network className="w-4 h-4 text-cyan-500" />
+                <span>{isEn ? "Network Throughput" : "网络吞吐"}</span>
+                {netIfaceNames.length > 0 && (
+                  <select
+                    value={activeNetIface}
+                    onChange={(e) => setSelectedNetIface(e.target.value)}
+                    className="ui-select py-0.5 px-1.5 text-[11px] font-mono font-normal"
+                  >
+                    <option value="__all__">{isEn ? "All" : "全部"}</option>
+                    {netIfaceNames.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap gap-x-2.5 gap-y-0.5 font-mono tabular-nums">
+                <span className="text-cyan-600 dark:text-cyan-400">
+                  ↓ {latest ? formatRate(latestNetRx) : "--"}
+                </span>
+                <span className="text-emerald-600 dark:text-emerald-400">
+                  ↑ {latest ? formatRate(latestNetTx) : "--"}
+                </span>
+                {latest?.net_ifaces.slice(0, 4).map((iface) => (
+                  <button
+                    key={iface.name}
+                    type="button"
+                    onClick={() =>
+                      setSelectedNetIface((cur) => (cur === iface.name ? "__all__" : iface.name))
+                    }
+                    className={`transition hover:text-slate-700 dark:hover:text-slate-200 ${
+                      activeNetIface === iface.name
+                        ? "font-semibold text-cyan-600 dark:text-cyan-400 underline underline-offset-2"
+                        : "text-slate-400 dark:text-slate-500"
+                    }`}
+                  >
+                    {iface.name}: ↓{iface.rx_kbps.toFixed(1)} ↑{iface.tx_kbps.toFixed(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="text-right shrink-0 whitespace-nowrap">
+              <div className="text-lg leading-tight font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                {latest ? formatRate(latestNetRx + latestNetTx) : "--"}
+              </div>
+              <div className="text-[11px] text-slate-400 font-mono tabular-nums">
+                {statMode === "avg"
+                  ? `${isEn ? "Avg" : "均值"}: ${formatRate(stats.netAvg)}`
+                  : `${isEn ? "Max" : "峰值"}: ${formatRate(stats.netMax)}`}
+              </div>
+            </div>
+          </div>
+
+          <div className="ui-subcard w-full px-1.5 py-1">
+            <LineChart
+              id="netChart"
+              max={Math.max(...netRxSeries, ...netTxSeries, 0)}
+              labelFor={(v) =>
+                Math.max(...netRxSeries, ...netTxSeries, 0) > 0 ? formatRate(v) : "0"
+              }
+              series={[
+                { values: netRxSeries, color: "#06b6d4", strokeWidth: 2.2, area: true },
+                { values: netTxSeries, color: "#10b981", dashed: true },
+              ]}
+            />
+          </div>
+        </div>
+
+        {/* Disk I/O Card */}
+        <div className="ui-card p-3 flex flex-col gap-2">
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="ui-title">
+                <HardDrive className="w-4 h-4 text-amber-500" />
+                <span>{isEn ? "Disk I/O" : "磁盘 I/O"}</span>
+                {diskDevNames.length > 0 && (
+                  <select
+                    value={activeDiskDev}
+                    onChange={(e) => setSelectedDiskDev(e.target.value)}
+                    className="ui-select py-0.5 px-1.5 text-[11px] font-mono font-normal"
+                  >
+                    <option value="__all__">{isEn ? "All" : "全部"}</option>
+                    {diskDevNames.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 flex flex-wrap gap-x-2.5 gap-y-0.5 font-mono tabular-nums">
+                <span className="text-amber-600 dark:text-amber-400">
+                  R: {latest ? formatRate(latestDiskRead) : "--"}
+                </span>
+                <span className="text-rose-600 dark:text-rose-400">
+                  W: {latest ? formatRate(latestDiskWrite) : "--"}
+                </span>
+                {latest?.disk_devices.slice(0, 3).map((d) => (
+                  <button
+                    key={d.name}
+                    type="button"
+                    onClick={() =>
+                      setSelectedDiskDev((cur) => (cur === d.name ? "__all__" : d.name))
+                    }
+                    className={`transition hover:text-slate-700 dark:hover:text-slate-200 ${
+                      activeDiskDev === d.name
+                        ? "font-semibold text-amber-600 dark:text-amber-400 underline underline-offset-2"
+                        : "text-slate-400 dark:text-slate-500"
+                    }`}
+                  >
+                    {d.name}: R{d.read_kbps.toFixed(1)} W{d.write_kbps.toFixed(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="text-right shrink-0 whitespace-nowrap">
+              <div className="text-lg leading-tight font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+                {latest ? formatRate(latestDiskRead + latestDiskWrite) : "--"}
+              </div>
+              <div className="text-[11px] text-slate-400 font-mono tabular-nums">
+                {statMode === "avg"
+                  ? `${isEn ? "Avg" : "均值"}: ${formatRate(stats.diskAvg)}`
+                  : `${isEn ? "Max" : "峰值"}: ${formatRate(stats.diskMax)}`}
+              </div>
+            </div>
+          </div>
+
+          <div className="ui-subcard w-full px-1.5 py-1">
+            <LineChart
+              id="diskChart"
+              max={Math.max(...diskReadSeries, ...diskWriteSeries, 0)}
+              labelFor={(v) =>
+                Math.max(...diskReadSeries, ...diskWriteSeries, 0) > 0 ? formatRate(v) : "0"
+              }
+              series={[
+                { values: diskReadSeries, color: "#f59e0b", strokeWidth: 2.2, area: true },
+                { values: diskWriteSeries, color: "#f43f5e", dashed: true },
+              ]}
+            />
+          </div>
+        </div>
+
+        {/* Storage Usage Section (capability-gated) */}
+        {latest && (latest.storage.length > 0 || unmountedEntries.length > 0) && (
+          <div
+            className={`ui-card p-3 flex flex-col gap-2 ${
+              layoutMode === "grid" ? "lg:col-span-2" : ""
+            }`}
+          >
+            <div className="ui-title">
+              <HardDrive className="w-4 h-4 text-emerald-500" />
+              <span>{isEn ? "Storage Usage" : "存储占用"}</span>
+              <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-300">
+                {latest.storage.length +
+                  unmountedEntries.filter((u) => !latest.storage.some((s) => s.mount === u.mount)).length}
+              </span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {[...latest.storage.map((s) => ({ entry: s, mounted: true })),
+                ...unmountedEntries
+                  .filter((u) => !latest.storage.some((s) => s.mount === u.mount))
+                  .map((entry) => ({ entry, mounted: false }))].map(({ entry: m, mounted }) => (
+                <div
+                  key={m.mount}
+                  className={`ui-subcard min-w-0 flex flex-col gap-1.5 px-2.5 py-2 ${
+                    mounted ? "" : "opacity-60"
+                  }`}
+                  title={`${m.device} → ${m.mount}${m.fstype ? ` (${m.fstype})` : ""}`}
+                >
+                  <div className="flex items-center justify-between gap-2 min-w-0">
+                    <span className="font-mono text-xs font-medium text-slate-700 dark:text-slate-200 truncate min-w-0">
+                      {m.mount}
+                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="font-mono tabular-nums text-[11px] text-slate-500 dark:text-slate-400">
+                        {storageSize(m.used_kb)} / {storageSize(m.total_kb)}
+                      </span>
+                      {canManage(m.mount) && (
+                        <button
+                          type="button"
+                          disabled={storageBusy !== null}
+                          onClick={() => runStorageOp(mounted ? "umount" : "mount", m)}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-medium border transition disabled:opacity-40 ${
+                            mounted
+                              ? "border-rose-300 text-rose-600 hover:bg-rose-50 dark:border-rose-800 dark:text-rose-400 dark:hover:bg-rose-950"
+                              : "border-emerald-300 text-emerald-600 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                          }`}
+                        >
+                          {storageBusy === m.mount
+                            ? "…"
+                            : mounted
+                            ? isEn
+                              ? "Unmount"
+                              : "卸载"
+                            : isEn
+                            ? "Mount"
+                            : "挂载"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 rounded-full overflow-hidden bg-slate-200 dark:bg-slate-800">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          !mounted
+                            ? "bg-slate-400"
+                            : m.use_pct >= 90
+                            ? "bg-rose-500"
+                            : m.use_pct >= 75
+                            ? "bg-amber-500"
+                            : "bg-emerald-500"
+                        }`}
+                        style={{
+                          width: mounted
+                            ? `${Math.min(100, Math.max(0, m.use_pct))}%`
+                            : "0%",
+                        }}
+                      />
+                    </div>
+                    <span
+                      className={`font-mono tabular-nums text-xs font-semibold w-10 text-right shrink-0 ${
+                        !mounted
+                          ? "text-slate-400 dark:text-slate-500"
+                          : m.use_pct >= 90
+                          ? "text-rose-600 dark:text-rose-400"
+                          : m.use_pct >= 75
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "text-emerald-600 dark:text-emerald-400"
+                      }`}
+                    >
+                      {mounted ? `${m.use_pct.toFixed(0)}%` : isEn ? "off" : "未挂载"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Top Output Section */}
-      <div className="flex-1 min-h-[240px] flex flex-col bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60">
+      <div className="ui-card flex-1 min-h-[260px] flex flex-col overflow-hidden">
+        <div className="ui-card-header">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+            <span className="ui-title">
               {isEn ? "Top Process Snapshot" : "Top 进程快照输出"}
             </span>
             {parsedTop.rows.length > 0 && (
-              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-md bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+              <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded-md bg-slate-200/80 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                 {parsedTop.rows.length} procs
               </span>
             )}
@@ -709,24 +1213,24 @@ export function DeviceMonitorPage({
           <div className="flex flex-wrap items-center gap-2">
             {topViewMode === "table" && (
               <div className="relative">
-                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2 top-1.5 pointer-events-none" />
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   value={topQuery}
                   onChange={(e) => setTopQuery(e.target.value)}
                   placeholder={isEn ? "Filter PID / cmd / path..." : "过滤 PID / 进程 / 路径..."}
-                  className="pl-7 pr-2 py-1 text-xs rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-950 w-44"
+                  className="ui-input pl-7 w-44"
                 />
               </div>
             )}
 
-            <div className="inline-flex rounded-md border border-slate-200 dark:border-slate-700 overflow-hidden text-[11px]">
+            <div className="ui-segmented">
               <button
                 type="button"
                 onClick={() => setTopViewMode("table")}
-                className={`px-2.5 py-1 ${
+                className={`ui-segmented-btn ${
                   topViewMode === "table"
-                    ? "bg-blue-600 text-white"
-                    : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
                 }`}
               >
                 {isEn ? "Table" : "结构化视图"}
@@ -734,30 +1238,30 @@ export function DeviceMonitorPage({
               <button
                 type="button"
                 onClick={() => setTopViewMode("raw")}
-                className={`px-2.5 py-1 ${
+                className={`ui-segmented-btn ${
                   topViewMode === "raw"
-                    ? "bg-blue-600 text-white"
-                    : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300"
+                    ? "bg-blue-600 text-white shadow-sm"
+                    : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
                 }`}
               >
                 {isEn ? "Raw" : "原始输出"}
               </button>
             </div>
 
-            <span className="text-[11px] font-mono text-slate-400">
+            <span className="text-[11px] font-mono tabular-nums text-slate-400">
               {latest ? new Date(latest.timestamp_ms).toLocaleTimeString() : "--:--:--"}
             </span>
           </div>
         </div>
 
         {topViewMode === "table" && parsedTop.rows.length > 0 ? (
-          <div className="flex-1 overflow-auto p-3 space-y-2 bg-white dark:bg-slate-950">
+          <div className="flex-1 overflow-auto p-4 space-y-3 bg-white dark:bg-slate-950">
             {parsedTop.summaryLines.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {parsedTop.summaryLines.map((line, i) => (
                   <span
                     key={i}
-                    className="rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-2 py-0.5 font-mono text-[11px] text-slate-600 dark:text-slate-300"
+                    className="rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-2 py-0.5 font-mono text-[11px] tabular-nums text-slate-600 dark:text-slate-300"
                   >
                     {line}
                   </span>
@@ -766,14 +1270,14 @@ export function DeviceMonitorPage({
             )}
 
             <table className="w-full text-left font-mono text-xs">
-              <thead className="border-b border-slate-200 dark:border-slate-800 text-[11px] text-slate-500">
+              <thead className="border-b border-slate-200 dark:border-slate-800 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                 <tr>
-                  <th className="py-1.5 pr-3">PID</th>
-                  <th className="py-1.5 pr-3">USER</th>
-                  <th className="py-1.5 pr-3">STAT</th>
-                  <th className="py-1.5 pr-3">CPU</th>
-                  <th className="py-1.5 pr-3">MEM</th>
-                  <th className="py-1.5">COMMAND &amp; PATH</th>
+                  <th className="py-2 pr-3">PID</th>
+                  <th className="py-2 pr-3">USER</th>
+                  <th className="py-2 pr-3">STAT</th>
+                  <th className="py-2 pr-3">CPU</th>
+                  <th className="py-2 pr-3">MEM</th>
+                  <th className="py-2">COMMAND &amp; PATH</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-900">
@@ -781,10 +1285,10 @@ export function DeviceMonitorPage({
                   const cpuNum = parseFloat(row.cpu.replace("%", "")) || 0;
                   return (
                     <tr key={`${row.pid}-${row.command}`} className="hover:bg-slate-50 dark:hover:bg-slate-900/60">
-                      <td className="py-1.5 pr-3 text-slate-500">{row.pid}</td>
-                      <td className="py-1.5 pr-3 text-slate-600 dark:text-slate-300">{row.user}</td>
-                      <td className="py-1.5 pr-3 text-slate-500">{row.stat}</td>
-                      <td className="py-1.5 pr-3">
+                      <td className="py-2 pr-3 tabular-nums text-slate-500">{row.pid}</td>
+                      <td className="py-2 pr-3 text-slate-600 dark:text-slate-300">{row.user}</td>
+                      <td className="py-2 pr-3 text-slate-500">{row.stat}</td>
+                      <td className="py-2 pr-3 tabular-nums">
                         <span
                           className={`inline-block rounded-md px-1.5 py-0.5 text-[11px] ${
                             cpuNum >= 50
@@ -797,8 +1301,8 @@ export function DeviceMonitorPage({
                           {row.cpu}
                         </span>
                       </td>
-                      <td className="py-1.5 pr-3 text-slate-600 dark:text-slate-300">{row.mem}</td>
-                      <td className="py-1.5 break-all">
+                      <td className="py-2 pr-3 tabular-nums text-slate-600 dark:text-slate-300">{row.mem}</td>
+                      <td className="py-2 break-all">
                         <div className="text-slate-800 dark:text-slate-100">{row.command}</div>
                         {row.paths.length > 0 && onNavigateAdbPath && (
                           <div className="mt-1 flex flex-wrap gap-1.5">
@@ -824,7 +1328,7 @@ export function DeviceMonitorPage({
             </table>
           </div>
         ) : (
-          <pre className="flex-1 overflow-auto p-3 font-mono text-xs leading-5 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 whitespace-pre">
+          <pre className="flex-1 overflow-auto p-4 font-mono text-xs leading-5 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 whitespace-pre">
             {latest?.top_output ||
               (serial
                 ? isEn

@@ -64,6 +64,7 @@ pub fn run() {
             gpio::read_pio_port,
             gpio::write_pio_pin,
             gpio::adb_detect_gpio,
+            gpio::adb_detect_gpio_port,
             gpio::adb_set_gpio,
             // adb
             adb::adb_list_devices,
@@ -112,6 +113,7 @@ pub fn run() {
             triggers::trigger_clear_incidents,
             // monitor & workspaces & flash history
             monitor::adb_get_metrics,
+            monitor::adb_storage_mount,
             monitor::workspace_list,
             monitor::workspace_save,
             monitor::flash_history_list,

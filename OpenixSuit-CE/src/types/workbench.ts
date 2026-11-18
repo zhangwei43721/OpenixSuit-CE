@@ -21,6 +21,15 @@ export interface SerialDataPayload {
   port_name: string;
   chunk: string;
   timestamp: string;
+  /** Raw received bytes (base64); present so the UI can decode with the chosen charset. */
+  data_base64?: string;
+}
+
+export interface SerialLineCoding {
+  data_bits: number;
+  stop_bits: number;
+  parity: string;
+  flow_control: string;
 }
 
 export interface SerialLogEntry {
@@ -88,12 +97,64 @@ export interface IncidentReport {
   action_results: string[];
 }
 
+export interface CoreCounter {
+  total: number;
+  idle: number;
+}
+
+export interface NetCounter {
+  name: string;
+  rx_bytes: number;
+  tx_bytes: number;
+}
+
+export interface DiskCounter {
+  name: string;
+  read_sectors: number;
+  write_sectors: number;
+}
+
 export interface CpuSnapshot {
   total: number;
   idle: number;
   user: number;
   sys: number;
   iowait: number;
+  cores: CoreCounter[];
+  net: NetCounter[];
+  disk: DiskCounter[];
+  timestamp_ms: number;
+}
+
+export interface NetIfaceRate {
+  name: string;
+  rx_kbps: number;
+  tx_kbps: number;
+}
+
+export interface DiskRate {
+  name: string;
+  read_kbps: number;
+  write_kbps: number;
+}
+
+export interface StorageUsage {
+  device: string;
+  mount: string;
+  fstype: string;
+  total_kb: number;
+  used_kb: number;
+  avail_kb: number;
+  use_pct: number;
+}
+
+export interface BatteryInfo {
+  name: string;
+  status: string;
+  capacity_pct: number | null;
+  voltage_v: number | null;
+  current_ma: number | null;
+  temp_c: number | null;
 }
 
 export interface DeviceMetrics {
@@ -103,11 +164,24 @@ export interface DeviceMetrics {
   cpu_user_pct: number;
   cpu_sys_pct: number;
   cpu_io_pct: number;
+  cpu_core_pcts: number[];
   mem_total_kb: number;
   mem_used_kb: number;
   mem_cached_kb: number;
   mem_buffers_kb: number;
   temp_celsius: number | null;
+  load1: number;
+  load5: number;
+  load15: number;
+  uptime_s: number;
+  net_ifaces: NetIfaceRate[];
+  net_rx_kbps: number;
+  net_tx_kbps: number;
+  disk_devices: DiskRate[];
+  disk_read_kbps: number;
+  disk_write_kbps: number;
+  storage: StorageUsage[];
+  battery: BatteryInfo | null;
   top_output: string;
   snapshot: CpuSnapshot;
   timestamp_ms: number;

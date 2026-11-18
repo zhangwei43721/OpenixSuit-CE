@@ -42,6 +42,8 @@ crc32fast = "1.5"
 clap = { version = "4", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serialport = "4"
+encoding_rs = "0.8"
+base64 = "0.22"
 regex = "1"
 reqwest = "0.13"
 libc = "0.2"
