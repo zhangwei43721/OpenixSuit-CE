@@ -20,7 +20,7 @@ import {
   Timer,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { CpuSnapshot, DeviceMetrics, StorageUsage } from "../types/workbench";
+import { BatteryInfo, CpuSnapshot, DeviceMetrics, StorageUsage } from "../types/workbench";
 
 interface DeviceMonitorPageProps {
   serial: string;
