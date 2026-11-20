@@ -149,7 +149,11 @@ jobs:
           release_dir="target/$DESKTOP_TARGET/release"
           case "$RUNNER_OS" in
             Windows)
-              test -f "$release_dir/libusb-1.0.dll"
+              libusb="$release_dir/libusb-1.0.dll"
+              if [[ ! -f "$libusb" ]]; then
+                vcpkg_root=$(cygpath -u "$VCPKG_INSTALLATION_ROOT")
+                cp "$vcpkg_root/installed/x64-windows/bin/libusb-1.0.dll" "$libusb"
+              fi
               printf '{"bundle":{"resources":{"%s/libusb-1.0.dll":"libusb-1.0.dll"}}}\n' \
                 "$release_dir" > ../desktop-runtime.conf.json
               ;;
