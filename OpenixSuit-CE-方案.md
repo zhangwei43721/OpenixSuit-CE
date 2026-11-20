@@ -68,7 +68,7 @@ OpenixSuit-CE/
 │       ├── GpioViewer.tsx              # 3. GPIO 查看器（PA~PG 引脚 MUX/PULL/DRV）
 │       ├── FirmwareInspector.tsx       # 4. 固件与设备树分析（解包、GPT/MBR、DTS）
 │       ├── AdbExplorer.tsx             # 5. ADB 文件管理器（双栏文件传输 + Shell）
-│       └── DriverGuide.tsx             # 6. 驱动与环境自检助手
+│       └── DriverGuide.tsx             # 6. 环境检测
 └── src-tauri/                          # Rust 后端与 FFI
     ├── Cargo.toml
     ├── build.rs                        # libefex / OpenixIMG 条件编译与 bindgen
@@ -746,7 +746,7 @@ export function DriverGuide() {
   return (
     <div className="max-w-2xl space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">驱动与环境自检助手</h2>
+        <h2 className="text-lg font-semibold">环境检测</h2>
         <button onClick={runCheck} className="rounded bg-blue-600 px-3 py-1.5 text-sm hover:bg-blue-500">
           重新检测
         </button>

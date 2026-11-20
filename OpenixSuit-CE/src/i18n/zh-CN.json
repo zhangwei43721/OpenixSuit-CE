@@ -353,7 +353,7 @@
     "tapToRead": "点击读取"
   },
   "driver": {
-    "title": "驱动与环境自检助手",
+    "title": "环境检测",
     "recheck": "重新检测",
     "checking": "检测中...",
     "os": "当前系统",
