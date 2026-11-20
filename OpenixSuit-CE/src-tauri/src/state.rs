@@ -1,4 +1,8 @@
 use crate::adb::AdbTermHandle;
+use crate::adb_log::AdbLogHandle;
+use crate::log_capture::LogCapturePolicy;
+use crate::log_ui::LogUiBroker;
+use crate::serial::bridge::SerialBridgeState;
 use crate::serial::SerialSessionHandle;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -27,7 +31,12 @@ pub struct AppState {
     pub cancel_flash_flag: Arc<AtomicBool>,
     pub busy_op: Arc<Mutex<Option<String>>>,
     pub serial_sessions: Arc<Mutex<HashMap<String, Arc<SerialSessionHandle>>>>,
+    pub(crate) serial_bridge: SerialBridgeState,
+    pub(crate) serial_bridge_operation: Mutex<()>,
     pub adb_term_sessions: Arc<Mutex<HashMap<String, Arc<AdbTermHandle>>>>,
+    pub adb_log_sessions: Arc<Mutex<HashMap<String, AdbLogHandle>>>,
+    pub(crate) log_capture: LogCapturePolicy,
+    pub(crate) log_ui: LogUiBroker,
 }
 
 impl Default for AppState {
@@ -37,7 +46,12 @@ impl Default for AppState {
             cancel_flash_flag: Arc::new(AtomicBool::new(false)),
             busy_op: Arc::new(Mutex::new(None)),
             serial_sessions: Arc::new(Mutex::new(HashMap::new())),
+            serial_bridge: SerialBridgeState::default(),
+            serial_bridge_operation: Mutex::new(()),
             adb_term_sessions: Arc::new(Mutex::new(HashMap::new())),
+            adb_log_sessions: Arc::new(Mutex::new(HashMap::new())),
+            log_capture: LogCapturePolicy::load(),
+            log_ui: LogUiBroker::default(),
         }
     }
 }

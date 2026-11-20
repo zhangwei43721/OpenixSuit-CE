@@ -6,6 +6,8 @@ export interface SerialPortInfo {
   manufacturer: string;
   product: string;
   serial_number: string;
+  aliases?: string[];
+  usb_interface?: number | null;
 }
 
 export interface SerialSessionInfo {
@@ -35,6 +37,7 @@ export interface SerialLineCoding {
 export interface SerialLogEntry {
   file_name: string;
   path: string;
+  directory?: string;
   size_bytes: number;
   modified_secs: number;
 }
@@ -191,6 +194,52 @@ export interface WorkspaceSerialSlot {
   label: string;
   port_name: string;
   baud_rate: number;
+}
+
+export type SerialFormat = "text" | "hex";
+export type SerialCharset = "utf-8" | "gb18030" | "big5" | "latin1";
+export type SerialLineEnding = "lf" | "crlf" | "cr" | "none";
+
+export interface SerialViewOptions {
+  receive_format: SerialFormat;
+  send_format: SerialFormat;
+  charset: SerialCharset;
+  line_ending: SerialLineEnding;
+  auto_scroll: boolean;
+}
+
+type SerialProfileEndpoint = WorkspaceSerialSlot & { line_coding?: SerialLineCoding };
+
+export type LogProfileSource =
+  | ({ type: "serial"; serial_options?: SerialViewOptions } & SerialProfileEndpoint)
+  | { type: "adb"; label: string; serial: string; command: string };
+
+export interface LogProfile {
+  id: string;
+  name: string;
+  notes?: string;
+  sources: LogProfileSource[];
+  bridge?: {
+    first: SerialProfileEndpoint;
+    second: SerialProfileEndpoint;
+  } | null;
+}
+
+export type LogSession = { id: string; label?: string | null; log_path: string } & (
+  | {
+      type: "serial";
+      port_name: string;
+      baud_rate: number;
+      line_coding?: SerialLineCoding;
+      serial_options?: SerialViewOptions;
+    }
+  | { type: "adb"; serial: string; command: string }
+);
+
+export interface LogSessionChange {
+  kind: "started" | "ended" | "interrupted";
+  session: LogSession;
+  error?: string | null;
 }
 
 export interface DeviceWorkspace {

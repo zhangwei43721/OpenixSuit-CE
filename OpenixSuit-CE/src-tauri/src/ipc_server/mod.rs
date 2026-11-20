@@ -1,5 +1,9 @@
 use crate::adb;
 use crate::efex;
+use crate::log_capture;
+use crate::log_profiles;
+use crate::log_sessions;
+use crate::log_ui;
 use crate::monitor;
 use crate::packer;
 use crate::plugins;
@@ -181,11 +185,38 @@ struct PluginRunReq {
 }
 
 #[derive(Deserialize)]
+struct SerialOpenReq {
+    port_name: String,
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    baud_rate: u32,
+}
+
+#[derive(Deserialize)]
+struct SessionIdReq {
+    session_id: String,
+}
+
+#[derive(Deserialize)]
+struct LogStartReq {
+    profile_id: String,
+    source: String,
+}
+
+#[derive(Deserialize)]
+struct BridgeStartReq {
+    profile_id: String,
+}
+
+#[derive(Deserialize)]
 struct SerialWriteReq {
     session_id: String,
     data: String,
     #[serde(default)]
     append_newline: Option<String>,
+    #[serde(default)]
+    hex: bool,
 }
 
 #[derive(Deserialize)]
@@ -409,6 +440,20 @@ async fn handle_connection(mut stream: TcpStream, app: AppHandle) {
 
     let (status, payload) = dispatch(&app, req).await;
     write_json_response(&mut stream, status, payload).await;
+}
+
+fn log_storage_response(
+    result: Result<log_capture::LogCaptureReply, (u16, String)>,
+) -> (u16, Value) {
+    match result {
+        Ok(reply) => (200, json!({
+            "ok": true,
+            "directory": reply.directory,
+            "default_directory": reply.default_directory,
+            "settings": reply.settings,
+        })),
+        Err((code, error)) => (code, json!({ "ok": false, "error": error })),
+    }
 }
 
 async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
@@ -989,6 +1034,58 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
             }
         }
 
+        ("POST", "/api/serial/open") => {
+            let body: SerialOpenReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let worker_app = app.clone();
+            match run_blocking(move || {
+                serial::serial_open(
+                    worker_app.clone(),
+                    worker_app.state::<AppState>(),
+                    body.session_id,
+                    body.port_name,
+                    body.baud_rate,
+                    None,
+                    None,
+                )
+            })
+            .await
+            {
+                Ok(session) => {
+                    emit_ai_sync(app, "ai", "serial-open", "completed", session.id.clone());
+                    (200, json!({ "ok": true, "session": session }))
+                }
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+            }
+        }
+
+        ("POST", "/api/serial/close") => {
+            let body: SessionIdReq = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let session_id = body.session_id;
+            let worker_session_id = session_id.clone();
+            let worker_app = app.clone();
+            match run_blocking(move || {
+                serial::serial_close_with_state(
+                    &worker_app,
+                    &worker_app.state::<AppState>(),
+                    &worker_session_id,
+                )
+            })
+            .await
+            {
+                Ok(()) => {
+                    emit_ai_sync(app, "ai", "serial-close", "completed", session_id.clone());
+                    (200, json!({ "ok": true, "session_id": session_id }))
+                }
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+            }
+        }
+
         ("GET", "/api/serial/logs") => {
             let tail_lines = req
                 .query
@@ -1012,8 +1109,12 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
             } else if let Some(file_name) = req.query.get("file_name").filter(|s| !s.is_empty()) {
                 let fname = file_name.clone();
                 let fname_resp = fname.clone();
-                let res =
-                    run_blocking(move || serial::serial_read_log_file(fname, tail_lines)).await;
+                let policy = state.log_capture.clone();
+                let directory = req.query.get("directory").cloned();
+                let res = run_blocking(move || {
+                    serial::read_log_file(&policy, &fname, tail_lines, directory.as_deref())
+                })
+                .await;
                 match res {
                     Ok(content) => (
                         200,
@@ -1031,7 +1132,8 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                     .lock()
                     .map(|g| g.values().map(|s| s.info()).collect::<Vec<_>>())
                     .unwrap_or_default();
-                let res = run_blocking(serial::serial_list_log_files).await;
+                let policy = state.log_capture.clone();
+                let res = run_blocking(move || serial::list_log_files(&policy)).await;
                 match res {
                     Ok(files) => (
                         200,
@@ -1058,7 +1160,12 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                 "started",
                 format!("Serial write -> {}", body.session_id),
             );
-            match serial::serial_write_with_state(
+            let write = if body.hex {
+                serial::serial_write_hex_with_state
+            } else {
+                serial::serial_write_with_state
+            };
+            match write(
                 &state,
                 &body.session_id,
                 &body.data,
@@ -1103,6 +1210,128 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                     emit_ai_sync(app, "ai", "power", "error", e.clone());
                     let (c, msg) = map_op_error(e);
                     (c, json!({ "ok": false, "error": msg }))
+                }
+            }
+        }
+
+        ("POST", "/api/log-ui") => {
+            let request: log_ui::LogUiRequest = match parse_json(&req.body) {
+                Ok(request) => request,
+                Err((code, error)) => return (code, json!({ "ok": false, "error": error })),
+            };
+            match state.log_ui.request(app, request).await {
+                Ok(settings) => (200, json!({ "ok": true, "settings": settings })),
+                Err(error) => (400, json!({ "ok": false, "error": error })),
+            }
+        }
+
+        ("GET", "/api/log-storage") => {
+            log_storage_response(log_capture::capture_settings(&state.log_capture).map_err(map_op_error))
+        }
+
+        ("POST", "/api/log-storage") => {
+            let patch: Map<String, Value> = match parse_json(&req.body) {
+                Ok(patch) => patch,
+                Err((code, error)) => return (code, json!({ "ok": false, "error": error })),
+            };
+            let policy = state.log_capture.clone();
+            let worker_app = app.clone();
+            log_storage_response(
+                run_blocking(move || log_capture::patch_capture_settings(&worker_app, &policy, patch)).await,
+            )
+        }
+
+        ("GET", "/api/log-profiles") => match run_blocking(log_profiles::log_profiles_list).await {
+            Ok(profiles) => (200, json!({ "ok": true, "profiles": profiles })),
+            Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+        },
+
+        ("POST", "/api/log-profiles") => {
+            let profile: log_profiles::LogProfile = match parse_json(&req.body) {
+                Ok(profile) => profile,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            if let Err(error) = profile.validate() {
+                return (400, json!({ "ok": false, "error": error }));
+            }
+            let worker_app = app.clone();
+            match run_blocking(move || log_profiles::save_profile(&worker_app, profile)).await {
+                Ok(profile) => {
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "log-profile-save",
+                        "completed",
+                        profile.id.clone(),
+                    );
+                    (200, json!({ "ok": true, "profile": profile }))
+                }
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+            }
+        }
+
+        ("GET", "/api/log-sessions") => match log_sessions::log_sessions_list(state) {
+            Ok(sessions) => (200, json!({ "ok": true, "sessions": sessions })),
+            Err(error) => (500, json!({ "ok": false, "error": error })),
+        },
+
+        ("POST", "/api/log-sessions/start") => {
+            let body: LogStartReq = match parse_json(&req.body) {
+                Ok(body) => body,
+                Err((code, error)) => return (code, json!({ "ok": false, "error": error })),
+            };
+            match log_sessions::log_session_start(app.clone(), state, body.profile_id, body.source)
+                .await
+            {
+                Ok(session) => (200, json!({ "ok": true, "session": session })),
+                Err(error) => {
+                    let (code, error) = map_op_error(error);
+                    (code, json!({ "ok": false, "error": error }))
+                }
+            }
+        }
+
+        ("POST", "/api/log-sessions/stop") => {
+            let body: SessionIdReq = match parse_json(&req.body) {
+                Ok(body) => body,
+                Err((code, error)) => return (code, json!({ "ok": false, "error": error })),
+            };
+            match log_sessions::log_session_stop(app.clone(), state, body.session_id.clone()).await
+            {
+                Ok(()) => (200, json!({ "ok": true, "session_id": body.session_id })),
+                Err(error) => {
+                    let (code, error) = map_op_error(error);
+                    (code, json!({ "ok": false, "error": error }))
+                }
+            }
+        }
+
+        ("GET", "/api/serial/bridge") => match serial::bridge::serial_bridge_status(state) {
+            Ok(bridge) => (200, json!({ "ok": true, "bridge": bridge })),
+            Err(error) => (500, json!({ "ok": false, "error": error })),
+        },
+
+        ("POST", "/api/serial/bridge/start") => {
+            let body: BridgeStartReq = match parse_json(&req.body) {
+                Ok(body) => body,
+                Err((code, error)) => return (code, json!({ "ok": false, "error": error })),
+            };
+            match log_sessions::log_profile_bridge_start(app.clone(), state, body.profile_id).await
+            {
+                Ok(bridge) => (200, json!({ "ok": true, "bridge": bridge })),
+                Err(error) => {
+                    let (code, error) = map_op_error(error);
+                    (code, json!({ "ok": false, "error": error }))
+                }
+            }
+        }
+
+        ("POST", "/api/serial/bridge/stop") => {
+            match serial::bridge::serial_bridge_stop(app.clone()).await {
+                Ok(()) => (200, json!({ "ok": true })),
+                Err(error) => {
+                    let (code, error) = map_op_error(error);
+                    (code, json!({ "ok": false, "error": error }))
                 }
             }
         }

@@ -66,6 +66,7 @@ export default function App() {
   const [plugins, setPlugins] = useState<PluginManifest[]>([]);
   const extensionTabs = useMemo(() => getExtensionTabs(plugins), [plugins]);
   const [workspaces, setWorkspaces] = useState<DeviceWorkspace[]>([]);
+  const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(
     () => localStorage.getItem("active_workspace_id") || null
   );
@@ -89,6 +90,8 @@ export default function App() {
       setWorkspaces(Array.isArray(list) ? list : []);
     } catch {
       setWorkspaces([]);
+    } finally {
+      setWorkspacesLoaded(true);
     }
   }, []);
 
@@ -406,9 +409,15 @@ export default function App() {
               />
             </div>
           )}
-          {visitedTabs.serial && (
+          {(visitedTabs.serial || workspacesLoaded) && (
             <div className={activeTab === "serial" ? "h-full" : "hidden"}>
-              <SerialPage activeWorkspace={activeWorkspace} onLog={appendLog} />
+              <SerialPage
+                activeWorkspace={activeWorkspace}
+                adbDevices={adbDevices}
+                selectedAdbSerial={selectedAdbSerial}
+                onRefreshDevices={refreshAllDevices}
+                onLog={appendLog}
+              />
             </div>
           )}
           {visitedTabs.debugger && (

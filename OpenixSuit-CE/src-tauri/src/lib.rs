@@ -1,10 +1,15 @@
 mod adb;
+mod adb_log;
 pub mod ai_cli;
 mod disasm;
 mod efex;
 mod gpio;
 mod hotplug;
 mod ipc_server;
+mod log_capture;
+mod log_profiles;
+mod log_sessions;
+mod log_ui;
 mod monitor;
 mod packer;
 mod plugins;
@@ -91,16 +96,31 @@ pub fn run() {
             adb::adb_input_tap,
             adb::adb_input_swipe,
             adb::adb_input_keyevent,
+            adb_log::adb_log_open,
+            adb_log::adb_log_close,
             // serial
             serial::serial_list_ports,
             serial::serial_open,
             serial::serial_close,
             serial::serial_list_sessions,
             serial::serial_write,
+            serial::serial_write_bytes,
             serial::serial_set_signals,
             serial::serial_get_buffer,
             serial::serial_list_log_files,
             serial::serial_read_log_file,
+            serial::bridge::serial_bridge_start,
+            serial::bridge::serial_bridge_status,
+            serial::bridge::serial_bridge_stop,
+            log_capture::log_capture_get,
+            log_capture::log_capture_save,
+            log_ui::log_ui_reply,
+            log_profiles::log_profiles_list,
+            log_profiles::log_profile_save,
+            log_sessions::log_sessions_list,
+            log_sessions::log_session_start,
+            log_sessions::log_session_stop,
+            log_sessions::log_profile_bridge_start,
             // power
             power::power_list_profiles,
             power::power_save_profiles,
@@ -130,6 +150,11 @@ pub fn run() {
             plugins::uninstall_plugin,
             plugins::run_plugin,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                tauri::async_runtime::block_on(adb_log::stop_all(&app.state::<AppState>()));
+            }
+        });
 }

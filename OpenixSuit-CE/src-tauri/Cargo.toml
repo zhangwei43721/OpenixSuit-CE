@@ -41,7 +41,7 @@ dirs = "5"
 crc32fast = "1.5"
 clap = { version = "4", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
-serialport = "4"
+serialport = { version = "4", features = ["usbportinfo-interface"] }
 encoding_rs = "0.8"
 base64 = "0.22"
 regex = "1"

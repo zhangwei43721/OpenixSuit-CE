@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{self, Read, Write};
 use std::net::TcpStream;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -141,6 +143,16 @@ enum Commands {
     },
     /// List available host serial ports
     SerialPorts,
+    /// Open a serial session in the running desktop app
+    SerialOpen {
+        port_name: String,
+        #[arg(long, default_value_t = 115200)]
+        baud_rate: u32,
+        #[arg(long, default_value = "")]
+        session_id: String,
+    },
+    /// Close an active serial session
+    SerialClose { session_id: String },
     /// List serial log files or read buffered/persisted serial logs
     SerialLogs {
         #[arg(long)]
@@ -150,12 +162,47 @@ enum Commands {
         #[arg(long)]
         tail: Option<usize>,
     },
+    /// List saved log profiles
+    LogProfiles,
+    /// Save one log profile from a JSON file or stdin (-)
+    LogProfileSave { json_file: PathBuf },
+    /// Read or change the live log workspace in the running desktop
+    LogUi {
+        #[arg(value_parser = ["get", "pane-set", "layout-set", "bridge-set"])]
+        action: String,
+        /// Settings patch in a JSON file, or '-' for stdin (required for setters)
+        json_file: Option<PathBuf>,
+    },
+    /// Read configured log directory and storage policy
+    LogStorage,
+    /// Patch log directory or storage policy using a JSON file or stdin (-)
+    LogStorageSave { json_file: PathBuf },
+    /// List the desktop app's active serial and ADB log sessions
+    LogSessions,
+    /// Start capturing a source from a saved log profile
+    LogStart {
+        profile_id: String,
+        /// Exact source label from the saved profile
+        source: String,
+    },
+    /// Stop an active log session
+    LogStop { session_id: String },
+    /// Start two-way forwarding between the serial ports in a saved profile
+    BridgeStart { profile_id: String },
+    /// Stop two-way serial forwarding
+    BridgeStop,
+    /// Show the active serial bridge
+    BridgeStatus,
     /// Send data to an active serial session
     SerialSend {
         session_id: String,
         data: String,
-        #[arg(long, default_value = "lf")]
-        append_newline: String,
+        /// Interpret data as hexadecimal bytes, with optional whitespace
+        #[arg(long)]
+        hex: bool,
+        /// Append none, lf, cr, or crlf (default lf for text, none for hex)
+        #[arg(long, value_parser = ["none", "lf", "cr", "crlf"], ignore_case = true)]
+        append_newline: Option<String>,
     },
     /// Execute a power control profile action (on | off | cycle)
     Power {
@@ -195,6 +242,17 @@ fn parse_u32_auto(s: &str) -> Result<u32, String> {
     } else {
         trimmed.parse::<u32>().map_err(|e| e.to_string())
     }
+}
+
+fn read_json_object(path: &Path) -> Result<Map<String, Value>, String> {
+    let result = if path == Path::new("-") {
+        serde_json::from_reader(io::stdin().lock())
+    } else {
+        let file =
+            File::open(path).map_err(|e| format!("Cannot open {}: {}", path.display(), e))?;
+        serde_json::from_reader(file)
+    };
+    result.map_err(|e| format!("Invalid JSON object from {}: {}", path.display(), e))
 }
 
 fn send_http(addr: &str, method: &str, path: &str, body: Option<Value>) -> Result<(u16, Value), String> {
@@ -441,6 +499,24 @@ where
             )
         }
         Commands::SerialPorts => ("GET", "/api/serial/ports".to_string(), None),
+        Commands::SerialOpen {
+            port_name,
+            baud_rate,
+            session_id,
+        } => (
+            "POST",
+            "/api/serial/open".to_string(),
+            Some(json!({
+                "port_name": port_name,
+                "baud_rate": baud_rate,
+                "session_id": session_id,
+            })),
+        ),
+        Commands::SerialClose { session_id } => (
+            "POST",
+            "/api/serial/close".to_string(),
+            Some(json!({ "session_id": session_id })),
+        ),
         Commands::SerialLogs {
             session_id,
             file_name,
@@ -466,6 +542,7 @@ where
         Commands::SerialSend {
             session_id,
             data,
+            hex,
             append_newline,
         } => (
             "POST",
@@ -473,7 +550,8 @@ where
             Some(json!({
                 "session_id": session_id,
                 "data": data,
-                "append_newline": append_newline,
+                "hex": hex,
+                "append_newline": append_newline.as_deref().unwrap_or(if hex { "none" } else { "lf" }),
             })),
         ),
         Commands::Power { profile_id, action } => (
@@ -491,6 +569,58 @@ where
                 format!("/api/monitor/metrics?serial={}", percent_encode(&serial))
             };
             ("GET", p, None)
+        }
+        Commands::LogProfiles => ("GET", "/api/log-profiles".to_string(), None),
+        Commands::LogStorage => ("GET", "/api/log-storage".to_string(), None),
+        Commands::LogUi { ref action, ref json_file } => {
+            let params = match json_file.as_deref() {
+                Some(path) => read_json_object(path),
+                None if action == "get" => Ok(Map::new()),
+                None => Err(format!("log-ui {action} requires a JSON file or '-' for stdin")),
+            };
+            match params {
+                Ok(params) => (
+                    "POST",
+                    "/api/log-ui".to_string(),
+                    Some(json!({ "action": action, "params": params })),
+                ),
+                Err(error) => {
+                    println!("{}", json!({ "ok": false, "error": error }));
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        Commands::LogSessions => ("GET", "/api/log-sessions".to_string(), None),
+        Commands::LogStart { profile_id, source } => (
+            "POST",
+            "/api/log-sessions/start".to_string(),
+            Some(json!({ "profile_id": profile_id, "source": source })),
+        ),
+        Commands::LogStop { session_id } => (
+            "POST",
+            "/api/log-sessions/stop".to_string(),
+            Some(json!({ "session_id": session_id })),
+        ),
+        Commands::BridgeStart { profile_id } => (
+            "POST",
+            "/api/serial/bridge/start".to_string(),
+            Some(json!({ "profile_id": profile_id })),
+        ),
+        Commands::BridgeStop => ("POST", "/api/serial/bridge/stop".to_string(), None),
+        Commands::BridgeStatus => ("GET", "/api/serial/bridge".to_string(), None),
+        Commands::LogStorageSave { ref json_file }
+        | Commands::LogProfileSave { ref json_file } => {
+            let path = match cli.command {
+                Commands::LogStorageSave { .. } => "/api/log-storage",
+                _ => "/api/log-profiles",
+            };
+            match read_json_object(json_file) {
+                Ok(draft) => ("POST", path.to_string(), Some(Value::Object(draft))),
+                Err(err) => {
+                    println!("{}", json!({ "ok": false, "error": err }));
+                    return ExitCode::from(1);
+                }
+            }
         }
         Commands::Incidents => ("GET", "/api/triggers/incidents".to_string(), None),
     };

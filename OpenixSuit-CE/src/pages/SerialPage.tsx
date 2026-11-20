@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import {
+  Cable,
+  ChevronDown,
   Clock,
   Download,
   Eye,
@@ -17,89 +20,90 @@ import {
   RefreshCw,
   Search,
   Send,
+  Settings2,
   Terminal,
   Trash2,
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import type { AdbDevice } from "../components/TopBar";
 import {
   DeviceWorkspace,
+  LogProfile,
+  LogProfileSource,
+  LogSession,
+  LogSessionChange,
   SerialDataPayload,
+  SerialCharset,
+  SerialFormat,
   SerialLineCoding,
+  SerialLineEnding,
   SerialLogEntry,
   SerialPortInfo,
   SerialSessionInfo,
+  SerialViewOptions,
 } from "../types/workbench";
 import { AnsiText, stripAnsi } from "../utils/ansi";
+import { useAdbLogOutput, type AdbLogStream } from "./useAdbLogOutput";
+import { SerialBridgePanel, type BridgeSettingsHandle } from "./SerialBridgePanel";
+import { LogProfileControls } from "./LogProfileControls";
+import { BAUD_RATES, SerialPaneSettings } from "./SerialPaneSettings";
+import { PaneSettingsPopover } from "./PaneSettingsPopover";
+import { LogCaptureSettings } from "./LogCaptureSettings";
+import { layoutPatch, panePatch, paneSettings as cliPaneSettings, settingsObject, type LogUiRequest } from "./logUiPaneSettings";
+import { appendHexRows, hexToBase64, SERIAL_LINE_SUFFIX, type BufferedLine } from "./serialFormats";
+import { findSerialPort, portHasName, readSerialPortBinding, type SerialPortBinding } from "./serialPortBinding";
 
 interface SerialPageProps {
   activeWorkspace?: DeviceWorkspace | null;
+  adbDevices: AdbDevice[];
+  selectedAdbSerial: string;
+  onRefreshDevices: () => Promise<unknown>;
   onLog: (msg: string) => void;
 }
 
-interface BufferedLine {
-  ts: string;
-  text: string;
-}
+type LogPanePanel = "search" | "command";
 
-interface SerialPaneState {
+export interface SerialPaneState {
   paneId: string;
-  label: string;
+  label?: string;
+  source: "serial" | "adb";
+  adbSerial: string;
+  adbCommand: string;
+  lastAdbStream?: AdbLogStream;
   portName: string;
+  connectedPortName?: string;
+  serialBinding?: SerialPortBinding;
   baudRate: number;
   customBaud: boolean;
   coding: SerialLineCoding;
-  charset: Charset;
+  charset: SerialCharset;
+  receiveFormat: SerialFormat;
+  sendFormat: SerialFormat;
   sessionId: string | null;
   connected: boolean;
+  resumeConnected: boolean;
   connecting: boolean;
+  stopping: boolean;
   dtr: boolean;
   rts: boolean;
   hidden: boolean;
+  panel?: LogPanePanel;
   showTimestamps: boolean;
   ansiEnabled: boolean;
   autoScroll: boolean;
+  followPaused: boolean;
   filterOnly: boolean;
   searchQuery: string;
-  lineEnding: "\n" | "\r\n" | "";
+  lineEnding: SerialLineEnding;
   inputText: string;
-  cmdHistory: string[];
+  cmdHistory: Record<SerialFormat, string[]>;
   historyIndex: number;
   lines: BufferedLine[];
+  hexRows: BufferedLine[];
   endsWithNewline: boolean;
   error: string | null;
 }
-
-const BAUD_RATES = [
-  1200,
-  2400,
-  4800,
-  9600,
-  14400,
-  19200,
-  38400,
-  57600,
-  74880,
-  115200,
-  230400,
-  250000,
-  460800,
-  500000,
-  576000,
-  921600,
-  1000000,
-  1500000,
-  2000000,
-  3000000,
-];
-const CUSTOM_BAUD = "__custom__";
-
-const DATA_BITS_OPTIONS = [5, 6, 7, 8];
-const STOP_BITS_OPTIONS = [1, 2];
-const PARITY_OPTIONS = ["none", "even", "odd"] as const;
-const FLOW_CONTROL_OPTIONS = ["none", "software", "hardware"] as const;
-const CHARSET_OPTIONS = ["utf-8", "gb18030", "big5", "latin1"] as const;
-type Charset = (typeof CHARSET_OPTIONS)[number];
 
 const b64ToBytes = (b64: string): Uint8Array => {
   const bin = atob(b64);
@@ -108,7 +112,7 @@ const b64ToBytes = (b64: string): Uint8Array => {
   return out;
 };
 
-const decodeChunk = (bytes: Uint8Array, charset: Charset): string => {
+const decodeChunk = (bytes: Uint8Array, charset: SerialCharset): string => {
   try {
     if (charset === "latin1") {
       let out = "";
@@ -129,6 +133,40 @@ const defaultCoding = (): SerialLineCoding => ({
 });
 
 const MAX_BUFFER_LINES = 4000;
+const LOG_COLUMNS_KEY = "openix_log_columns";
+const LOG_PANES_KEY = "openix_log_panes_v1";
+
+const PANE_SETTING_KEYS = [
+  "paneId", "label", "source", "adbSerial", "adbCommand", "portName", "serialBinding", "baudRate", "customBaud",
+  "coding", "charset", "receiveFormat", "sendFormat", "hidden", "showTimestamps",
+  "ansiEnabled", "autoScroll", "filterOnly", "searchQuery", "lineEnding", "resumeConnected",
+] as const satisfies readonly (keyof SerialPaneState)[];
+
+function loadPaneSettings(): SerialPaneState[] | null {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(LOG_PANES_KEY) ?? "null");
+    if (!Array.isArray(saved)) return null;
+    const ids = new Set<string>();
+    return saved.flatMap((item) => {
+      if (!item || (item.source !== "serial" && item.source !== "adb")) return [];
+      const values = Object.fromEntries(PANE_SETTING_KEYS.filter((key) => key in item).map((key) => [key, item[key]]));
+      const { paneId, ...settings } = values;
+      const pane = { ...createPane(), ...settings };
+      if (typeof paneId === "string" && paneId && !ids.has(paneId)) pane.paneId = paneId;
+      ids.add(pane.paneId);
+      pane.resumeConnected = values.resumeConnected === true;
+      return [pane];
+    });
+  } catch {
+    return null;
+  }
+}
+
+function serializePaneSettings(panes: SerialPaneState[]): string {
+  return JSON.stringify(panes.map((pane) =>
+    Object.fromEntries(PANE_SETTING_KEYS.map((key) => [key, pane[key]]))
+  ));
+}
 
 function formatNowTime(): string {
   const d = new Date();
@@ -146,34 +184,174 @@ function formatUnixSecs(secs: number): string {
   return new Date(secs * 1000).toLocaleString();
 }
 
-function createPane(idx: number, portName = "", baudRate = 115200, label?: string): SerialPaneState {
+function createPane(portName = "", baudRate = 115200, label?: string): SerialPaneState {
   return {
     paneId: `pane-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    label: label || `UART ${idx + 1}`,
+    label,
+    source: "serial",
+    adbSerial: "",
+    adbCommand: "",
     portName,
     baudRate,
     customBaud: !BAUD_RATES.includes(baudRate),
     coding: defaultCoding(),
     charset: "utf-8",
+    receiveFormat: "text",
+    sendFormat: "text",
     sessionId: null,
     connected: false,
+    resumeConnected: false,
     connecting: false,
+    stopping: false,
     dtr: false,
     rts: false,
     hidden: false,
     showTimestamps: true,
     ansiEnabled: true,
     autoScroll: true,
+    followPaused: false,
     filterOnly: false,
     searchQuery: "",
-    lineEnding: "\n",
+    lineEnding: "lf",
     inputText: "",
-    cmdHistory: [],
+    cmdHistory: { text: [], hex: [] },
     historyIndex: -1,
     lines: [],
+    hexRows: [],
     endsWithNewline: true,
     error: null,
   };
+}
+
+function serialViewOptions(pane: SerialPaneState): SerialViewOptions {
+  return {
+    receive_format: pane.receiveFormat,
+    send_format: pane.sendFormat,
+    charset: pane.charset,
+    line_ending: pane.lineEnding,
+    auto_scroll: pane.autoScroll,
+  };
+}
+
+function loadSerialView(options?: SerialViewOptions): Partial<SerialPaneState> {
+  if (!options) return {};
+  return {
+    receiveFormat: options.receive_format,
+    sendFormat: options.send_format,
+    charset: options.charset,
+    lineEnding: options.line_ending,
+    autoScroll: options.auto_scroll,
+  };
+}
+
+function paneLines(pane: SerialPaneState): BufferedLine[] {
+  return pane.source === "serial" && pane.receiveFormat === "hex" ? pane.hexRows : pane.lines;
+}
+
+function createProfilePane(source: LogProfileSource): SerialPaneState {
+  if (source.type === "serial") {
+    const pane = createPane(source.port_name, source.baud_rate, source.label);
+    return { ...pane, coding: source.line_coding ?? pane.coding, ...loadSerialView(source.serial_options) };
+  }
+  return { ...createPane("", 115200, source.label), source: "adb", adbSerial: source.serial, adbCommand: source.command };
+}
+
+function normalizeAdbCommand(command: string): string {
+  return command.trim().replace(/^adb\s+(?:shell\s+|(?=logcat(?:\s|$)))/, "");
+}
+
+function matchesProfilePane(
+  pane: SerialPaneState,
+  profilePane: SerialPaneState,
+  selectedAdbSerial: string
+): boolean {
+  if (pane.source !== profilePane.source) return false;
+  return pane.source === "serial"
+    ? pane.portName === profilePane.portName && pane.baudRate === profilePane.baudRate
+    : (pane.adbSerial || selectedAdbSerial) === profilePane.adbSerial &&
+        normalizeAdbCommand(pane.adbCommand) === normalizeAdbCommand(profilePane.adbCommand);
+}
+
+function emptyPane(pane: SerialPaneState): boolean {
+  return pane.source === "serial" && !pane.label && !pane.portName && !pane.sessionId &&
+    !pane.adbSerial && !pane.adbCommand && !pane.connecting && !pane.stopping && !pane.error &&
+    !pane.lines.length && !pane.hexRows.length;
+}
+
+function attachLogSession(
+  panes: SerialPaneState[],
+  session: LogSession,
+  selectedAdbSerial: string,
+  ports: SerialPortInfo[],
+): SerialPaneState[] {
+  let index = panes.findIndex((pane) => pane.sessionId === session.id);
+  const sourcePane = createProfilePane({ ...session, label: session.label || "" });
+  const livePort = session.type === "serial" ? findSerialPort(ports, session.port_name) : undefined;
+  if (index < 0) {
+    const matches = (pane: SerialPaneState) => {
+      if (pane.sessionId || pane.connecting || pane.stopping) return false;
+      if (session.type === "serial" && livePort) {
+        return pane.source === "serial" && pane.baudRate === session.baud_rate &&
+          findSerialPort(ports, pane.portName, pane.serialBinding) === livePort;
+      }
+      return matchesProfilePane(pane, sourcePane, selectedAdbSerial);
+    };
+    index = panes.findIndex((pane) => pane.resumeConnected && matches(pane));
+    if (index < 0) index = panes.findIndex(matches);
+  }
+  if (index < 0) index = panes.findIndex((pane) => emptyPane(pane) && !pane.panel);
+
+  const existing = panes[index];
+  const next = {
+    ...sourcePane,
+    ...existing,
+    label: existing?.label || session.label || undefined,
+    source: sourcePane.source,
+    sessionId: session.id,
+    connected: true,
+    resumeConnected: true,
+    connecting: false,
+    error: null,
+    ...(session.type === "serial"
+      ? {
+          portName: existing?.portName || sourcePane.portName,
+          connectedPortName: sourcePane.portName,
+          serialBinding: existing?.serialBinding ?? readSerialPortBinding(livePort),
+          baudRate: sourcePane.baudRate,
+          customBaud: sourcePane.customBaud,
+          coding: session.line_coding ?? existing?.coding ?? sourcePane.coding,
+          ...((!existing || emptyPane(existing)) && loadSerialView(session.serial_options)),
+        }
+      : {
+          adbSerial: sourcePane.adbSerial,
+          adbCommand: existing?.adbCommand || sourcePane.adbCommand,
+          ...(existing?.sessionId !== session.id && {
+            lines: [],
+            endsWithNewline: true,
+            lastAdbStream: undefined,
+          }),
+        }),
+  };
+  return index < 0 ? [...panes, next] : panes.map((pane, i) => i === index ? next : pane);
+}
+
+function endLogSession(
+  panes: SerialPaneState[],
+  sessionId: string,
+  error?: string | null,
+  interrupted = false
+): SerialPaneState[] {
+  return panes.map((pane) => pane.sessionId === sessionId ? {
+    ...pane, sessionId: null, connected: false, connecting: false, stopping: false,
+    resumeConnected: interrupted && !pane.stopping,
+    connectedPortName: undefined, dtr: false, rts: false, error: error || null,
+  } : pane);
+}
+
+function adbDeviceAvailable(devices: AdbDevice[], serial: string): boolean {
+  return devices.some((device) =>
+    device.serial === serial && (device.state === "Device" || device.state === "Recovery")
+  );
 }
 
 function appendChunkToLines(
@@ -212,22 +390,57 @@ function appendChunkToLines(
   return { lines: trimmed, endsWithNewline: ended };
 }
 
-export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
+export function SerialPage({
+  activeWorkspace,
+  adbDevices,
+  selectedAdbSerial,
+  onRefreshDevices,
+  onLog,
+}: SerialPageProps) {
   const { t, i18n } = useTranslation();
   const isEn = i18n.language.startsWith("en");
 
-  const [subView, setSubView] = useState<"live" | "logs">("live");
+  const [subView, setSubView] = useState<"live" | "logs" | "bridge" | "settings">("live");
+  const [settingsSection, setSettingsSection] = useState<"capture" | "bridge" | "storage">("capture");
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const bridgeSettingsRef = useRef<BridgeSettingsHandle>(null);
+  const [paneSettings, setPaneSettings] = useState<{ paneId: string; anchor: HTMLButtonElement } | null>(null);
+  const paneSettingsId = useId();
+  const closePaneSettings = useCallback(() => setPaneSettings(null), []);
+  useEffect(() => {
+    if (subView !== "live") closePaneSettings();
+  }, [subView, closePaneSettings]);
+  const [bridgeSettingsHost, setBridgeSettingsHost] = useState<HTMLDivElement | null>(null);
+  const [enlargedPaneId, setEnlargedPaneId] = useState<string | null>(null);
+  const [columnCount, setColumnCount] = useState(() => {
+    const saved = Number(localStorage.getItem(LOG_COLUMNS_KEY));
+    return saved === 3 || saved === 4 ? saved : 2;
+  });
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(false);
+  const [refreshingDevices, setRefreshingDevices] = useState(false);
 
   const [panes, setPanes] = useState<SerialPaneState[]>(() => {
+    const saved = loadPaneSettings();
+    if (saved) return saved;
     if (activeWorkspace?.serial_ports?.length) {
-      return activeWorkspace.serial_ports
-        .slice(0, 4)
-        .map((slot, idx) => createPane(idx, slot.port_name, slot.baud_rate || 115200, slot.label));
+      return activeWorkspace.serial_ports.map(
+        (slot) => createPane(slot.port_name, slot.baud_rate || 115200, slot.label)
+      );
     }
-    return [createPane(0)];
+    return [createPane()];
   });
+
+  const paneSettingsSnapshot = serializePaneSettings(panes);
+  useLayoutEffect(() => {
+    try {
+      if (localStorage.getItem(LOG_PANES_KEY) !== paneSettingsSnapshot) {
+        localStorage.setItem(LOG_PANES_KEY, paneSettingsSnapshot);
+      }
+    } catch (error) {
+      onLog(`Failed to save log pane settings: ${String(error)}`);
+    }
+  }, [paneSettingsSnapshot, onLog]);
 
   // Saved Log Browser state
   const [logFiles, setLogFiles] = useState<SerialLogEntry[]>([]);
@@ -235,71 +448,103 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
   const [selectedLogFile, setSelectedLogFile] = useState<SerialLogEntry | null>(null);
   const [logContent, setLogContent] = useState("");
   const [loadingLogContent, setLoadingLogContent] = useState(false);
+  const logReadRevision = useRef(0);
   const [logSearch, setLogSearch] = useState("");
   const [logAnsi, setLogAnsi] = useState(true);
   const [logShowTimestamps, setLogShowTimestamps] = useState(true);
 
-  const scrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const scrollRefs = useRef<Record<string, HTMLDivElement>>({});
+  const formatScrollPositions = useRef<Record<string, Partial<Record<SerialFormat, number>>>>({});
+  const pendingFormatScroll = useRef(new Map<string, symbol>());
+  const gridRef = useRef<HTMLDivElement>(null);
+  const gridScrollBeforeEnlarge = useRef<number | null>(null);
+  const newPaneId = useRef<string | null>(null);
   const panesRef = useRef(panes);
   panesRef.current = panes;
+  const portsRef = useRef(ports);
+  portsRef.current = ports;
+  const selectedAdbSerialRef = useRef(selectedAdbSerial);
+  selectedAdbSerialRef.current = selectedAdbSerial;
+  const pendingSessionSnapshot = useRef<Set<string> | null>(null);
+  const restoreSerialRef = useRef<(ports: SerialPortInfo[]) => void>(() => {});
+  const serialRestoreAttempts = useRef(new Map<string, string>());
+  const restoreAdbRef = useRef<(devices: AdbDevice[]) => void>(() => {});
+  const cliSettingsHandler = useRef<(request: LogUiRequest) => Promise<unknown>>(async () => null);
 
-  const refreshPorts = useCallback(async () => {
-    setLoadingPorts(true);
+  const refreshPorts = useCallback(async (quiet = false) => {
+    if (!quiet) setLoadingPorts(true);
     try {
       const list = await invoke<SerialPortInfo[]>("serial_list_ports");
       setPorts(Array.isArray(list) ? list : []);
     } catch (err) {
-      onLog(`serial_list_ports error: ${String(err)}`);
+      if (!quiet) onLog(`serial_list_ports error: ${String(err)}`);
     } finally {
-      setLoadingPorts(false);
+      if (!quiet) setLoadingPorts(false);
     }
   }, [onLog]);
 
-  // Recover existing active sessions on mount if any
   const syncExistingSessions = useCallback(async () => {
+    const changedIds = new Set<string>();
+    pendingSessionSnapshot.current = changedIds;
     try {
-      const sessions = await invoke<SerialSessionInfo[]>("serial_list_sessions");
-      if (!Array.isArray(sessions) || sessions.length === 0) return;
-      setPanes((prev) => {
-        const next = [...prev];
-        for (const sess of sessions) {
-          if (!sess.connected) continue;
-          const existingIdx = next.findIndex(
-            (p) => p.sessionId === sess.id || (p.portName === sess.port_name && !p.connected)
-          );
-          if (existingIdx >= 0) {
-            next[existingIdx] = {
-              ...next[existingIdx],
-              portName: sess.port_name,
-              baudRate: sess.baud_rate,
-              customBaud: !BAUD_RATES.includes(sess.baud_rate),
-              sessionId: sess.id,
-              connected: true,
-            };
-          } else if (next.length < 4) {
-            const p = createPane(next.length, sess.port_name, sess.baud_rate);
-            p.sessionId = sess.id;
-            p.connected = true;
-            next.push(p);
-          }
-        }
-        return next;
-      });
-    } catch {
-      // ignore if backend command not yet initialized
+      const sessions = await invoke<LogSession[]>("log_sessions_list");
+      if (!Array.isArray(sessions) || pendingSessionSnapshot.current !== changedIds) return false;
+      // 先收到的实时事件比会话列表的快照更新，优先采用实时状态。
+      const unchanged = sessions.filter((session) => !changedIds.has(session.id));
+      flushSync(() => setPanes((prev) => unchanged.reduce(
+        (next, session) => attachLogSession(next, session, selectedAdbSerialRef.current, portsRef.current), prev
+      )));
+      return true;
+    } catch (error) {
+      onLog(`log_sessions_list error: ${String(error)}`);
+      return false;
+    } finally {
+      if (pendingSessionSnapshot.current === changedIds) pendingSessionSnapshot.current = null;
     }
-  }, []);
+  }, [onLog]);
+
+  const refreshExistingSessions = useCallback(async () => {
+    await syncExistingSessions();
+  }, [syncExistingSessions]);
 
   useEffect(() => {
     refreshPorts();
-    syncExistingSessions();
-  }, [refreshPorts, syncExistingSessions]);
+  }, [refreshPorts]);
+
+  const waitingForSerial = panes.some((pane) => pane.source === "serial" && pane.resumeConnected && !pane.connected);
+  useEffect(() => {
+    if (!sessionsLoaded || !waitingForSerial) return;
+    void refreshPorts(true);
+    const timer = setInterval(() => void refreshPorts(true), 3000);
+    return () => clearInterval(timer);
+  }, [refreshPorts, sessionsLoaded, waitingForSerial]);
+
+  useEffect(() => {
+    setPanes((current) => {
+      const learned = current.map((pane) => {
+        if (pane.source !== "serial" || !pane.connectedPortName || pane.serialBinding) return pane;
+        const binding = readSerialPortBinding(findSerialPort(ports, pane.connectedPortName));
+        return binding ? { ...pane, serialBinding: binding } : pane;
+      });
+      return learned.some((pane, index) => pane !== current[index]) ? learned : current;
+    });
+    if (sessionsLoaded) restoreSerialRef.current(ports);
+  }, [ports, sessionsLoaded]);
+
+  const refreshSources = async () => {
+    setRefreshingDevices(true);
+    try {
+      await Promise.all([refreshPorts(), onRefreshDevices()]);
+    } finally {
+      setRefreshingDevices(false);
+    }
+  };
 
   // Charset decoder state per pane (TextDecoder keeps incomplete multibyte
   // trailing bytes between chunks internally via stream: true)
-  const decoderRefs = useRef<Record<string, { decoder: TextDecoder | null; charset: Charset }>>({});
+  const decoderRefs = useRef<Record<string, { decoder: TextDecoder | null; charset: SerialCharset }>>({});
 
-  const getDecoder = (paneId: string, charset: Charset) => {
+  const getDecoder = (paneId: string, charset: SerialCharset) => {
     let entry = decoderRefs.current[paneId];
     if (!entry || entry.charset !== charset) {
       entry = {
@@ -311,24 +556,25 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
     return entry;
   };
 
-  const clearDecoder = (paneId: string) => {
+  const clearDecoder = useCallback((paneId: string) => {
     delete decoderRefs.current[paneId];
-  };
+  }, []);
 
   // Listen to serial-data events
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<SerialDataPayload>("serial-data", (event) => {
+    const listener = listen<SerialDataPayload>("serial-data", (event) => {
       const payload = event.payload;
       if (!payload) return;
       setPanes((prev) =>
         prev.map((pane) => {
-          if (pane.sessionId !== payload.session_id) return pane;
+          if (pane.source !== "serial" || pane.sessionId !== payload.session_id) return pane;
           // Prefer raw bytes decoded with the pane charset; fall back to backend lossy chunk.
           let text = payload.chunk;
+          let hexRows = pane.hexRows;
           if (payload.data_base64 && payload.data_base64.length > 0) {
             try {
               const bytes = b64ToBytes(payload.data_base64);
+              hexRows = appendHexRows(hexRows, bytes, payload.timestamp ? payload.timestamp.slice(0, 12) : formatNowTime());
               if (pane.charset === "latin1") {
                 text = decodeChunk(bytes, pane.charset);
               } else {
@@ -349,48 +595,183 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
           return {
             ...pane,
             lines: updated.lines,
+            hexRows,
             endsWithNewline: updated.endsWithNewline,
           };
         })
       );
-    }).then((fn) => {
-      unlisten = fn;
     });
     return () => {
-      if (unlisten) unlisten();
+      void listener.then((unlisten) => unlisten()).catch(() => {});
     };
   }, []);
 
-  // Auto scroll panes when lines update
+  const onAdbChunk = useCallback((id: string, text: string, timestamp: string, stream: AdbLogStream) => {
+    setPanes((prev) => prev.map((pane) => {
+      if (pane.source !== "adb" || pane.sessionId !== id) return pane;
+      const startsAnotherStream = pane.lastAdbStream !== undefined && pane.lastAdbStream !== stream;
+      const updated = appendChunkToLines(
+        pane.lines,
+        pane.endsWithNewline || startsAnotherStream,
+        text,
+        timestamp
+      );
+      return { ...pane, ...updated, lastAdbStream: stream };
+    }));
+  }, []);
+
+  const adbOutput = useAdbLogOutput(onAdbChunk);
+
   useEffect(() => {
-    for (const pane of panes) {
-      if (pane.autoScroll && !pane.hidden) {
-        const el = scrollRefs.current[pane.paneId];
-        if (el) {
-          el.scrollTop = el.scrollHeight;
+    let mounted = true;
+    const subscription = listen<LogSessionChange>("log-sessions-changed", ({ payload }) => {
+      if (!mounted) return;
+      const { kind, session, error } = payload;
+      pendingSessionSnapshot.current?.add(session.id);
+      if (kind === "started") {
+        flushSync(() => setPanes((prev) => attachLogSession(
+          prev, session, selectedAdbSerialRef.current, portsRef.current,
+        )));
+        return;
+      }
+      const pane = panesRef.current.find((item) => item.sessionId === session.id);
+      if (pane?.source === "serial") clearDecoder(pane.paneId);
+      const interrupted = kind === "interrupted";
+      flushSync(() => setPanes((prev) => endLogSession(prev, session.id, interrupted ? null : error, interrupted)));
+    });
+    void subscription.catch(() => {}).then(async () => {
+      if (!mounted) return;
+      if (await syncExistingSessions() && mounted) setSessionsLoaded(true);
+    });
+    return () => {
+      mounted = false;
+      pendingSessionSnapshot.current = null;
+      void subscription.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [clearDecoder, syncExistingSessions]);
+
+  useEffect(() => {
+    if (sessionsLoaded && adbOutput.ready) restoreAdbRef.current(adbDevices);
+  }, [adbDevices, adbOutput.ready, sessionsLoaded]);
+
+  useEffect(() => {
+    let mounted = true;
+    let queue = Promise.resolve();
+    const subscription = listen<LogUiRequest>("log-ui-request", ({ payload }) => {
+      queue = queue.then(async () => {
+        if (!mounted) return;
+        let value: unknown = null;
+        let error: string | null = null;
+        try {
+          value = await cliSettingsHandler.current(payload);
+        } catch (cause) {
+          error = cause instanceof Error ? cause.message : String(cause);
         }
+        await invoke("log_ui_reply", { id: payload.id, value, error });
+      }).catch((error) => onLog(`log_ui_reply error: ${String(error)}`));
+    });
+    void subscription.catch((error) => onLog(`log-ui-request error: ${String(error)}`));
+    return () => {
+      mounted = false;
+      void subscription.then((unlisten) => unlisten()).catch(() => {});
+    };
+  }, [onLog]);
+
+  useLayoutEffect(() => {
+    for (const pane of panes) {
+      const el = scrollRefs.current[pane.paneId];
+      if (!el || pane.hidden || !el.clientHeight) continue;
+      const pendingFormat = pendingFormatScroll.current.get(pane.paneId);
+      if (pendingFormat) {
+        if (!pane.autoScroll || pane.followPaused) {
+          el.scrollTop = formatScrollPositions.current[pane.paneId]?.[pane.receiveFormat] ?? 0;
+        }
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (pendingFormatScroll.current.get(pane.paneId) === pendingFormat) {
+            pendingFormatScroll.current.delete(pane.paneId);
+          }
+        }));
+      }
+      if (pane.autoScroll && !pane.followPaused) {
+        el.scrollTop = el.scrollHeight;
       }
     }
-  }, [panes]);
+    if (newPaneId.current && panes.some((pane) => pane.paneId === newPaneId.current)) {
+      const grid = gridRef.current;
+      if (grid) grid.scrollTop = grid.scrollHeight;
+      newPaneId.current = null;
+    }
+  }, [panes, enlargedPaneId, subView]);
 
   const updatePane = useCallback((paneId: string, patch: Partial<SerialPaneState>) => {
     setPanes((prev) => prev.map((p) => (p.paneId === paneId ? { ...p, ...patch } : p)));
   }, []);
 
+  const rememberReceivePosition = (pane: SerialPaneState) => {
+    const element = scrollRefs.current[pane.paneId];
+    if (element?.clientHeight) {
+      const positions = formatScrollPositions.current[pane.paneId] ?? {};
+      positions[pane.receiveFormat] = element.scrollTop;
+      formatScrollPositions.current[pane.paneId] = positions;
+    }
+  };
+
+  const handleReceiveScroll = (pane: SerialPaneState, element: HTMLDivElement) => {
+    if (pane.source !== "serial" || !pane.autoScroll || pendingFormatScroll.current.has(pane.paneId)) return;
+    const scrollable = element.scrollHeight > element.clientHeight;
+    if (!scrollable) return;
+    const paused = element.scrollHeight - element.clientHeight - element.scrollTop > 3;
+    if (paused !== pane.followPaused) updatePane(pane.paneId, { followPaused: paused });
+  };
+
+  const jumpToLatest = (pane: SerialPaneState) => {
+    const element = scrollRefs.current[pane.paneId];
+    if (element) element.scrollTop = element.scrollHeight;
+    if (pane.followPaused) updatePane(pane.paneId, { followPaused: false });
+  };
+
+  const handleLoadLogProfile = (profile: LogProfile) => {
+    const profilePanes = profile.sources.map(createProfilePane);
+    setPanes((previous) => {
+      const next = [...previous];
+      for (const [index, profilePane] of profilePanes.entries()) {
+        const source = profile.sources[index];
+        const matches = (pane: SerialPaneState) => matchesProfilePane(pane, profilePane, selectedAdbSerial);
+        const activeIndex = next.findIndex((pane) => (pane.sessionId !== null || pane.connecting) && matches(pane));
+        const matchingIndex = activeIndex >= 0 ? activeIndex : next.findIndex(matches);
+        if (matchingIndex >= 0) {
+          const pane = next[matchingIndex];
+          next[matchingIndex] = {
+            ...pane,
+            label: profilePane.label,
+            ...(pane.source === "adb" && { adbSerial: profilePane.adbSerial }),
+            ...(source.type === "serial" && {
+              ...loadSerialView(source.serial_options),
+              ...(!pane.sessionId && source.line_coding && { coding: source.line_coding }),
+            }),
+          };
+        } else {
+          const emptyIndex = next.findIndex(emptyPane);
+          if (emptyIndex >= 0) next[emptyIndex] = profilePane;
+          else next.push(profilePane);
+        }
+      }
+      return next;
+    });
+    onLog(t("multiLog.profiles.loaded", { name: profile.name }));
+  };
+
   const handleLoadFromWorkspace = () => {
     if (!activeWorkspace?.serial_ports?.length) return;
     setPanes((prev) => {
-      const connectedPanes = prev.filter((p) => p.connected);
-      const slots = activeWorkspace.serial_ports.slice(0, 4);
-      const next: SerialPaneState[] = [...connectedPanes];
-      for (const slot of slots) {
-        if (next.length >= 4) break;
-        const already = next.some((p) => p.portName === slot.port_name);
+      const next = prev.filter((p) => p.source === "adb" || p.connected || p.connecting || p.stopping);
+      for (const slot of activeWorkspace.serial_ports) {
+        const already = next.some((p) => p.source === "serial" && p.portName === slot.port_name);
         if (!already) {
-          next.push(createPane(next.length, slot.port_name, slot.baud_rate || 115200, slot.label));
+          next.push(createPane(slot.port_name, slot.baud_rate || 115200, slot.label));
         }
       }
-      return next.length > 0 ? next : [createPane(0)];
+      return next.length > 0 ? next : [createPane()];
     });
     onLog(
       isEn
@@ -399,32 +780,34 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
     );
   };
 
-  const handleConnect = async (pane: SerialPaneState) => {
-    const port = pane.portName || ports[0]?.port_name || "";
+  const handleConnect = async (pane: SerialPaneState, restorePort?: SerialPortInfo) => {
+    if (pane.source !== "serial" || pane.connected || pane.connecting) return;
+    const port = restorePort && !portHasName(restorePort, pane.portName) ? restorePort.port_name : pane.portName;
     if (!port) {
       updatePane(pane.paneId, {
+        resumeConnected: false,
         error: isEn ? "Please select a serial port" : "请先选择串口设备",
       });
       return;
     }
-    updatePane(pane.paneId, { connecting: true, error: null, portName: port });
+    const requestedId = `serial-${pane.paneId}-${Date.now()}`;
+    clearDecoder(pane.paneId);
+    updatePane(pane.paneId, { connecting: true, error: null, sessionId: requestedId, panel: undefined });
     try {
-      const requestedId = pane.sessionId || `serial-${pane.paneId}-${Date.now()}`;
       const session = await invoke<SerialSessionInfo>("serial_open", {
         sessionId: requestedId,
         portName: port,
         baudRate: pane.baudRate,
         lineCoding: pane.coding,
+        serialOptions: serialViewOptions(pane),
       });
-      clearDecoder(pane.paneId);
-      updatePane(pane.paneId, {
-        sessionId: session.id,
-        connected: true,
-        connecting: false,
-        portName: session.port_name || port,
-        baudRate: session.baud_rate || pane.baudRate,
-        error: null,
-      });
+      setPanes((prev) => prev.map((current) => current.sessionId === requestedId ? {
+        ...current, sessionId: session.id, connected: true, connecting: false,
+        connectedPortName: session.port_name, baudRate: session.baud_rate, resumeConnected: true,
+      } : current));
+      if (panesRef.current.some((current) => current.sessionId === requestedId)) {
+        serialRestoreAttempts.current.delete(pane.paneId);
+      }
       onLog(
         isEn
           ? `Serial opened: ${port} @ ${pane.baudRate}`
@@ -432,28 +815,157 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
       );
     } catch (err) {
       const msg = String(err);
-      updatePane(pane.paneId, { connecting: false, error: msg });
+      setPanes((prev) => endLogSession(prev, requestedId, msg, !!restorePort));
       onLog(`serial_open error: ${msg}`);
     }
   };
 
-  const handleDisconnect = async (pane: SerialPaneState) => {
-    if (!pane.sessionId) return;
+  cliSettingsHandler.current = async ({ action, params }) => {
+    const values = settingsObject(params, action);
+    const bridge = bridgeSettingsRef.current;
+    if (!bridge) throw new Error("Log settings are still loading");
+
+    let columns = columnCount;
+    switch (action) {
+      case "get":
+        if (Object.keys(values).length) throw new Error("get does not accept settings");
+        break;
+      case "pane-set": {
+        if (typeof values.pane_id !== "string" || !values.pane_id) {
+          throw new Error("pane_id must be a nonempty pane ID");
+        }
+        const pane = panesRef.current.find((item) => item.paneId === values.pane_id);
+        if (!pane) throw new Error(`Unknown pane: ${values.pane_id}`);
+        const patch = panePatch(values, pane, BAUD_RATES);
+        const apply = (current: SerialPaneState[]) =>
+          current.map((item) => item.paneId === pane.paneId ? { ...item, ...patch } : item);
+        localStorage.setItem(LOG_PANES_KEY, serializePaneSettings(apply(panesRef.current)));
+        if (patch.receiveFormat && patch.receiveFormat !== pane.receiveFormat) {
+          rememberReceivePosition(pane);
+          pendingFormatScroll.current.set(pane.paneId, Symbol());
+        }
+        if (patch.source && patch.source !== pane.source) clearDecoder(pane.paneId);
+        flushSync(() => {
+          setPanes(apply);
+          if (patch.hidden) {
+            setEnlargedPaneId((current) => current === pane.paneId ? null : current);
+            setPaneSettings((current) => current?.paneId === pane.paneId ? null : current);
+          }
+        });
+        break;
+      }
+      case "layout-set": {
+        const patch = layoutPatch(values, panesRef.current);
+        if (patch.columns !== undefined) {
+          columns = patch.columns;
+          localStorage.setItem(LOG_COLUMNS_KEY, String(columns));
+        }
+        const order = patch.order;
+        const reorder = (current: SerialPaneState[]) => {
+          const byId = new Map(current.map((pane) => [pane.paneId, pane]));
+          return [...(order ?? []).flatMap((id) => {
+            const pane = byId.get(id);
+            byId.delete(id);
+            return pane ? [pane] : [];
+          }), ...byId.values()];
+        };
+        if (order) localStorage.setItem(LOG_PANES_KEY, serializePaneSettings(reorder(panesRef.current)));
+        flushSync(() => {
+          if (patch.columns !== undefined) setColumnCount(columns);
+          if (order) setPanes(reorder);
+        });
+        break;
+      }
+      case "bridge-set":
+        await bridge.setSettings(values);
+        break;
+      default:
+        throw new Error(`Unknown log settings action: ${action}`);
+    }
+    return { panes: panesRef.current.map(cliPaneSettings), columns, bridge: bridge.getSettings() };
+  };
+
+  const adbDeviceForPane = (pane: SerialPaneState) =>
+    pane.adbSerial || selectedAdbSerial;
+
+  const handleStartAdb = async (pane: SerialPaneState, serial = adbDeviceForPane(pane)) => {
+    const command = pane.adbCommand.trim();
+    if (!serial || !command || !adbOutput.ready || pane.sessionId) return;
+    const sessionId = `adb-log-${pane.paneId}-${Date.now()}`;
+    updatePane(pane.paneId, {
+      sessionId,
+      adbSerial: serial,
+      connecting: true,
+      panel: undefined,
+      error: null,
+      lines: pane.resumeConnected ? pane.lines : [],
+      endsWithNewline: true,
+      lastAdbStream: undefined,
+    });
     try {
-      await invoke("serial_close", { sessionId: pane.sessionId });
-      clearDecoder(pane.paneId);
-      updatePane(pane.paneId, { connected: false, sessionId: null, dtr: false, rts: false });
-      onLog(isEn ? `Serial closed: ${pane.portName}` : `串口已断开: ${pane.portName}`);
+      await invoke("adb_log_open", { sessionId, serial, command });
+      setPanes((prev) => prev.map((current) => current.sessionId === sessionId
+        ? { ...current, connected: true, connecting: false, resumeConnected: true }
+        : current));
+    } catch (err) {
+      adbOutput.forget(sessionId);
+      setPanes((prev) => endLogSession(prev, sessionId, String(err)));
+    }
+  };
+
+  restoreSerialRef.current = (available) => {
+    const attempts = serialRestoreAttempts.current;
+    for (const pane of panesRef.current) {
+      if (pane.source !== "serial" || !pane.resumeConnected) {
+        attempts.delete(pane.paneId);
+        continue;
+      }
+      if (pane.sessionId) continue;
+      const port = findSerialPort(available, pane.portName, pane.serialBinding);
+      if (!port) {
+        attempts.delete(pane.paneId);
+      } else if (attempts.get(pane.paneId) !== port.port_name) {
+        attempts.set(pane.paneId, port.port_name);
+        void handleConnect(pane, port);
+      }
+    }
+  };
+
+  restoreAdbRef.current = (devices) => {
+    for (const pane of panesRef.current) {
+      if (pane.source === "adb" && pane.resumeConnected && !pane.sessionId &&
+          adbDeviceAvailable(devices, pane.adbSerial)) {
+        void handleStartAdb(pane, pane.adbSerial);
+      }
+    }
+  };
+
+  const handleDisconnect = async (pane: SerialPaneState): Promise<boolean> => {
+    if (!pane.sessionId || pane.stopping) return false;
+    const sessionId = pane.sessionId;
+    updatePane(pane.paneId, { stopping: true });
+    try {
+      await invoke("log_session_stop", { sessionId });
+      if (pane.source === "serial") {
+        clearDecoder(pane.paneId);
+        onLog(isEn ? `Serial closed: ${pane.portName}` : `串口已断开: ${pane.portName}`);
+      }
+      setPanes((prev) => endLogSession(prev, sessionId));
+      return true;
     } catch (err) {
       const msg = String(err);
-      updatePane(pane.paneId, { error: msg });
-      onLog(`serial_close error: ${msg}`);
+      setPanes((prev) => prev.map((current) => current.sessionId === sessionId
+        ? { ...current, stopping: false, error: msg }
+        : current));
+      onLog(`log_session_stop error: ${msg}`);
+      return false;
     }
   };
 
   const handleConnectAllWorkspace = async () => {
-    for (const pane of panesRef.current) {
-      if (!pane.connected && pane.portName) {
+    for (const { paneId } of panesRef.current) {
+      const pane = panesRef.current.find((item) => item.paneId === paneId);
+      if (pane?.source === "serial" && !pane.connected && !pane.connecting && !pane.stopping && pane.portName) {
         await handleConnect(pane);
       }
     }
@@ -480,22 +992,28 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
   const handleSendCommand = async (pane: SerialPaneState) => {
     if (!pane.sessionId || !pane.connected) return;
     const raw = pane.inputText;
-    const payload = `${raw}${pane.lineEnding}`;
-    if (!payload) return;
-
     try {
-      await invoke("serial_write", {
-        sessionId: pane.sessionId,
-        data: payload,
-      });
+      if (pane.sendFormat === "hex") {
+        const dataBase64 = hexToBase64(raw);
+        if (dataBase64 === null) {
+          updatePane(pane.paneId, { error: t("multiLog.hexError") });
+          return;
+        }
+        if (!dataBase64) return;
+        await invoke("serial_write_bytes", { sessionId: pane.sessionId, dataBase64 });
+      } else {
+        const data = raw + SERIAL_LINE_SUFFIX[pane.lineEnding];
+        if (!data) return;
+        await invoke("serial_write", { sessionId: pane.sessionId, data });
+      }
+      const history = pane.cmdHistory[pane.sendFormat];
       const nextHistory =
-        raw.trim() && pane.cmdHistory[0] !== raw
-          ? [raw, ...pane.cmdHistory].slice(0, 50)
-          : pane.cmdHistory;
+        raw.trim() && history[0] !== raw ? [raw, ...history].slice(0, 50) : history;
       updatePane(pane.paneId, {
         inputText: "",
-        cmdHistory: nextHistory,
+        cmdHistory: { ...pane.cmdHistory, [pane.sendFormat]: nextHistory },
         historyIndex: -1,
+        error: null,
       });
     } catch (err) {
       const msg = String(err);
@@ -505,18 +1023,19 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
   };
 
   const handleExportLog = async (pane: SerialPaneState) => {
-    const content = pane.lines
+    const content = paneLines(pane)
       .map((l) => (pane.showTimestamps ? `[${l.ts}] ${stripAnsi(l.text)}` : stripAnsi(l.text)))
       .join("\n");
     try {
-      const defaultName = `${(pane.portName || "serial").replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}.log`;
+      const source = pane.source === "adb" ? `adb-${pane.adbSerial}` : pane.portName || "serial";
+      const defaultName = `${source.replace(/[^a-zA-Z0-9_-]/g, "_")}_${Date.now()}.log`;
       const path = await save({
         defaultPath: defaultName,
         filters: [{ name: "Log Files", extensions: ["log", "txt"] }],
       });
       if (path) {
         await writeTextFile(path, content);
-        onLog(isEn ? `Exported serial log: ${path}` : `已导出串口日志: ${path}`);
+        onLog(t("multiLog.exported", { path }));
       }
     } catch (err) {
       onLog(`Export log error: ${String(err)}`);
@@ -524,18 +1043,20 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
   };
 
   const handleAddPane = () => {
-    if (panes.length >= 4) return;
-    setPanes((prev) => [...prev, createPane(prev.length)]);
+    const pane = createPane();
+    newPaneId.current = pane.paneId;
+    setEnlargedPaneId(null);
+    setPanes((prev) => [...prev, pane]);
   };
 
   const handleRemovePane = async (pane: SerialPaneState) => {
-    if (pane.connected && pane.sessionId) {
-      await handleDisconnect(pane);
-    }
-    setPanes((prev) => {
-      const filtered = prev.filter((p) => p.paneId !== pane.paneId);
-      return filtered.length > 0 ? filtered : [createPane(0)];
-    });
+    if (pane.connecting || pane.stopping) return;
+    if (pane.connected && pane.sessionId && !(await handleDisconnect(pane))) return;
+    delete formatScrollPositions.current[pane.paneId];
+    pendingFormatScroll.current.delete(pane.paneId);
+    setEnlargedPaneId((id) => id === pane.paneId ? null : id);
+    setPaneSettings((current) => current?.paneId === pane.paneId ? null : current);
+    setPanes((prev) => prev.filter((p) => p.paneId !== pane.paneId));
   };
 
   // Saved Log Browser helpers
@@ -558,30 +1079,89 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
   }, [subView, loadLogList]);
 
   const openLogFile = async (entry: SerialLogEntry) => {
+    const revision = ++logReadRevision.current;
     setSelectedLogFile(entry);
     setLoadingLogContent(true);
     try {
       const text = await invoke<string>("serial_read_log_file", {
         fileName: entry.file_name,
         tailLines: 1000,
+        directory: entry.directory,
       });
-      setLogContent(text || "");
+      if (revision === logReadRevision.current) setLogContent(text || "");
     } catch (err) {
+      if (revision !== logReadRevision.current) return;
       const msg = String(err);
       setLogContent(`Failed to read log: ${msg}`);
       onLog(`serial_read_log_file error: ${msg}`);
     } finally {
-      setLoadingLogContent(false);
+      if (revision === logReadRevision.current) setLoadingLogContent(false);
     }
   };
 
   const visiblePanes = useMemo(() => panes.filter((p) => !p.hidden), [panes]);
-  const gridColsClass =
-    visiblePanes.length <= 1
-      ? "grid-cols-1"
-      : visiblePanes.length === 2
-      ? "grid-cols-1 xl:grid-cols-2"
-      : "grid-cols-1 xl:grid-cols-2";
+  const enlarged = visiblePanes.some((pane) => pane.paneId === enlargedPaneId);
+  const displayedPaneCount = enlarged ? 1 : visiblePanes.length;
+  const columns = Math.max(1, Math.min(columnCount, displayedPaneCount));
+  const compactHeader = columns > 2;
+  const iconPadding = compactHeader ? "px-0.5 py-1" : "p-1.5";
+  const hiddenPanes = panes.filter((pane) => pane.hidden);
+  const settingsPane = visiblePanes.find((pane) => pane.paneId === paneSettings?.paneId);
+  const paneName = (pane: SerialPaneState) =>
+    pane.label?.trim() || t("multiLog.paneName", { number: panes.indexOf(pane) + 1 });
+  const logProfileSnapshot = () => {
+    const labels = new Set<string>();
+    const sources: LogProfileSource[] = [];
+    for (const pane of panes) {
+      const serial = adbDeviceForPane(pane).trim();
+      const command = pane.adbCommand.trim();
+      const portName = pane.portName.trim();
+      if (pane.source === "adb" ? !serial || !command : !portName) continue;
+      const base = paneName(pane);
+      let label = base;
+      for (let suffix = 2; labels.has(label); suffix += 1) {
+        label = `${base} (${suffix})`;
+      }
+      labels.add(label);
+      sources.push(pane.source === "adb"
+        ? { type: "adb", label, serial, command }
+        : {
+            type: "serial", label, port_name: portName, baud_rate: pane.baudRate,
+            line_coding: pane.coding, serial_options: serialViewOptions(pane),
+          });
+    }
+    return sources.length ? { sources } : null;
+  };
+  const togglePanel = (pane: SerialPaneState, panel: LogPanePanel) => {
+    updatePane(pane.paneId, { panel: pane.panel === panel ? undefined : panel });
+  };
+  const togglePaneSettings = (paneId: string, anchor: HTMLButtonElement) => {
+    setPaneSettings((current) => current?.paneId === paneId ? null : { paneId, anchor });
+  };
+  const openBridgeSettings = () => {
+    setSettingsSection("bridge");
+    setSubView("settings");
+  };
+
+  const clearPane = (pane: SerialPaneState) => {
+    clearDecoder(pane.paneId);
+    delete formatScrollPositions.current[pane.paneId];
+    updatePane(pane.paneId, { lines: [], hexRows: [], endsWithNewline: true, followPaused: false });
+  };
+  const toggleEnlargedPane = (paneId: string) => {
+    if (enlargedPaneId === paneId) {
+      setEnlargedPaneId(null);
+    } else {
+      gridScrollBeforeEnlarge.current = gridRef.current?.scrollTop ?? 0;
+      setEnlargedPaneId(paneId);
+    }
+  };
+
+  useLayoutEffect(() => {
+    if (subView !== "live" || enlarged || gridScrollBeforeEnlarge.current === null) return;
+    if (gridRef.current) gridRef.current.scrollTop = gridScrollBeforeEnlarge.current;
+    gridScrollBeforeEnlarge.current = null;
+  }, [enlarged, subView]);
 
   const filteredLogText = useMemo(() => {
     if (!logSearch.trim()) return logContent;
@@ -593,11 +1173,11 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
   }, [logContent, logSearch]);
 
   return (
-    <div className="h-full flex flex-col gap-4 min-h-0">
+    <div className="flex h-full min-h-0 min-w-0 flex-col gap-2">
       {/* Top Toolbar */}
-      <div className="ui-toolbar">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="ui-segmented">
+      <div className="ui-toolbar min-w-0 shrink-0 px-2.5 py-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <div className="ui-segmented max-w-full flex-wrap">
             <button
               onClick={() => setSubView("live")}
               className={`ui-segmented-btn ${
@@ -607,7 +1187,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
               }`}
             >
               <Terminal className="w-3.5 h-3.5" />
-              {t("serial.liveTab", { defaultValue: isEn ? "Live Multi-Pane" : "实时串口分屏" })}
+              {t("multiLog.liveTab")}
             </button>
             <button
               onClick={() => setSubView("logs")}
@@ -620,53 +1200,58 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
               <History className="w-3.5 h-3.5" />
               {t("serial.logsTab", { defaultValue: isEn ? "Saved Logs" : "历史日志浏览" })}
             </button>
+            <button
+              type="button"
+              onClick={() => setSubView("bridge")}
+              className={`ui-segmented-btn whitespace-nowrap ${
+                subView === "bridge"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+              }`}
+            >
+              <Cable className="w-3.5 h-3.5" />
+              {t("multiLog.bridge.tab")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubView("settings")}
+              className={`ui-segmented-btn ${
+                subView === "settings"
+                  ? "bg-blue-600 text-white shadow-sm"
+                  : "text-slate-600 hover:text-slate-900 dark:text-slate-300 dark:hover:text-white"
+              }`}
+            >
+              <Settings2 className="h-3.5 w-3.5" />
+              {t("multiLog.settingsPage.tab")}
+            </button>
           </div>
 
-          {activeWorkspace && (
-            <div className="hidden md:flex items-center gap-2 pl-2 ml-1 border-l border-slate-200 dark:border-slate-700">
-              <span className="text-xs px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-medium">
-                {activeWorkspace.name} {activeWorkspace.chip ? `(${activeWorkspace.chip})` : ""}
-              </span>
-              {activeWorkspace.serial_ports.length > 0 && subView === "live" && (
-                <>
-                  <button
-                    onClick={handleLoadFromWorkspace}
-                    className="ui-btn-secondary py-1 px-2.5"
-                  >
-                    {isEn ? "Load Workspace Ports" : "载入工作区串口"}
-                  </button>
-                  <button
-                    onClick={handleConnectAllWorkspace}
-                    className="ui-btn-success py-1 px-2.5"
-                  >
-                    {isEn ? "Connect All" : "一键全连"}
-                  </button>
-                </>
-              )}
-            </div>
+          {activeWorkspace && activeWorkspace.serial_ports.length > 0 && subView === "live" && (
+            <button onClick={handleConnectAllWorkspace} className="ui-btn-success px-2.5 py-1">
+              {isEn ? "Connect All" : "一键全连"}
+            </button>
           )}
         </div>
 
         {subView === "live" ? (
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
             <button
-              onClick={refreshPorts}
-              disabled={loadingPorts}
-              className="ui-btn-secondary"
+              onClick={refreshSources}
+              disabled={loadingPorts || refreshingDevices}
+              className="ui-btn-secondary px-2.5 py-1"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${loadingPorts ? "animate-spin" : ""}`} />
-              {isEn ? "Refresh Ports" : "刷新串口"}
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingPorts || refreshingDevices ? "animate-spin" : ""}`} />
+              {t("multiLog.refreshSources")}
             </button>
             <button
               onClick={handleAddPane}
-              disabled={panes.length >= 4}
-              className="ui-btn-primary"
+              className="ui-btn-primary px-2.5 py-1"
             >
               <Plus className="w-3.5 h-3.5" />
-              {isEn ? `Add Pane (${panes.length}/4)` : `新增分屏 (${panes.length}/4)`}
+              {t("multiLog.addPane", { total: panes.length })}
             </button>
           </div>
-        ) : (
+        ) : subView === "logs" ? (
           <button
             onClick={loadLogList}
             disabled={loadingLogs}
@@ -675,25 +1260,108 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
             <RefreshCw className={`w-3.5 h-3.5 ${loadingLogs ? "animate-spin" : ""}`} />
             {isEn ? "Refresh Logs" : "刷新日志列表"}
           </button>
-        )}
+        ) : null}
       </div>
 
+      {subView === "settings" && (
+        <section aria-label={t("multiLog.settingsPage.tab")} className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-y-auto">
+          <div className="ui-segmented w-fit max-w-full shrink-0 flex-wrap">
+            <button
+              type="button"
+              aria-pressed={settingsSection === "capture"}
+              onClick={() => setSettingsSection("capture")}
+              className={`ui-segmented-btn ${settingsSection === "capture" ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 dark:text-slate-300"}`}
+            >
+              {t("multiLog.settingsPage.capture")}
+            </button>
+            <button
+              type="button"
+              aria-pressed={settingsSection === "bridge"}
+              onClick={openBridgeSettings}
+              className={`ui-segmented-btn ${settingsSection === "bridge" ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 dark:text-slate-300"}`}
+            >
+              {t("multiLog.settingsPage.bridge")}
+            </button>
+            <button
+              type="button"
+              aria-pressed={settingsSection === "storage"}
+              onClick={() => setSettingsSection("storage")}
+              className={`ui-segmented-btn ${settingsSection === "storage" ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 dark:text-slate-300"}`}
+            >
+              {t("multiLog.settingsPage.storage")}
+            </button>
+          </div>
+          {settingsSection === "capture" ? (
+            <div className="ui-card flex min-w-0 flex-wrap items-center justify-between gap-3 p-3">
+              <LogProfileControls onLoad={handleLoadLogProfile} onLog={onLog} snapshot={logProfileSnapshot} />
+              {activeWorkspace && activeWorkspace.serial_ports.length > 0 && (
+                <button onClick={handleLoadFromWorkspace} className="ui-btn-secondary px-2.5 py-1">
+                  {isEn ? "Load Workspace Ports" : "载入工作区串口"}
+                </button>
+              )}
+              <label className="flex items-center gap-2 text-xs">
+                {t("multiLog.columnCount")}
+                <select
+                  value={columnCount}
+                  onChange={(event) => {
+                    setColumnCount(Number(event.target.value));
+                    localStorage.setItem(LOG_COLUMNS_KEY, event.target.value);
+                  }}
+                  className="ui-select py-1"
+                >
+                  {[2, 3, 4].map((count) => (
+                    <option key={count} value={count}>{t("multiLog.columns", { count })}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          ) : settingsSection === "bridge" ? (
+            <div ref={setBridgeSettingsHost} className="min-w-0" />
+          ) : (
+            <LogCaptureSettings />
+          )}
+        </section>
+      )}
+
       {/* Live Multi-pane Serial Console */}
-      {subView === "live" ? (
-        <div className="flex-1 flex flex-col gap-3 min-h-0">
+      {subView === "live" || subView === "settings" ? (
+        <div className={subView === "live" ? "flex min-h-0 flex-1 flex-col gap-2" : "hidden"}>
           {visiblePanes.length === 0 ? (
             <div className="ui-card flex-1 flex flex-col items-center justify-center p-8 text-slate-500 dark:text-slate-400">
-              <EyeOff className="w-8 h-8 mb-2 opacity-60" />
               <p className="text-sm">
-                {isEn
-                  ? "All serial panes are hidden. Click a pane chip below to show it."
-                  : "当前所有分屏已隐藏，请点击下方状态栏芯片恢复显示。"}
+                {t(panes.length ? "multiLog.allHidden" : "multiLog.noPanes")}
               </p>
             </div>
           ) : (
-            <div className={`flex-1 grid ${gridColsClass} gap-4 min-h-0 auto-rows-fr`}>
-              {visiblePanes.map((pane) => {
-                const displayLines = pane.lines
+            <div
+              ref={gridRef}
+              style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+              className={`grid min-h-0 flex-1 gap-2 overflow-y-auto ${displayedPaneCount > columns * 2 ? "auto-rows-[max(10rem,calc((100%_-_0.5rem)/2))]" : "auto-rows-fr"}`}
+            >
+              {visiblePanes.map((pane, index) => {
+                const fillsLastRow = index % columns === 0 && index === visiblePanes.length - 1;
+                const isAdb = pane.source === "adb";
+                const isBusy = pane.connected || pane.connecting || pane.stopping;
+                const waitingForDevice = !isBusy && pane.resumeConnected;
+                const canStop = pane.connected || waitingForDevice;
+                const adbSerial = adbDeviceForPane(pane);
+                const adbReady = isAdb && adbDeviceAvailable(adbDevices, adbSerial);
+                const sourceSummary = isAdb
+                  ? adbSerial || t("multiLog.adbSource")
+                  : pane.connectedPortName || pane.portName || t("multiLog.serialSource");
+                const name = paneName(pane);
+                const isEnlarged = enlargedPaneId === pane.paneId;
+                const toggleLayoutHint = t(isEnlarged ? "multiLog.restorePaneLayout" : "multiLog.enlargePane");
+                const closeLabel = t(pane.connected ? "multiLog.closeActivePane" : "multiLog.closePane");
+                const connectionLabel = waitingForDevice ? t("multiLog.cancelRestore") : isAdb
+                  ? t(pane.stopping ? "multiLog.stopping" : pane.connected ? "multiLog.stop" : pane.connecting ? "multiLog.starting" : "multiLog.start")
+                  : pane.connected
+                    ? (isEn ? "Disconnect" : "断开")
+                    : pane.connecting ? (isEn ? "Opening..." : "连接中...") : (isEn ? "Connect" : "连接");
+                const receivedLines = paneLines(pane);
+                const hexOutput = !isAdb && pane.receiveFormat === "hex";
+                const history = pane.cmdHistory[pane.sendFormat];
+                const displayLines = receivedLines
                   .filter((l) =>
                     !pane.filterOnly || !pane.searchQuery
                       ? true
@@ -705,494 +1373,291 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                 return (
                   <div
                     key={pane.paneId}
-                    className="ui-card flex flex-col overflow-hidden min-h-[260px]"
+                    className={`ui-card min-h-0 min-w-0 flex-col overflow-hidden ${enlarged && !isEnlarged ? "hidden" : "flex"} ${fillsLastRow ? "col-span-full" : ""}`}
                   >
-                    {/* Pane Header */}
-                    <div className="ui-card-header px-3 py-2">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span
-                          className={`w-2 h-2 rounded-full ${
-                            pane.connected ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
-                          }`}
-                        />
-                        <span className="text-xs font-semibold text-slate-800 dark:text-slate-100 mr-1">
-                          {pane.label}
+                    <div className={`flex min-w-0 shrink-0 flex-wrap items-center border-b border-slate-200 py-1 dark:border-slate-800 ${compactHeader ? "gap-0.5 px-1.5" : "gap-1 px-2"}`}>
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${pane.connected ? "bg-emerald-500" : "bg-slate-400"}`} />
+                      <button
+                        type="button"
+                        data-pane-title
+                        aria-pressed={isEnlarged}
+                        onDoubleClick={() => toggleEnlargedPane(pane.paneId)}
+                        onClick={(event) => {
+                          if (event.detail === 0) toggleEnlargedPane(pane.paneId);
+                        }}
+                        title={`${name} · ${sourceSummary}\n${toggleLayoutHint}`}
+                        className="flex min-w-12 flex-1 select-none items-baseline gap-1.5 text-left"
+                      >
+                        <span className="truncate text-xs font-semibold">
+                          {name}
                         </span>
-
-                        <select
-                          value={pane.portName}
-                          disabled={pane.connected}
-                          onChange={(e) => updatePane(pane.paneId, { portName: e.target.value })}
-                          className="ui-select py-1 max-w-[160px] font-mono"
-                        >
-                          <option value="">{isEn ? "-- Port --" : "-- 选择串口 --"}</option>
-                          {ports.map((p) => (
-                            <option key={p.port_name} value={p.port_name}>
-                              {p.port_name}
-                              {p.product ? ` (${p.product})` : ""}
-                            </option>
-                          ))}
-                          {pane.portName &&
-                            !ports.some((p) => p.port_name === pane.portName) && (
-                              <option value={pane.portName}>{pane.portName}</option>
-                            )}
-                        </select>
-
-                        <select
-                          value={pane.customBaud ? CUSTOM_BAUD : pane.baudRate}
-                          disabled={pane.connected}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            if (v === CUSTOM_BAUD) {
-                              updatePane(pane.paneId, { customBaud: true });
-                            } else {
-                              updatePane(pane.paneId, {
-                                customBaud: false,
-                                baudRate: Number(v),
-                              });
-                            }
-                          }}
-                          className="ui-select py-1 font-mono tabular-nums"
-                        >
-                          {BAUD_RATES.map((b) => (
-                            <option key={b} value={b}>
-                              {b}
-                            </option>
-                          ))}
-                          <option value={CUSTOM_BAUD}>
-                            {isEn ? "Custom..." : "自定义..."}
-                          </option>
-                        </select>
-
-                        {pane.customBaud && (
-                          <input
-                            type="number"
-                            min={1}
-                            max={4000000}
-                            value={pane.baudRate}
-                            disabled={pane.connected}
-                            onChange={(e) =>
-                              updatePane(pane.paneId, {
-                                baudRate: Math.max(1, Math.floor(Number(e.target.value) || 0)),
-                              })
-                            }
-                            title={isEn ? "Custom baud rate" : "自定义波特率"}
-                            className="ui-input w-24 py-1 font-mono tabular-nums border-blue-400 dark:border-blue-600"
-                          />
-                        )}
-
-                        {pane.connected ? (
-                          <button
-                            onClick={() => handleDisconnect(pane)}
-                            className="ui-btn-danger py-1 px-2.5"
-                          >
-                            <PlugZap className="w-3.5 h-3.5" />
-                            {isEn ? "Disconnect" : "断开"}
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleConnect(pane)}
-                            disabled={pane.connecting}
-                            className="ui-btn-success py-1 px-2.5"
-                          >
-                            <Plug className="w-3.5 h-3.5" />
-                            {pane.connecting
-                              ? isEn
-                                ? "Opening..."
-                                : "连接中..."
-                              : isEn
-                              ? "Connect"
-                              : "连接"}
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Pane Controls */}
-                      <div className="flex flex-wrap items-center gap-1">
+                        <span className={`truncate text-[11px] text-slate-500 dark:text-slate-400 ${compactHeader ? "sr-only" : ""}`}>{sourceSummary}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => togglePanel(pane, "search")}
+                        aria-expanded={pane.panel === "search"}
+                        aria-label={t("multiLog.toggleSearch")}
+                        title={t("multiLog.toggleSearch")}
+                        className={`shrink-0 rounded-md ${iconPadding} ${pane.panel === "search" || pane.searchQuery ? "bg-blue-500/15 text-blue-600 dark:text-blue-400" : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"}`}
+                      >
+                        <Search className="h-3.5 w-3.5" />
+                      </button>
+                      {!isAdb && (
                         <button
-                          onClick={() => handleToggleSignal(pane, "dtr")}
-                          disabled={!pane.connected}
-                          title="DTR"
-                          className={`px-1.5 py-0.5 rounded-md text-[11px] font-mono border transition disabled:opacity-40 ${
-                            pane.dtr
-                              ? "bg-amber-500/20 border-amber-500 text-amber-600 dark:text-amber-300"
-                              : "border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400"
-                          }`}
+                          type="button"
+                          onClick={() => togglePanel(pane, "command")}
+                          aria-expanded={pane.panel === "command"}
+                          aria-label={t("multiLog.toggleCommand")}
+                          title={t("multiLog.toggleCommand")}
+                          className={`shrink-0 rounded-md ${iconPadding} ${pane.panel === "command" ? "bg-blue-500/15 text-blue-600 dark:text-blue-400" : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"}`}
                         >
-                          DTR
+                          <Terminal className="h-3.5 w-3.5" />
                         </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={(event) => togglePaneSettings(pane.paneId, event.currentTarget)}
+                        aria-label={t("multiLog.settings")}
+                        aria-haspopup="dialog"
+                        aria-expanded={paneSettings?.paneId === pane.paneId}
+                        aria-controls={paneSettings?.paneId === pane.paneId ? paneSettingsId : undefined}
+                        title={t("multiLog.settings")}
+                        className={`shrink-0 rounded-md ${iconPadding} ${paneSettings?.paneId === pane.paneId ? "bg-blue-500/15 text-blue-600 dark:text-blue-400" : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"}`}
+                      >
+                        <Settings2 className="h-3.5 w-3.5" />
+                      </button>
+                      {!compactHeader && (
                         <button
-                          onClick={() => handleToggleSignal(pane, "rts")}
-                          disabled={!pane.connected}
-                          title="RTS"
-                          className={`px-1.5 py-0.5 rounded-md text-[11px] font-mono border transition disabled:opacity-40 ${
-                            pane.rts
-                              ? "bg-amber-500/20 border-amber-500 text-amber-600 dark:text-amber-300"
-                              : "border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400"
-                          }`}
-                        >
-                          RTS
-                        </button>
-
-                        <button
-                          onClick={() =>
-                            updatePane(pane.paneId, { showTimestamps: !pane.showTimestamps })
-                          }
-                          title={isEn ? "Toggle Timestamps" : "时间戳开关"}
-                          className={`p-1.5 rounded-md border transition ${
-                            pane.showTimestamps
-                              ? "bg-blue-500/15 border-blue-500/40 text-blue-600 dark:text-blue-400"
-                              : "border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                          }`}
-                        >
-                          <Clock className="w-3.5 h-3.5" />
-                        </button>
-
-                        <button
-                          onClick={() =>
-                            updatePane(pane.paneId, { ansiEnabled: !pane.ansiEnabled })
-                          }
-                          title={isEn ? "Toggle ANSI Colors" : "ANSI 彩色开关"}
-                          className={`p-1.5 rounded-md border transition ${
-                            pane.ansiEnabled
-                              ? "bg-purple-500/15 border-purple-500/40 text-purple-600 dark:text-purple-400"
-                              : "border-transparent text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
-                          }`}
-                        >
-                          <Palette className="w-3.5 h-3.5" />
-                        </button>
-
-                        <button
-                          onClick={() => updatePane(pane.paneId, { autoScroll: !pane.autoScroll })}
-                          className={`px-1.5 py-0.5 rounded-md text-[11px] font-medium border transition ${
-                            pane.autoScroll
-                              ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
-                              : "border-slate-200 dark:border-slate-700 text-slate-400"
-                          }`}
-                        >
-                          {isEn ? "Scroll" : "滚屏"}
-                        </button>
-
-                        <button
-                          onClick={() => updatePane(pane.paneId, { lines: [], endsWithNewline: true })}
-                          title={isEn ? "Clear" : "清空"}
-                          className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-
-                        <button
+                          type="button"
                           onClick={() => handleExportLog(pane)}
                           title={isEn ? "Export .log" : "导出 .log"}
-                          className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
+                          className="shrink-0 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
                         >
-                          <Download className="w-3.5 h-3.5" />
+                          <Download className="h-3.5 w-3.5" />
                         </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (waitingForDevice) updatePane(pane.paneId, { resumeConnected: false });
+                          else if (pane.connected) void handleDisconnect(pane);
+                          else if (isAdb) void handleStartAdb(pane);
+                          else void handleConnect(pane);
+                        }}
+                        disabled={pane.connecting || pane.stopping || (!canStop && isAdb && (
+                          !adbReady || !pane.adbCommand.trim() || !adbOutput.ready
+                        ))}
+                        title={connectionLabel}
+                        className={`${canStop ? "ui-btn-danger" : "ui-btn-success"} shrink-0 whitespace-nowrap py-1 ${compactHeader ? "px-0.5" : "px-2"}`}
+                      >
+                        {canStop ? <PlugZap className="w-3.5 h-3.5" /> : <Plug className="w-3.5 h-3.5" />}
+                        <span className={compactHeader ? "sr-only" : undefined}>{connectionLabel}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isEnlarged) setEnlargedPaneId(null);
+                          if (paneSettings?.paneId === pane.paneId) closePaneSettings();
+                          updatePane(pane.paneId, { hidden: true, panel: undefined });
+                        }}
+                        title={t("multiLog.hidePane")}
+                        aria-label={t("multiLog.hidePane")}
+                        className={`shrink-0 rounded-md ${iconPadding} text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800`}
+                      >
+                        <EyeOff className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePane(pane)}
+                        disabled={pane.connecting || pane.stopping}
+                        title={closeLabel}
+                        aria-label={closeLabel}
+                        className={`shrink-0 rounded-md ${iconPadding} text-slate-400 hover:bg-rose-500/10 hover:text-rose-600 disabled:opacity-40 dark:hover:text-rose-400`}
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
 
-                        <button
-                          onClick={() => updatePane(pane.paneId, { hidden: true })}
-                          title={isEn ? "Hide Pane" : "隐藏分屏"}
-                          className="p-1.5 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition"
-                        >
-                          <EyeOff className="w-3.5 h-3.5" />
-                        </button>
-
-                        {panes.length > 1 && (
-                          <button
-                            onClick={() => handleRemovePane(pane)}
-                            title={isEn ? "Close Pane" : "关闭分屏"}
-                            className="p-1.5 rounded-md text-slate-400 hover:text-rose-500 transition"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                    {pane.panel === "search" && (
+                      <div className="flex shrink-0 items-center justify-between gap-2 px-2.5 py-1 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900">
+                        <div className="flex min-w-0 items-center gap-1.5 flex-1">
+                          <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <input
+                            type="text"
+                            autoFocus
+                            value={pane.searchQuery}
+                            onChange={(e) => updatePane(pane.paneId, { searchQuery: e.target.value })}
+                            placeholder={t("multiLog.search")}
+                            className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:outline-none"
+                          />
+                          {pane.searchQuery && (
+                            <button
+                              onClick={() => updatePane(pane.paneId, { searchQuery: "" })}
+                              className="text-slate-400 hover:text-slate-600"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={pane.filterOnly}
+                            onChange={(e) => updatePane(pane.paneId, { filterOnly: e.target.checked })}
+                            className="rounded-md border-slate-300 dark:border-slate-700"
+                          />
+                          {isEn ? "Filter" : "仅看匹配"}
+                        </label>
                       </div>
-                    </div>
-
-                    {/* Search Sub-bar */}
-                    <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900">
-                      <div className="flex items-center gap-1.5 flex-1">
-                        <Search className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <input
-                          type="text"
-                          value={pane.searchQuery}
-                          onChange={(e) => updatePane(pane.paneId, { searchQuery: e.target.value })}
-                          placeholder={isEn ? "Search / filter logs..." : "搜索或过滤串口输出..."}
-                          className="w-full bg-transparent text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:outline-none"
-                        />
-                        {pane.searchQuery && (
-                          <button
-                            onClick={() => updatePane(pane.paneId, { searchQuery: "" })}
-                            className="text-slate-400 hover:text-slate-600"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                    )}
+                    {(pane.error || (isAdb && adbOutput.listenerError)) && (
+                      <div className="max-h-14 shrink-0 overflow-y-auto break-all border-b border-rose-500/20 bg-rose-500/10 px-2.5 py-1 text-xs text-rose-600 dark:text-rose-400">
+                        {pane.error || t("multiLog.listenerError", { error: adbOutput.listenerError })}
                       </div>
-                      <label className="flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={pane.filterOnly}
-                          onChange={(e) => updatePane(pane.paneId, { filterOnly: e.target.checked })}
-                          className="rounded-md border-slate-300 dark:border-slate-700"
-                        />
-                        {isEn ? "Filter" : "仅看匹配"}
-                      </label>
-                    </div>
-
-                    {/* Line coding / charset sub-bar (applied on next connect) */}
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 border-b border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900">
-                      <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                        {isEn ? "Line" : "线路参数"}
-                      </span>
-                      <select
-                        value={pane.coding.data_bits}
-                        disabled={pane.connected}
-                        onChange={(e) =>
-                          updatePane(pane.paneId, {
-                            coding: { ...pane.coding, data_bits: Number(e.target.value) },
-                          })
-                        }
-                        title={isEn ? "Data bits" : "数据位"}
-                        className="ui-select py-0.5 px-1.5 text-[11px] font-mono tabular-nums"
-                      >
-                        {DATA_BITS_OPTIONS.map((n) => (
-                          <option key={n} value={n}>
-                            {n}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={pane.coding.parity}
-                        disabled={pane.connected}
-                        onChange={(e) =>
-                          updatePane(pane.paneId, {
-                            coding: { ...pane.coding, parity: e.target.value },
-                          })
-                        }
-                        title={isEn ? "Parity" : "校验位"}
-                        className="ui-select py-0.5 px-1.5 text-[11px]"
-                      >
-                        {PARITY_OPTIONS.map((p) => (
-                          <option key={p} value={p}>
-                            {p === "none" ? (isEn ? "No parity" : "无校验") : p === "even" ? (isEn ? "Even" : "偶校验") : isEn ? "Odd" : "奇校验"}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={pane.coding.stop_bits}
-                        disabled={pane.connected}
-                        onChange={(e) =>
-                          updatePane(pane.paneId, {
-                            coding: { ...pane.coding, stop_bits: Number(e.target.value) },
-                          })
-                        }
-                        title={isEn ? "Stop bits" : "停止位"}
-                        className="ui-select py-0.5 px-1.5 text-[11px] font-mono tabular-nums"
-                      >
-                        {STOP_BITS_OPTIONS.map((n) => (
-                          <option key={n} value={n}>
-                            {n === 1 ? "1" : "2"}
-                          </option>
-                        ))}
-                      </select>
-                      <select
-                        value={pane.coding.flow_control}
-                        disabled={pane.connected}
-                        onChange={(e) =>
-                          updatePane(pane.paneId, {
-                            coding: { ...pane.coding, flow_control: e.target.value },
-                          })
-                        }
-                        title={isEn ? "Flow control" : "流控"}
-                        className="ui-select py-0.5 px-1.5 text-[11px]"
-                      >
-                        {FLOW_CONTROL_OPTIONS.map((f) => (
-                          <option key={f} value={f}>
-                            {f === "none"
-                              ? isEn
-                                ? "No flow"
-                                : "无流控"
-                              : f === "software"
-                              ? isEn
-                                ? "XON/XOFF"
-                                : "软流控"
-                              : isEn
-                              ? "RTS/CTS"
-                              : "硬流控"}
-                          </option>
-                        ))}
-                      </select>
-                      <span className="ml-auto text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                        {isEn ? "Charset" : "字符集"}
-                      </span>
-                      <select
-                        value={pane.charset}
-                        onChange={(e) =>
-                          updatePane(pane.paneId, { charset: e.target.value as Charset })
-                        }
-                        title={isEn ? "Receive charset (live)" : "接收字符集（实时生效）"}
-                        className="ui-select py-0.5 px-1.5 text-[11px] font-mono"
-                      >
-                        {CHARSET_OPTIONS.map((c) => (
-                          <option key={c} value={c}>
-                            {c.toUpperCase()}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    {pane.error && (
-                      <div className="px-3 py-2 text-xs bg-rose-500/10 text-rose-600 dark:text-rose-400 border-b border-rose-500/20">
-                        {pane.error}
+                    )}
+                    {waitingForDevice && (
+                      <div className="shrink-0 truncate px-2.5 py-1 text-xs text-amber-700 dark:text-amber-400" role="status">
+                        {t(isAdb ? "multiLog.adbRestoreWaiting" : "multiLog.serialRestoreWaiting")}
                       </div>
                     )}
 
-                    {/* Output Terminal Area */}
-                    <div
-                      ref={(el) => {
-                        scrollRefs.current[pane.paneId] = el;
-                      }}
-                      className="flex-1 overflow-auto p-3 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100"
-                    >
-                      {pane.lines.length === 0 ? (
-                        <div className="text-xs text-slate-400 dark:text-slate-600 font-mono">
-                          {pane.connected
-                            ? isEn
-                              ? "Connected. Waiting for serial data..."
-                              : "已连接，等待串口数据..."
-                            : isEn
-                            ? "Select a port and click Connect."
-                            : "请选择串口设备并点击连接。"}
-                        </div>
-                      ) : (
-                        <AnsiText
-                          text={displayLines}
-                          showTimestamps={pane.showTimestamps}
-                          ansiEnabled={pane.ansiEnabled}
-                          searchQuery={pane.searchQuery}
-                        />
+                    <div className="relative min-h-0 flex-1">
+                      {/* Output Terminal Area */}
+                      <div
+                        ref={(el) => {
+                          if (el) scrollRefs.current[pane.paneId] = el;
+                          else delete scrollRefs.current[pane.paneId];
+                        }}
+                        onScroll={(event) => handleReceiveScroll(pane, event.currentTarget)}
+                        data-log-output
+                        className="h-full overflow-auto px-2.5 py-1.5 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100"
+                      >
+                        {receivedLines.length === 0 ? (
+                          <div className="text-xs text-slate-400 dark:text-slate-600 font-mono">
+                            {!waitingForDevice && (isAdb
+                              ? t(isBusy ? "multiLog.adbWaiting" : "multiLog.adbHint")
+                              : pane.connected
+                                ? isEn
+                                ? "Connected. Waiting for serial data..."
+                                : "已连接，等待串口数据..."
+                              : t("multiLog.serialHint"))}
+                          </div>
+                        ) : (
+                          <AnsiText
+                            text={displayLines}
+                            showTimestamps={pane.showTimestamps}
+                            ansiEnabled={pane.ansiEnabled && !hexOutput}
+                            searchQuery={pane.searchQuery}
+                          />
+                        )}
+                      </div>
+                      {!isAdb && !pane.panel && receivedLines.length > 0 && (!pane.autoScroll || pane.followPaused) && (
+                        <button
+                          type="button"
+                          onClick={() => jumpToLatest(pane)}
+                          className="ui-btn-secondary absolute bottom-2 right-3 px-2 py-1"
+                        >
+                          <ChevronDown className="h-3.5 w-3.5" />
+                          {t("multiLog.jumpToLatest")}
+                        </button>
                       )}
                     </div>
 
                     {/* Bottom Command Input */}
-                    <div className="flex items-center gap-2 px-3 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60">
-                      <select
-                        value={pane.lineEnding}
-                        onChange={(e) =>
-                          updatePane(pane.paneId, {
-                            lineEnding: e.target.value as "\n" | "\r\n" | "",
-                          })
-                        }
-                        className="ui-select font-mono"
-                      >
-                        <option value={"\n"}>\n</option>
-                        <option value={"\r\n"}>\r\n</option>
-                        <option value="">none</option>
-                      </select>
-                      <input
-                        type="text"
-                        value={pane.inputText}
-                        disabled={!pane.connected}
-                        onChange={(e) => updatePane(pane.paneId, { inputText: e.target.value })}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            handleSendCommand(pane);
-                          } else if (e.key === "ArrowUp") {
-                            if (pane.cmdHistory.length === 0) return;
-                            e.preventDefault();
-                            const nextIdx = Math.min(
-                              pane.historyIndex + 1,
-                              pane.cmdHistory.length - 1
-                            );
-                            updatePane(pane.paneId, {
-                              historyIndex: nextIdx,
-                              inputText: pane.cmdHistory[nextIdx],
-                            });
-                          } else if (e.key === "ArrowDown") {
-                            if (pane.historyIndex < 0) return;
-                            e.preventDefault();
-                            const nextIdx = pane.historyIndex - 1;
-                            updatePane(pane.paneId, {
-                              historyIndex: nextIdx,
-                              inputText: nextIdx >= 0 ? pane.cmdHistory[nextIdx] : "",
-                            });
+                    {!isAdb && pane.panel === "command" && (
+                      <div className="flex shrink-0 flex-wrap items-center gap-1.5 px-2 py-1 border-t border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/60">
+                        <span className="shrink-0 text-xs text-slate-500 dark:text-slate-400">
+                          {t(pane.sendFormat === "hex" ? "multiLog.formatHex" : "multiLog.formatText")}
+                          {pane.sendFormat === "text" && ` · ${pane.lineEnding === "none" ? t("multiLog.noLineEnding") : pane.lineEnding.toUpperCase()}`}
+                        </span>
+                        <input
+                          type="text"
+                          autoFocus
+                          aria-label={t("multiLog.sendInput")}
+                          value={pane.inputText}
+                          disabled={!pane.connected}
+                          onChange={(e) => updatePane(pane.paneId, { inputText: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              handleSendCommand(pane);
+                            } else if (e.key === "ArrowUp") {
+                              if (history.length === 0) return;
+                              e.preventDefault();
+                              const nextIdx = Math.min(
+                                pane.historyIndex + 1,
+                                history.length - 1
+                              );
+                              updatePane(pane.paneId, {
+                                historyIndex: nextIdx,
+                                inputText: history[nextIdx],
+                              });
+                            } else if (e.key === "ArrowDown") {
+                              if (pane.historyIndex < 0) return;
+                              e.preventDefault();
+                              const nextIdx = pane.historyIndex - 1;
+                              updatePane(pane.paneId, {
+                                historyIndex: nextIdx,
+                                inputText: nextIdx >= 0 ? history[nextIdx] : "",
+                              });
+                            }
+                          }}
+                          placeholder={
+                            pane.connected
+                              ? pane.sendFormat === "hex"
+                                ? t("multiLog.hexExample")
+                                : isEn
+                                  ? "Type command and press Enter (Up/Down for history)..."
+                                  : "输入指令回车发送（上下键切换历史）..."
+                              : isEn
+                              ? "Connect serial port to send..."
+                              : "连接串口后可发送指令..."
                           }
-                        }}
-                        placeholder={
-                          pane.connected
-                            ? isEn
-                              ? "Type command and press Enter (Up/Down for history)..."
-                              : "输入指令回车发送（上下键切换历史）..."
-                            : isEn
-                            ? "Connect serial port to send..."
-                            : "连接串口后可发送指令..."
-                        }
-                        className="ui-input flex-1 font-mono"
-                      />
-                      <button
-                        onClick={() => handleSendCommand(pane)}
-                        disabled={!pane.connected}
-                        className="ui-btn-primary shrink-0"
-                      >
-                        <Send className="w-3.5 h-3.5" />
-                        {isEn ? "Send" : "发送"}
-                      </button>
-                    </div>
+                          className="ui-input min-w-12 flex-1 px-2 py-1 font-mono"
+                        />
+                        <button
+                          onClick={() => handleSendCommand(pane)}
+                          disabled={!pane.connected}
+                          className="ui-btn-primary shrink-0 px-2 py-1"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          {isEn ? "Send" : "发送"}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
             </div>
           )}
 
-          {/* Bottom Pane Chip Bar */}
-          <div className="ui-card flex flex-wrap items-center gap-2 px-3 py-2">
-            <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400 mr-1">
-              {isEn ? "Active Panes:" : "串口分屏:"}
-            </span>
-            {panes.map((pane) => (
-              <div
-                key={pane.paneId}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition ${
-                  pane.connected
-                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300"
-                    : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
-                }`}
-              >
-                <span
-                  className={`w-1.5 h-1.5 rounded-full ${
-                    pane.connected ? "bg-emerald-500" : "bg-slate-400"
-                  }`}
-                />
-                <span className="font-medium">{pane.label}</span>
-                <span className="opacity-75 font-mono">
-                  {pane.portName || (isEn ? "Unset" : "未选")}
-                </span>
-                <button
-                  onClick={() => updatePane(pane.paneId, { hidden: !pane.hidden })}
-                  title={pane.hidden ? (isEn ? "Show" : "显示") : isEn ? "Hide" : "隐藏"}
-                  className="ml-1 hover:text-blue-500"
-                >
-                  {pane.hidden ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                </button>
-                {pane.connected && (
+          {hiddenPanes.length > 0 && (
+            <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto">
+              {hiddenPanes.map((pane) => {
+                const name = paneName(pane);
+                return (
                   <button
-                    onClick={() => handleDisconnect(pane)}
-                    title={isEn ? "Disconnect" : "断开"}
-                    className="hover:text-rose-500"
+                    type="button"
+                    key={pane.paneId}
+                    onClick={() => {
+                      setEnlargedPaneId(null);
+                      updatePane(pane.paneId, { hidden: false });
+                    }}
+                    className="ui-btn-secondary shrink-0 px-2 py-1"
                   >
-                    <X className="w-3.5 h-3.5" />
+                    <Eye className="h-3.5 w-3.5" />
+                    {t("multiLog.showPane", { name })}
                   </button>
-                )}
-              </div>
-            ))}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </div>
-      ) : (
+      ) : subView === "logs" ? (
         /* Saved Log Browser */
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-0">
-          <div className="ui-card lg:col-span-4 xl:col-span-3 flex flex-col overflow-hidden">
+        <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,min(35%,13rem))_minmax(0,1fr)] gap-2">
+          <div className="ui-card flex min-h-0 flex-col overflow-hidden">
             <div className="ui-card-header">
               <span className="ui-title">
                 {isEn ? `Saved Log Files (${logFiles.length})` : `历史日志文件 (${logFiles.length})`}
@@ -1205,18 +1670,17 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                     ? isEn
                       ? "Loading..."
                       : "加载中..."
-                    : isEn
-                    ? "No saved serial log files found."
-                    : "暂无已保存的串口日志文件。"}
+                    : t("multiLog.noSavedLogs")}
                 </div>
               ) : (
                 logFiles.map((entry) => {
-                  const active = selectedLogFile?.file_name === entry.file_name;
+                  const active = selectedLogFile?.path === entry.path;
                   return (
                     <button
-                      key={entry.file_name}
+                      key={entry.path}
+                      title={entry.path}
                       onClick={() => openLogFile(entry)}
-                      className={`w-full text-left px-3 py-2.5 transition flex items-start gap-2 ${
+                      className={`flex w-full items-start gap-1.5 px-2.5 py-1.5 text-left transition ${
                         active
                           ? "bg-blue-500/10 text-blue-600 dark:text-blue-400"
                           : "hover:bg-slate-50 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-200"
@@ -1225,7 +1689,7 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
                       <FileText className="w-4 h-4 mt-0.5 shrink-0 opacity-70" />
                       <div className="min-w-0 flex-1">
                         <div className="text-xs font-mono truncate">{entry.file_name}</div>
-                        <div className="text-[11px] font-mono tabular-nums text-slate-400 mt-0.5 flex justify-between">
+                        <div className="mt-0.5 flex flex-wrap justify-between gap-x-2 font-mono text-[11px] tabular-nums text-slate-400">
                           <span>{formatBytes(entry.size_bytes)}</span>
                           <span>{formatUnixSecs(entry.modified_secs)}</span>
                         </div>
@@ -1237,24 +1701,24 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
             </div>
           </div>
 
-          <div className="ui-card lg:col-span-8 xl:col-span-9 flex flex-col overflow-hidden min-h-0">
+          <div className="ui-card flex min-h-0 min-w-0 flex-col overflow-hidden">
             <div className="ui-card-header">
-              <div className="text-xs font-mono text-slate-700 dark:text-slate-200 truncate">
+              <div title={selectedLogFile?.path} className="min-w-0 max-w-full flex-1 basis-32 truncate font-mono text-xs text-slate-700 dark:text-slate-200">
                 {selectedLogFile
                   ? `${selectedLogFile.file_name} (${isEn ? "last 1000 lines" : "末尾 1000 行"})`
                   : isEn
                   ? "Select a log file on the left"
                   : "请在左侧选择一个日志文件"}
               </div>
-              <div className="flex items-center gap-2">
-                <div className="relative">
+              <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+                <div className="relative min-w-0 flex-1">
                   <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     type="text"
                     value={logSearch}
                     onChange={(e) => setLogSearch(e.target.value)}
                     placeholder={isEn ? "Filter lines..." : "过滤关键字..."}
-                    className="ui-input pl-7 w-40"
+                    className="ui-input w-40 max-w-full pl-7"
                   />
                 </div>
                 <button
@@ -1302,7 +1766,72 @@ export function SerialPage({ activeWorkspace, onLog }: SerialPageProps) {
             </div>
           </div>
         </div>
+      ) : null}
+      {subView === "live" && paneSettings && settingsPane && (
+        <PaneSettingsPopover
+          key={settingsPane.paneId}
+          anchor={paneSettings.anchor}
+          id={paneSettingsId}
+          title={`${t("multiLog.settings")} · ${paneName(settingsPane)}`}
+          closeLabel={t("multiLog.closeSettings")}
+          onClose={closePaneSettings}
+          actions={(
+            <>
+              <button type="button" onClick={() => handleExportLog(settingsPane)} className="ui-btn-secondary px-2.5 py-1">
+                <Download className="h-3.5 w-3.5" />
+                {t("log.export")}
+              </button>
+              <button type="button" onClick={() => clearPane(settingsPane)} className="ui-btn-secondary px-2.5 py-1">
+                <Trash2 className="h-3.5 w-3.5" />
+                {t("log.clear")}
+              </button>
+            </>
+          )}
+        >
+          <SerialPaneSettings
+            pane={settingsPane}
+            paneNumber={panes.indexOf(settingsPane) + 1}
+            ports={ports}
+            adbDevices={adbDevices}
+            adbSerial={adbDeviceForPane(settingsPane)}
+            onChange={(patch) => {
+              if (patch.receiveFormat && patch.receiveFormat !== settingsPane.receiveFormat) {
+                rememberReceivePosition(settingsPane);
+                pendingFormatScroll.current.set(settingsPane.paneId, Symbol());
+              }
+              const changedPort = (patch.portName !== undefined && patch.portName !== settingsPane.portName) ||
+                (patch.source !== undefined && patch.source !== settingsPane.source);
+              updatePane(settingsPane.paneId, changedPort ? { ...patch, serialBinding: undefined } : patch);
+            }}
+            onToggleSignal={(kind) => void handleToggleSignal(settingsPane, kind)}
+          />
+        </PaneSettingsPopover>
       )}
+      <div className={subView === "bridge" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
+        <SerialBridgePanel
+          visible={subView === "bridge"}
+          settingsRef={bridgeSettingsRef}
+          connectionsRestored={sessionsLoaded}
+          settingsHost={bridgeSettingsHost}
+          onShowSettings={openBridgeSettings}
+          onBridgeError={refreshExistingSessions}
+          onLog={onLog}
+          ports={panes.flatMap((pane) =>
+            pane.source === "serial" && pane.connected && !pane.stopping && pane.sessionId
+              ? [{
+                  sessionId: pane.sessionId,
+                  portName: pane.connectedPortName || pane.portName,
+                  restorePortName: pane.connectedPortName && pane.connectedPortName !== pane.portName
+                    ? pane.portName : undefined,
+                  baudRate: pane.baudRate,
+                  lineCoding: pane.coding,
+                  label: paneName(pane),
+                  charset: pane.charset,
+                }]
+              : []
+          )}
+        />
+      </div>
     </div>
   );
 }

@@ -136,9 +136,15 @@ openixsuit-ce ai plugin-uninstall v881-ab-ota
 当运行环境未将 `openixsuit-ce` / `openixsuit-ai` 加入 `PATH` 时，可直接调用 `http://127.0.0.1:28765`（请求头 `Content-Type: application/json`）：
 
 - `GET /api/status`
-- `GET /api/serial/ports`、`GET /api/serial/logs?session_id=...&tail=200`、`POST /api/serial/write`
+- `GET /api/serial/ports`、`GET /api/serial/logs?session_id=...&tail_lines=200`。向 `POST /api/serial/write` 发送 `session_id`、`data`，十六进制内容加 `hex: true`
+- `POST /api/serial/open` 接收 `port_name`、可选 `baud_rate` 和 `session_id`，`POST /api/serial/close` 接收 `session_id`
 - `POST /api/power/action`：`{"profile_id": "...", "action": "on|off|cycle"}`
 - `GET /api/monitor/metrics?serial=...`
+- `GET /api/log-profiles`、`POST /api/log-profiles` 读取日志配置和按 ID 保存单组日志来源
+- `GET /api/log-sessions` 查询正在运行的采集。用 `POST /api/log-sessions/start` 传 `profile_id` 和来源标签 `source`，用 `POST /api/log-sessions/stop` 传 `session_id`
+- `POST /api/log-ui` 传 `action` 和可选的 `params`，读取或修改当前桌面的分屏、布局及互转设置
+- `GET /api/log-storage`、`POST /api/log-storage` 读取或部分更新日志保存策略
+- `GET /api/serial/bridge` 查询串口互转。用 `POST /api/serial/bridge/start` 传 `profile_id`，用 `POST /api/serial/bridge/stop` 停止
 - `GET /api/triggers/incidents`
 - `GET /api/plugins`
 - `POST /api/plugins/install`：`{"package_path": "..."}`
@@ -149,12 +155,50 @@ openixsuit-ce ai plugin-uninstall v881-ab-ota
 
 ```bash
 openixsuit-ce ai serial-ports
+openixsuit-ce ai serial-open /dev/ttyUSB0 --baud-rate 115200
 openixsuit-ce ai serial-logs --tail 200
 openixsuit-ce ai serial-send <session_id> "dmesg | tail -n 30"
+openixsuit-ce ai serial-send <session_id> "00 FF 7E" --hex
+openixsuit-ce ai serial-close <session_id>
+openixsuit-ai log-profiles
+openixsuit-ai log-profile-save /path/to/log-profile.json
+openixsuit-ai log-start <profile_id> <source_label>
+openixsuit-ai log-sessions
+openixsuit-ai log-stop <session_id>
+openixsuit-ai bridge-start <profile_id>
+openixsuit-ai bridge-status
+openixsuit-ai bridge-stop
+openixsuit-ai log-ui get
+openixsuit-ai log-ui pane-set /path/to/pane-update.json
+openixsuit-ai log-ui layout-set /path/to/layout-update.json
+openixsuit-ai log-ui bridge-set /path/to/bridge-update.json
+openixsuit-ai log-storage
+openixsuit-ai log-storage-save /path/to/storage-update.json
 openixsuit-ce ai power <profile_id> cycle
 openixsuit-ce ai metrics --serial <serial>
 openixsuit-ce ai incidents
 ```
+
+`serial-open` 返回的 `session.id` 用于后续读写或关闭。
+
+`serial-send --hex` 接受连续或以空白隔开的十六进制字节，默认按输入原样发送。文本发送默认追加 LF。可用 `--append-newline none|lf|cr|crlf` 明确指定追加方式。
+
+`log-profile-save` 接收包含 `id`、`name` 和 `sources` 的 JSON 对象，路径 `-` 可从标准输入读取。同 ID 更新已有配置。每路来源都填写唯一的 `label`。USB CDC 或串口来源用 `type: "serial"`，填写 `port_name` 和 `baud_rate`。ADB 来源用 `type: "adb"`，填写设备序列号 `serial` 和设备端命令 `command`。
+
+串口互转配置放在可选的 `bridge` 字段。两个端点 `first` 和 `second` 各填写 `label`、`port_name` 和 `baud_rate`。单独保存互转配置时，`sources` 可填空数组。
+
+串口日志来源和互转端点可用 `line_coding` 指定 `data_bits`、`parity`、`stop_bits` 和 `flow_control`。串口日志来源还可保存 `serial_options`，包含 `receive_format`、`send_format`、`charset`、`line_ending`、`auto_scroll`。
+
+`log-start` 使用配置 ID 和来源标签启动采集。正在运行的会话会显示在 `log-sessions` 和「多路日志」的实时分屏，任一端都可以停止。串口互转可从命令行或「串口互转」页启停，转发日志标明两个端口的方向。保存配置后，可在「多路日志」查看和载入参数。
+
+重新打开桌面端会恢复上次退出前正在运行的串口、USB CDC 和 ADB 日志采集。设备不在或采集中拔出时等待原设备重新连接，串口互转在两端串口连上后恢复。主动停止的会话保持停止。恢复后请用 `log-sessions` 获取当前会话 ID。
+
+`log-ui get` 查询当前分屏 ID、采集与显示设置、列数和互转设置。可用 `log-ui pane-set -` 从标准输入提交含 `pane_id` 的 JSON，例如 `{"pane_id":"<分屏 ID>","label":"调试串口","receive_format":"hex"}`。采集中的分屏可改名称和显示，修改设备或线路参数前先停止该路。用 `log-ui layout-set` 修改 `columns` 或 `pane_order`。用 `log-ui bridge-set` 修改 `profile_id`、`first_port`、`second_port` 或显示设置 `format`、`direction`、`show_timestamps`、`auto_scroll`。调整运行中的互转端点前先停止互转。
+
+等待设备的分屏没有当前会话 ID，可用 `log-ui pane-set` 提交 `pane_id` 和 `"restore_on_startup":false` 取消该路恢复。用 `bridge-stop` 取消尚在等待两端连接的互转。
+
+`log-storage-save` 接受需要更新的字段，支持 `save_continuous`、`keywords`、`before_lines`、`after_lines` 和 `directory`。将 `directory` 设为 `null` 可恢复默认目录。CLI 修改的设置会出现在桌面端界面。
+
 - `POST /api/adb/shell`：`{"serial": "", "command": "..."}`
 - `POST /api/adb/push`：`{"serial": "", "local_path": "...", "remote_path": "..."}`
 - `POST /api/adb/pull`：`{"serial": "", "remote_path": "...", "local_path": "..."}`
