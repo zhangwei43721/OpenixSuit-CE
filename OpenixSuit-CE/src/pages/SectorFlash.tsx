@@ -32,7 +32,7 @@ export function SectorFlash({
   const [newAddr, setNewAddr] = useState("0x00000020");
   const [newSectors, setNewSectors] = useState(0);
   const [verify, setVerify] = useState(true);
-  const [postAction, setPostAction] = useState<"keep" | "reboot" | "poweroff">("reboot");
+  const [postAction, setPostAction] = useState<"reboot" | "poweroff">("reboot");
   const [progress, setProgress] = useState<{ partition: string; percent: number } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [opLogs, setOpLogs] = useState<string[]>([]);
@@ -49,6 +49,7 @@ export function SectorFlash({
 
   useEffect(() => {
     const unlistenProgress = listen<{ partition: string; percent: number }>("flash-progress", (e) => {
+      if (!active) return;
       setProgress({ partition: e.payload.partition, percent: e.payload.percent });
     });
     const unlistenLog = listen<{ stage: string; level: string; message: string }>(
@@ -203,12 +204,11 @@ export function SectorFlash({
               <select
                 disabled={isFlashing}
                 value={postAction}
-                onChange={(e) => setPostAction(e.target.value as "keep" | "reboot" | "poweroff")}
+                onChange={(e) => setPostAction(e.target.value as "reboot" | "poweroff")}
                 className="ui-select"
               >
                 <option value="reboot">{t("flash.reboot")}</option>
                 <option value="poweroff">{t("flash.poweroff")}</option>
-                <option value="keep">{t("flash.keepState")}</option>
               </select>
             </div>
             {progress && (

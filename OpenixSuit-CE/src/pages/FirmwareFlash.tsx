@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult } from "./FlashHub";
+import { SectorFlash } from "./SectorFlash";
 
 interface FirmwareFlashProps {
   active?: boolean;
@@ -14,7 +15,51 @@ interface FirmwareFlashProps {
   onLog: (msg: string) => void;
 }
 
-export function FirmwareFlash({
+export function FirmwareFlash(props: FirmwareFlashProps) {
+  const { active = true, onFlashComplete, ...flashProps } = props;
+  const { isFlashing } = flashProps;
+  const { t } = useTranslation();
+  const [advanced, setAdvanced] = useState(false);
+
+  return (
+    <div className="flex h-full flex-col gap-3">
+      <div className="ui-toolbar">
+        <div className="ui-segmented">
+          <button
+            type="button"
+            aria-pressed={!advanced}
+            disabled={isFlashing}
+            onClick={() => setAdvanced(false)}
+            className={`ui-segmented-btn disabled:opacity-50 ${!advanced ? "bg-blue-600 text-white" : ""}`}
+          >
+            {t("flash.config")}
+          </button>
+          <button
+            type="button"
+            aria-pressed={advanced}
+            disabled={isFlashing}
+            onClick={() => setAdvanced(true)}
+            className={`ui-segmented-btn disabled:opacity-50 ${advanced ? "bg-blue-600 text-white" : ""}`}
+          >
+            {t("flash.advancedLayout")}
+          </button>
+        </div>
+      </div>
+      <div className={advanced ? "hidden" : "min-h-0 flex-1"}>
+        <StandardFlash
+          {...flashProps}
+          active={active && !advanced}
+          onFlashComplete={onFlashComplete}
+        />
+      </div>
+      <div className={advanced ? "min-h-0 flex-1" : "hidden"}>
+        <SectorFlash {...flashProps} active={active && advanced} />
+      </div>
+    </div>
+  );
+}
+
+function StandardFlash({
   active = true,
   firmwarePath,
   inspectInfo,
@@ -33,8 +78,10 @@ export function FirmwareFlash({
         | "partition_erase"
         | "partition") || "full_erase"
   );
+  const partitionOnly = mode === "partition";
+  const canStart = !isFlashing && Boolean(firmwarePath) && (!partitionOnly || selected.length > 0);
   const [verify, setVerify] = useState(true);
-  const [postAction, setPostAction] = useState<"keep" | "reboot" | "poweroff">("reboot");
+  const [postAction, setPostAction] = useState<"reboot" | "poweroff">("reboot");
   const [progress, setProgress] = useState<{
     partition: string;
     written: number;
@@ -66,6 +113,7 @@ export function FirmwareFlash({
       total: number;
       percent: number;
     }>("flash-progress", (e) => {
+      if (!active) return;
       setProgress({
         partition: e.payload.partition,
         written: e.payload.written ?? 0,
@@ -94,8 +142,7 @@ export function FirmwareFlash({
   }, [flashLogs]);
 
   const startFlash = async () => {
-    if (!firmwarePath) return;
-    if ((mode === "partition" || mode === "partition_erase") && selected.length === 0) return;
+    if (!canStart) return;
     onFlashingChange(true);
     setErrorMsg(null);
     pushLog(`Flash started: ${mode}`);
@@ -103,7 +150,7 @@ export function FirmwareFlash({
       const res = await invoke<string | void>("flash_firmware_full", {
         firmwarePath,
         mode,
-        partitions: selected,
+        partitions: partitionOnly ? selected : [],
         verify,
         postAction,
         bus: null,
@@ -134,29 +181,112 @@ export function FirmwareFlash({
     <div className="flex h-full flex-col gap-3">
       {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
-      <div className="grid min-h-0 flex-1 grid-cols-12 gap-3">
-        <div className="ui-card col-span-4 flex min-h-0 flex-col overflow-hidden text-xs">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="ui-card flex flex-col overflow-hidden text-xs">
           <div className="ui-card-header">
-            <span className="ui-title text-blue-600 dark:text-blue-400">{t("flash.config")}</span>
+            <span className="ui-title text-blue-600 dark:text-blue-400">{t("flash.options")}</span>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-            <select
-              disabled={isFlashing}
-              value={mode}
-              onChange={(e) => {
-                const next = e.target.value as "full_erase" | "keep_data" | "partition_erase" | "partition";
-                setMode(next);
-                localStorage.setItem("flash_mode", next);
-              }}
-              className="ui-select w-full"
-            >
-              <option value="full_erase">{t("flash.fullErase")}</option>
-              <option value="keep_data">{t("flash.keepData")}</option>
-              <option value="partition_erase">{t("flash.partitionErase")}</option>
-              <option value="partition">{t("flash.partitionOnly")}</option>
-            </select>
+          <div className="flex flex-1 flex-col justify-center gap-3 p-4">
+            <div className="space-y-1.5">
+              <select
+                aria-label={t("flash.config")}
+                aria-describedby="flash-mode-description"
+                disabled={isFlashing}
+                value={mode}
+                onChange={(e) => {
+                  const next = e.target.value as "full_erase" | "keep_data" | "partition_erase" | "partition";
+                  setMode(next);
+                  localStorage.setItem("flash_mode", next);
+                }}
+                className="ui-select w-full"
+              >
+                <option value="full_erase">{t("flash.fullErase")}</option>
+                <option value="keep_data">{t("flash.keepData")}</option>
+                <option value="partition_erase">{t("flash.partitionErase")}</option>
+                <option value="partition">{t("flash.partitionOnly")}</option>
+              </select>
+              <p id="flash-mode-description" className="leading-relaxed text-slate-600 dark:text-slate-300">
+                {t(`flash.modeDescription.${mode}`)}
+              </p>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-slate-700 dark:text-slate-200">
+              <input
+                type="checkbox"
+                disabled={isFlashing}
+                checked={verify}
+                onChange={(e) => setVerify(e.target.checked)}
+                className="accent-blue-600"
+              />
+              {t("flash.verify")}
+            </label>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-600 dark:text-slate-300">{t("flash.postAction")}</span>
+              <select
+                disabled={isFlashing}
+                value={postAction}
+                onChange={(e) => setPostAction(e.target.value as "reboot" | "poweroff")}
+                className="ui-select"
+              >
+                <option value="reboot">{t("flash.reboot")}</option>
+                <option value="poweroff">{t("flash.poweroff")}</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div className="ui-card flex flex-col overflow-hidden text-xs">
+          <div className="ui-card-header">
+            <span className="ui-title truncate text-blue-600 dark:text-blue-400">
+              {progress?.partition || t("flash.control")}
+            </span>
+            <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-slate-600 dark:text-slate-300">
+              {progress
+                ? `${progress.percent.toFixed(1)}%${
+                    progress.total > 100
+                      ? ` (${(progress.written / 1024 / 1024).toFixed(1)}/${(
+                          progress.total /
+                          1024 /
+                          1024
+                        ).toFixed(1)} MB)`
+                      : ""
+                  }`
+                : "0.0%"}
+            </span>
+          </div>
+          <div className="flex flex-1 flex-col justify-center gap-3 p-4">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+              <div
+                className="h-full rounded-full bg-blue-600 transition-all"
+                style={{ width: `${progress?.percent ?? 0}%` }}
+              />
+            </div>
+            <div className="flex gap-2">
+              <button
+                disabled={!canStart}
+                onClick={startFlash}
+                className="ui-btn-primary flex-1 py-2"
+              >
+                {isFlashing ? t("flash.flashing") : t("flash.start")}
+              </button>
+              {isFlashing && (
+                <button
+                  onClick={cancelFlash}
+                  className="ui-btn-danger py-2"
+                >
+                  {t("common.cancel")}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
-            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto">
+      <div className="flex min-h-[220px] flex-1 gap-3">
+        {partitionOnly && (
+          <div className="ui-card flex w-1/3 shrink-0 flex-col overflow-hidden text-xs">
+            <div className="ui-card-header">
+              <span className="ui-title">{t("flash.partitions")}</span>
+            </div>
+            <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-4">
               {(inspectInfo?.partitions || []).length === 0 ? (
                 <div className="flex h-full min-h-[120px] items-center justify-center rounded-lg border border-dashed border-slate-200 p-4 text-center text-[11px] text-slate-400 dark:border-slate-800">
                   {t("flash.unselected")}
@@ -189,110 +319,28 @@ export function FirmwareFlash({
               )}
             </div>
           </div>
-        </div>
-
-        <div className="col-span-8 flex min-h-0 flex-col gap-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div className="ui-card flex flex-col overflow-hidden text-xs">
-              <div className="ui-card-header">
-                <span className="ui-title text-blue-600 dark:text-blue-400">{t("flash.options")}</span>
-              </div>
-              <div className="flex flex-1 flex-col justify-center gap-3 p-4">
-                <label className="flex cursor-pointer items-center gap-2 text-slate-700 dark:text-slate-200">
-                  <input
-                    type="checkbox"
-                    disabled={isFlashing}
-                    checked={verify}
-                    onChange={(e) => setVerify(e.target.checked)}
-                    className="accent-blue-600"
-                  />
-                  {t("flash.verify")}
-                </label>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-slate-600 dark:text-slate-300">{t("flash.postAction")}</span>
-                  <select
-                    disabled={isFlashing}
-                    value={postAction}
-                    onChange={(e) => setPostAction(e.target.value as "keep" | "reboot" | "poweroff")}
-                    className="ui-select"
-                  >
-                    <option value="reboot">{t("flash.reboot")}</option>
-                    <option value="poweroff">{t("flash.poweroff")}</option>
-                    <option value="keep">{t("flash.keepState")}</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            <div className="ui-card flex flex-col overflow-hidden text-xs">
-              <div className="ui-card-header">
-                <span className="ui-title truncate text-blue-600 dark:text-blue-400">
-                  {progress?.partition || t("flash.control")}
-                </span>
-                <span className="shrink-0 font-mono text-[11px] font-medium tabular-nums text-slate-600 dark:text-slate-300">
-                  {progress
-                    ? `${progress.percent.toFixed(1)}%${
-                        progress.total > 100
-                          ? ` (${(progress.written / 1024 / 1024).toFixed(1)}/${(
-                              progress.total /
-                              1024 /
-                              1024
-                            ).toFixed(1)} MB)`
-                          : ""
-                      }`
-                    : "0.0%"}
-                </span>
-              </div>
-              <div className="flex flex-1 flex-col justify-center gap-3 p-4">
-                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-                  <div
-                    className="h-full rounded-full bg-blue-600 transition-all"
-                    style={{ width: `${progress?.percent ?? 0}%` }}
-                  />
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    disabled={isFlashing || !firmwarePath}
-                    onClick={startFlash}
-                    className="ui-btn-primary flex-1 py-2"
-                  >
-                    {isFlashing ? t("flash.flashing") : t("flash.start")}
-                  </button>
-                  {isFlashing && (
-                    <button
-                      onClick={cancelFlash}
-                      className="ui-btn-danger py-2"
-                    >
-                      {t("common.cancel")}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
+        )}
+        <div className="ui-card flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="ui-card-header py-2">
+            <span className="ui-title">
+              {t("log.live")} ({flashLogs.length})
+            </span>
+            {flashLogs.length > 0 && (
+              <button
+                type="button"
+                onClick={() => setFlashLogs([])}
+                className="text-[11px] font-medium text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+              >
+                {t("log.clear")}
+              </button>
+            )}
           </div>
-
-          <div className="ui-card flex min-h-[220px] flex-1 flex-col overflow-hidden">
-            <div className="ui-card-header py-2">
-              <span className="ui-title">
-                {t("log.live")} ({flashLogs.length})
-              </span>
-              {flashLogs.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setFlashLogs([])}
-                  className="text-[11px] font-medium text-slate-500 transition hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
-                >
-                  {t("log.clear")}
-                </button>
-              )}
-            </div>
-            <pre
-              ref={logBoxRef}
-              className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3.5 text-slate-300"
-            >
-              {flashLogs.join("\n") || t("flash.logPlaceholder")}
-            </pre>
-          </div>
+          <pre
+            ref={logBoxRef}
+            className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3.5 text-slate-300"
+          >
+            {flashLogs.join("\n") || t("flash.logPlaceholder")}
+          </pre>
         </div>
       </div>
     </div>

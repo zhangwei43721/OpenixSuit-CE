@@ -700,6 +700,46 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
+    async fn raw_verification_failure_stops_before_boot_updates_and_completion() {
+        let _guard = crate::test_support::GLOBAL_STATE_TEST_LOCK.lock().unwrap();
+        crate::process::global_progress::set_tui_mode(true);
+        let backend = MockDeviceBackend::default();
+        let protocol = Rc::clone(&backend.context);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut request = request(DeviceSelector::default(), PostAction::Reboot);
+        request.verify = true;
+        let mut flasher = Flasher::with_backend(
+            fes_firmware(&[]),
+            request,
+            event_logger(Arc::clone(&events)),
+            backend,
+        );
+
+        // 模拟设备为非空分区返回校验值 0。
+        let result = flasher.execute().await;
+        crate::process::global_progress::set_tui_mode(false);
+
+        assert!(matches!(
+            result,
+            Err(FlashError::PartitionDownloadFailed(ref message))
+                if message.starts_with("Partition system checksum mismatch")
+        ));
+        assert!(protocol.downloads.borrow().iter().all(|download| {
+            !matches!(
+                download.data_type,
+                FesDataType::Preboot | FesDataType::Boot1 | FesDataType::Boot0
+            )
+        }));
+        assert!(protocol.tool_modes.borrow().is_empty());
+        assert!(!events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, FlashEvent::Finished { .. })));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
     async fn fel_execute_initializes_downloads_reconnects_and_enters_fes() {
         let _guard = crate::test_support::GLOBAL_STATE_TEST_LOCK.lock().unwrap();
         crate::process::global_progress::set_tui_mode(true);

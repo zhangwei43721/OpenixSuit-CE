@@ -5,7 +5,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { Cable, History, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { FirmwareFlash } from "./FirmwareFlash";
-import { SectorFlash } from "./SectorFlash";
 import { GenericFlash } from "./GenericFlash";
 import { FirmwareConverter } from "./FirmwareConverter";
 import { FirmwareInspector } from "./FirmwareInspector";
@@ -52,7 +51,7 @@ export interface SharedImageInspectResult {
   files: SharedPartitionEntry[];
 }
 
-type FirmwareSubTab = "standard" | "sector" | "generic" | "converter" | "inspector";
+type FirmwareSubTab = "standard" | "generic" | "converter" | "inspector";
 
 export function FlashHub({
   isFlashing,
@@ -178,7 +177,6 @@ export function FlashHub({
 
   const tabs: { key: FirmwareSubTab; label: string }[] = [
     { key: "standard", label: t("nav.flashSubStandard") },
-    { key: "sector", label: t("nav.flashSubSector") },
     { key: "generic", label: t("nav.flashSubGeneric") },
     { key: "converter", label: t("nav.converter") },
     { key: "inspector", label: t("nav.inspector") },
@@ -186,7 +184,7 @@ export function FlashHub({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      {/* 公共 .img 固件选择栏（标准刷机 / 扇区 MBR / 格式转换 / 解包查看共用） */}
+      {/* 公共 .img 固件选择栏（标准刷机 / 格式转换 / 解包查看共用） */}
       <div className="ui-card p-4 text-xs">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
@@ -336,16 +334,6 @@ export function FlashHub({
               isFlashing={isFlashing}
               onFlashingChange={onFlashingChange}
               onFlashComplete={recordFlashHistory}
-              onLog={onLog}
-            />
-          </div>
-          <div className={subTab === "sector" ? "h-full" : "hidden"}>
-            <SectorFlash
-              active={subTab === "sector"}
-              firmwarePath={firmwarePath}
-              inspectInfo={inspectInfo}
-              isFlashing={isFlashing}
-              onFlashingChange={onFlashingChange}
               onLog={onLog}
             />
           </div>

@@ -186,48 +186,45 @@ impl<'a> RawDownloader<'a> {
         }
 
         self.check_cancelled()?;
-        self.verify_partition(ctx, info, &mut checksum).await?;
-
-        Ok(())
+        self.verify_partition(ctx, info, checksum)
     }
 
     /// Verify partition after download
-    async fn verify_partition<C: FesOps>(
+    fn verify_partition<C: FesOps>(
         &self,
         ctx: &C,
         info: &PartitionDownloadInfo,
-        checksum: &mut Option<IncrementalChecksum>,
+        checksum: Option<IncrementalChecksum>,
     ) -> FlashResult<()> {
-        if checksum.is_some() {
-            self.logger
-                .info(&format!("Verifying partition {}...", info.partition_name));
-            let local_checksum = checksum.as_mut().map(|cs| cs.finalize()).unwrap_or(0);
-
-            let verify_resp = ctx
-                .fes_verify_value(info.partition_address as u32, info.data_length)
-                .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
-
-            if verify_resp.flag == EFEX_CRC32_VALID_FLAG {
-                let media_crc = verify_resp.media_crc as u32;
-                if local_checksum != media_crc {
-                    self.logger.warn(&format!(
-                        "Partition {} checksum mismatch: local=0x{:x}, device=0x{:x}",
-                        info.partition_name, local_checksum, media_crc
-                    ));
-                } else {
-                    self.logger
-                        .stage_complete(&format!("Partition {} verified", info.partition_name));
-                }
-            } else {
-                self.logger.warn(&format!(
-                    "Partition {} verification failed",
-                    info.partition_name
-                ));
-            }
-        } else {
+        let Some(mut checksum) = checksum else {
             self.logger
                 .stage_complete(&format!("Partition {} flashed", info.partition_name));
+            return Ok(());
+        };
+
+        self.logger
+            .info(&format!("Verifying partition {}...", info.partition_name));
+        let local_checksum = checksum.finalize();
+        let verify_resp = ctx
+            .fes_verify_value(info.partition_address as u32, info.data_length)
+            .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
+        if verify_resp.flag != EFEX_CRC32_VALID_FLAG {
+            return Err(FlashError::PartitionDownloadFailed(format!(
+                "Partition {} verification failed: device did not return a valid checksum",
+                info.partition_name
+            )));
         }
+
+        let media_crc = verify_resp.media_crc as u32;
+        if local_checksum != media_crc {
+            return Err(FlashError::PartitionDownloadFailed(format!(
+                "Partition {} checksum mismatch: local=0x{:08x}, device=0x{:08x}",
+                info.partition_name, local_checksum, media_crc
+            )));
+        }
+
+        self.logger
+            .stage_complete(&format!("Partition {} verified", info.partition_name));
         Ok(())
     }
 }
@@ -334,38 +331,6 @@ mod tests {
     async fn verification_covers_match_mismatch_invalid_flag_and_transport_error() {
         let payload = [1, 2, 3, 4, 5];
         let checksum = crate::firmware::sparse::add_sum(&payload, 0) as i32;
-        for response in [
-            VerifyResponse {
-                flag: EFEX_CRC32_VALID_FLAG,
-                media_crc: checksum,
-            },
-            VerifyResponse {
-                flag: EFEX_CRC32_VALID_FLAG,
-                media_crc: checksum.wrapping_add(1),
-            },
-            VerifyResponse {
-                flag: 0,
-                media_crc: 0,
-            },
-        ] {
-            let firmware = test_firmware(&[FirmwareEntry {
-                filename: "system.img",
-                maintype: ITEM_ROOTFSFAT16,
-                subtype: "SYSTEM0000000000",
-                data: &payload,
-            }]);
-            let mut packer = OpenixPacker::new();
-            packer.load(firmware.path()).unwrap();
-            let logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
-            let ctx = MockProtocol::default();
-            ctx.verify_values.borrow_mut().push_back(Ok(response));
-            downloader(&logger)
-                .execute(&ctx, &mut packer, &info(0x20, payload.len() as u64), true)
-                .await
-                .unwrap();
-            assert_eq!(&*ctx.verify_value_calls.borrow(), &[(0x20, 5)]);
-        }
-
         let firmware = test_firmware(&[FirmwareEntry {
             filename: "system.img",
             maintype: ITEM_ROOTFSFAT16,
@@ -375,6 +340,44 @@ mod tests {
         let mut packer = OpenixPacker::new();
         packer.load(firmware.path()).unwrap();
         let logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
+        for (response, expected_error) in [
+            (
+                VerifyResponse {
+                    flag: EFEX_CRC32_VALID_FLAG,
+                    media_crc: checksum,
+                },
+                None,
+            ),
+            (
+                VerifyResponse {
+                    flag: EFEX_CRC32_VALID_FLAG,
+                    media_crc: checksum.wrapping_add(1),
+                },
+                Some("Partition system checksum mismatch"),
+            ),
+            (
+                VerifyResponse {
+                    flag: 0,
+                    media_crc: 0,
+                },
+                Some("Partition system verification failed"),
+            ),
+        ] {
+            let ctx = MockProtocol::default();
+            ctx.verify_values.borrow_mut().push_back(Ok(response));
+            let result = downloader(&logger)
+                .execute(&ctx, &mut packer, &info(0x20, payload.len() as u64), true)
+                .await;
+            if let Some(expected_error) = expected_error {
+                assert!(
+                    matches!(result, Err(FlashError::PartitionDownloadFailed(error)) if error.starts_with(expected_error))
+                );
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(&*ctx.verify_value_calls.borrow(), &[(0x20, 5)]);
+        }
+
         let ctx = MockProtocol::default();
         ctx.verify_values
             .borrow_mut()
