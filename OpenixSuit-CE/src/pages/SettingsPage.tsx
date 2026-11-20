@@ -7,6 +7,7 @@ import { AppSettings, ThemeMode, UsbBackend } from "../store/settings";
 import { PluginManifest } from "../types/plugin";
 import { ExtensionIcon } from "../components/ExtensionIcon";
 import { DriverGuide } from "./DriverGuide";
+import { DesktopUpdateSettings } from "./DesktopUpdateSettings";
 
 interface SettingsPageProps {
   settings: AppSettings;
@@ -109,9 +110,6 @@ export function SettingsPage({
     <div className="mx-auto max-w-4xl space-y-4">
       <div className="ui-toolbar">
         <span className="ui-title text-sm">{t("settings.title")}</span>
-        <span className="rounded-md bg-blue-600/15 px-2.5 py-1 text-xs font-medium text-blue-600 dark:text-blue-400">
-          OpenixSuit-CE v0.1.0
-        </span>
       </div>
 
       <div className="ui-card divide-y divide-slate-200 text-sm dark:divide-slate-800">
@@ -162,15 +160,7 @@ export function SettingsPage({
           </select>
         </div>
 
-        <div className="flex items-center justify-between gap-4 p-4">
-          <div className="space-y-0.5">
-            <div className="font-medium text-slate-900 dark:text-slate-100">{t("settings.version")}</div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">OpenixSuit-CE v0.1.0 (Tauri 2.x + React 19)</div>
-          </div>
-          <span className="shrink-0 rounded-md bg-blue-600/15 px-2.5 py-1 text-xs font-medium text-blue-600 dark:text-blue-400">
-            {t("settings.latest")}
-          </span>
-        </div>
+        <DesktopUpdateSettings />
       </div>
 
       {/* 项目拓展插件管理 */}

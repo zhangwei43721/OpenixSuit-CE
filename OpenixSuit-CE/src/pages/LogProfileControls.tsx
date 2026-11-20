@@ -8,24 +8,21 @@ interface LogProfileControlsProps {
   onLoad: (profile: LogProfile) => void;
   onLog: (message: string) => void;
   snapshot: () => Pick<LogProfile, "sources" | "bridge"> | null;
-  mode?: "logs" | "bridge";
-  disabled?: boolean;
-  applyLabel?: string;
-  initialProfileId?: string;
 }
 
 const CAPTURE_PROFILE_KEY = "openix_selected_capture_profile";
 
 export function LogProfileControls({
-  onLoad, onLog, snapshot, mode = "logs", disabled = false, applyLabel, initialProfileId,
+  onLoad, onLog, snapshot,
 }: LogProfileControlsProps) {
   const { t } = useTranslation();
   const [profiles, setProfiles] = useState<LogProfile[]>([]);
   const [selectedId, setSelectedId] = useState(() =>
-    initialProfileId ?? (mode === "logs" ? localStorage.getItem(CAPTURE_PROFILE_KEY) ?? "" : "")
+    localStorage.getItem(CAPTURE_PROFILE_KEY) ?? ""
   );
   const [showDetails, setShowDetails] = useState(false);
   const [loadError, setLoadError] = useState(false);
+  const [applyError, setApplyError] = useState("");
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<ReturnType<typeof snapshot>>(null);
   const [name, setName] = useState("");
@@ -40,8 +37,8 @@ export function LogProfileControls({
   const bridge = selectedProfile?.bridge;
 
   useEffect(() => {
-    if (mode === "logs" && selectedProfile) localStorage.setItem(CAPTURE_PROFILE_KEY, selectedProfile.id);
-  }, [mode, selectedProfile]);
+    if (selectedProfile) localStorage.setItem(CAPTURE_PROFILE_KEY, selectedProfile.id);
+  }, [selectedProfile]);
 
   useEffect(() => {
     let mounted = true;
@@ -49,10 +46,7 @@ export function LogProfileControls({
     const refresh = async () => {
       const request = ++revision;
       try {
-        const allProfiles = await invoke<LogProfile[]>("log_profiles_list");
-        const list = mode === "bridge"
-          ? allProfiles.filter((profile) => profile.bridge)
-          : allProfiles.filter((profile) => profile.sources.length > 0);
+        const list = await invoke<LogProfile[]>("log_profiles_list");
         if (!mounted || request !== revision) return;
         setProfiles(list);
         setSelectedId((current) => list.some((profile) => profile.id === current) ? current : list[0]?.id ?? "");
@@ -71,7 +65,7 @@ export function LogProfileControls({
       mounted = false;
       void subscription.then((unlisten) => unlisten()).catch(() => {});
     };
-  }, [mode, onLog]);
+  }, [onLog]);
 
   useEffect(() => {
     if (editing && !dialog.current?.open) {
@@ -86,7 +80,7 @@ export function LogProfileControls({
     setUpdateSelected(false);
     setTarget(selectedProfile);
     const current = snapshot();
-    setSaveError(current ? "" : t(mode === "bridge" ? "multiLog.bridge.selectBothPorts" : "multiLog.profiles.configureSourceFirst"));
+    setSaveError(current ? "" : t("multiLog.profiles.configureFirst"));
     setDraft(current);
     setEditing(true);
   };
@@ -101,9 +95,8 @@ export function LogProfileControls({
       : undefined;
     const profile: LogProfile = {
       id: `logs-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      sources: [],
       ...existing,
-      ...(mode === "bridge" ? { bridge: draft.bridge } : { sources: draft.sources }),
+      ...draft,
       name: name.trim(),
     };
     try {
@@ -124,17 +117,20 @@ export function LogProfileControls({
   return (
     <div className="flex min-w-0 max-w-full flex-wrap items-center gap-1">
       <select
-        aria-label={t(mode === "bridge" ? "multiLog.bridge.profileSelect" : "multiLog.profiles.select")}
+        aria-label={t("multiLog.profiles.select")}
         value={selectedId}
-        disabled={disabled || !profiles.length}
-        onChange={(event) => setSelectedId(event.target.value)}
+        disabled={!profiles.length}
+        onChange={(event) => {
+          setSelectedId(event.target.value);
+          setApplyError("");
+        }}
         title={selectedProfile?.name}
         className="ui-select min-w-0 max-w-40 truncate py-1"
       >
         {!profiles.length && (
           <option value="">{t(loadError
             ? "multiLog.profiles.unavailable"
-            : mode === "bridge" ? "multiLog.bridge.profileEmpty" : "multiLog.profiles.empty")}</option>
+            : "multiLog.profiles.empty")}</option>
         )}
         {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
       </select>
@@ -154,13 +150,17 @@ export function LogProfileControls({
           <button
             type="button"
             onClick={() => {
-              onLoad(selectedProfile);
-              setShowDetails(false);
+              try {
+                onLoad(selectedProfile);
+                setShowDetails(false);
+                setApplyError("");
+              } catch (error) {
+                setApplyError(error instanceof Error ? error.message : String(error));
+              }
             }}
-            disabled={disabled}
             className="ui-btn-secondary whitespace-nowrap px-2.5 py-1"
           >
-            {applyLabel ?? t(mode === "bridge" ? "multiLog.bridge.startProfile" : "multiLog.profiles.apply")}
+            {t("multiLog.profiles.apply")}
           </button>
           {showDetails && (
             <section
@@ -168,18 +168,7 @@ export function LogProfileControls({
               className="ui-subcard mt-1 max-h-60 min-w-0 basis-full overflow-y-auto break-words p-3 text-xs"
             >
               <ul className="space-y-2">
-                {mode === "bridge" && bridge && (["first", "second"] as const).map((end) => {
-                  const port = bridge[end];
-                  return (
-                    <li key={end}>
-                      <div className="font-medium">{port.label || t(`multiLog.bridge.${end}`)}</div>
-                      <div className="break-all font-mono text-slate-600 dark:text-slate-300">
-                        {port.port_name} · {port.baud_rate}
-                      </div>
-                    </li>
-                  );
-                })}
-                {mode === "logs" && selectedProfile.sources.map((source, index) => (
+                {selectedProfile.sources.map((source, index) => (
                   <li key={index}>
                     <div className="font-medium">{source.label}</div>
                     <div className="break-all font-mono text-slate-600 dark:text-slate-300">
@@ -188,6 +177,19 @@ export function LogProfileControls({
                     {source.type === "adb" && <code className="whitespace-pre-wrap break-all">{source.command}</code>}
                   </li>
                 ))}
+                {bridge && (["first", "second"] as const).map((end) => {
+                  const port = bridge[end];
+                  return (
+                    <li key={end}>
+                      <div className="font-medium">
+                        {t(`multiLog.bridge.${end}`)}{port.label ? ` · ${port.label}` : ""}
+                      </div>
+                      <div className="break-all font-mono text-slate-600 dark:text-slate-300">
+                        {port.port_name} · {port.baud_rate}
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
               {selectedProfile.notes && (
                 <p className="mt-2 whitespace-pre-wrap break-words border-t border-slate-200 pt-2 text-slate-600 dark:border-slate-700 dark:text-slate-300">
@@ -198,6 +200,7 @@ export function LogProfileControls({
           )}
         </>
       )}
+      {applyError && <p role="alert" className="basis-full break-words text-xs text-rose-600 dark:text-rose-400">{applyError}</p>}
       <dialog
         ref={dialog}
         aria-labelledby={dialogTitle}

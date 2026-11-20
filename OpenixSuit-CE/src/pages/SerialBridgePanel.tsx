@@ -5,7 +5,6 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowRight, ChevronDown, Play, Settings2, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { LogProfile, LogSessionChange, SerialFormat, SerialLineCoding } from "../types/workbench";
-import { LogProfileControls } from "./LogProfileControls";
 
 interface BridgePort {
   sessionId: string;
@@ -127,6 +126,8 @@ interface BridgeSettingsSnapshot {
 export interface BridgeSettingsHandle {
   getSettings(): BridgeSettingsSnapshot;
   setSettings(params: unknown): Promise<BridgeSettingsSnapshot>;
+  getProfileBridge(sources: LogProfile["sources"]): LogProfile["bridge"];
+  loadProfile(profile: LogProfile): boolean;
 }
 
 function bridgeSettingsSnapshot(
@@ -307,6 +308,40 @@ export function SerialBridgePanel({
   currentSettings.current = { selection, display, active, busy, configuredProfile, waitingForRestore };
 
   useImperativeHandle(settingsRef, () => ({
+    getProfileBridge(sources) {
+      const { active, configuredProfile, selection } = currentSettings.current;
+      if (!active && configuredProfile?.bridge) return configuredProfile.bridge;
+
+      const endpoint = (side: "first" | "second") => {
+        const session = active && portsRef.current.find((port) => port.sessionId === active[`${side}_session_id`]);
+        const selectedPort = active?.[`${side}_port`] ?? selection[side];
+        const port = session || findBridgePort(portsRef.current, selectedPort);
+        if (port) {
+          return {
+            label: port.label, port_name: bridgePortKey(port), baud_rate: port.baudRate, line_coding: port.lineCoding,
+          };
+        }
+        const source = sources.find((entry) => entry.type === "serial" && entry.port_name === selectedPort);
+        if (source?.type === "serial") {
+          const { label, port_name, baud_rate, line_coding } = source;
+          return { label, port_name, baud_rate, line_coding };
+        }
+      };
+      const first = endpoint("first");
+      const second = endpoint("second");
+      return first && second && first.port_name !== second.port_name ? { first, second } : undefined;
+    },
+    loadProfile(profile) {
+      const { active, busy, waitingForRestore } = currentSettings.current;
+      if (active || busy || waitingForRestore) return false;
+      setLoadedProfile(profile.bridge ? profile : null);
+      setSelection({
+        profileId: profile.bridge ? profile.id : "",
+        first: profile.bridge?.first.port_name ?? "",
+        second: profile.bridge?.second.port_name ?? "",
+      });
+      return true;
+    },
     getSettings() {
       const value = currentSettings.current;
       const profile = value.configuredProfile?.bridge;
@@ -598,32 +633,6 @@ export function SerialBridgePanel({
     }
   };
 
-  const bridgeProfileSnapshot = () => {
-    if (!active && configuredProfile?.bridge) {
-      return { sources: [], bridge: configuredProfile.bridge };
-    }
-    const firstPort = ports.find((port) => port.sessionId === first);
-    const secondPort = ports.find((port) => port.sessionId === second);
-    if (!firstPort || !secondPort || firstPort.portName === secondPort.portName) return null;
-    return {
-      sources: [],
-      bridge: {
-        first: {
-          label: firstPort.label, port_name: firstPort.portName, baud_rate: firstPort.baudRate,
-          line_coding: firstPort.lineCoding,
-        },
-        second: {
-          label: secondPort.label, port_name: secondPort.portName, baud_rate: secondPort.baudRate,
-          line_coding: secondPort.lineCoding,
-        },
-      },
-    };
-  };
-  const loadBridgeProfile = (profile: LogProfile) => {
-    if (!profile.bridge) return;
-    setLoadedProfile(profile);
-    setSelection({ profileId: profile.id, first: profile.bridge.first.port_name, second: profile.bridge.second.port_name });
-  };
   const hasConnectedPair = !!first && !!second && first !== second;
   const canStart = ready && !busy && (selection.profileId ? !!configuredProfile : hasConnectedPair);
   const endpointSettingsLocked = busy || active !== null || waitingForRestore;
@@ -644,19 +653,9 @@ export function SerialBridgePanel({
   };
 
   const settings = settingsHost && createPortal(
-    <div className="flex flex-col gap-2">
-      <section className="ui-card space-y-3 p-3">
-        <h2 className="text-sm font-semibold">{t("multiLog.bridge.profileSelect")}</h2>
-        <LogProfileControls
-          key={selection.profileId}
-          mode="bridge"
-          disabled={endpointSettingsLocked}
-          applyLabel={t("multiLog.profiles.apply")}
-          initialProfileId={selection.profileId || undefined}
-          onLoad={loadBridgeProfile}
-          onLog={onLog}
-          snapshot={bridgeProfileSnapshot}
-        />
+    <section className="border-t border-slate-200 dark:border-slate-800">
+      <div className="space-y-3 p-4">
+        <h3 className="font-medium">{t("multiLog.settingsPage.bridge")}</h3>
         {configuredProfile && !active && !waitingForRestore && (
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <span className="min-w-0 max-w-full break-all font-medium">{configuredProfile.name}</span>
@@ -715,38 +714,39 @@ export function SerialBridgePanel({
           })}
         </div>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t("multiLog.bridge.editPortHint")}</p>
-      </section>
-      <section className="ui-card space-y-3 p-3">
-        <h2 className="text-sm font-semibold">{t("multiLog.bridge.displaySettings")}</h2>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
-          <label className="inline-flex items-center gap-1.5">
+      </div>
+      <div className="space-y-3 px-4 pb-4">
+        <h3 className="font-medium">{t("multiLog.bridge.displaySettings")}</h3>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs">
             {t("multiLog.bridge.displayFormat")}
             <select
               value={display.format}
               onChange={(event) => setDisplay((previous) => ({
                 ...previous, format: event.target.value as SerialFormat,
               }))}
-              className="ui-select py-1"
+              className="ui-select min-w-[140px]"
             >
               <option value="text">{t("multiLog.formatText")}</option>
               <option value="hex">{t("multiLog.formatHex")}</option>
             </select>
           </label>
-          <label className="inline-flex items-center gap-1.5">
+          <label className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-xs">
             {t("multiLog.bridge.direction")}
             <select
               value={display.direction}
               onChange={(event) => setDisplay((previous) => ({
                 ...previous, direction: event.target.value as BridgeDirection,
               }))}
-              className="ui-select py-1"
+              className="ui-select min-w-[140px]"
             >
               <option value="both">{t("multiLog.bridge.allDirections")}</option>
               <option value="firstToSecond">{t("multiLog.bridge.firstToSecond")}</option>
               <option value="secondToFirst">{t("multiLog.bridge.secondToFirst")}</option>
             </select>
           </label>
-          <label className="inline-flex items-center gap-1.5">
+          <label className="flex items-center justify-between gap-2 text-xs">
+            {t("multiLog.bridge.showTimestamps")}
             <input
               type="checkbox"
               checked={display.showTimestamps}
@@ -755,9 +755,9 @@ export function SerialBridgePanel({
                 setDisplay((previous) => ({ ...previous, showTimestamps }));
               }}
             />
-            {t("multiLog.bridge.showTimestamps")}
           </label>
-          <label className="inline-flex items-center gap-1.5">
+          <label className="flex items-center justify-between gap-2 text-xs">
+            {t("multiLog.autoScroll")}
             <input
               type="checkbox"
               checked={display.autoScroll}
@@ -767,11 +767,10 @@ export function SerialBridgePanel({
                 setFollowPaused(false);
               }}
             />
-            {t("multiLog.autoScroll")}
           </label>
         </div>
-      </section>
-    </div>,
+      </div>
+    </section>,
     settingsHost,
   );
 

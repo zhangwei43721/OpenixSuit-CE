@@ -2,16 +2,40 @@ name: OpenixSuit-CE Build
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'openixsuit-ce-v*'
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  OPENIXSUIT_RELEASE_REPO: ${{ github.repository }}
 
 jobs:
+  validate-release:
+    name: Validate desktop release tag
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Check tag and desktop version
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./OpenixSuit-CE/src-tauri/tauri.conf.json').version")
+          if [[ ! "$GITHUB_REF_NAME" =~ ^openixsuit-ce-v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid desktop release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF_NAME" != "openixsuit-ce-v$version" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match desktop version $version" >&2
+            exit 1
+          fi
+
   build:
     name: Build (${{ matrix.platform }})
+    needs: [validate-release]
+    if: always() && (github.event_name == 'workflow_dispatch' || needs.validate-release.result == 'success')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -91,9 +115,30 @@ jobs:
             npm install
           fi
 
-      - name: Build OpenixSuit-CE
+      - name: Build unsigned artifacts
+        if: github.event_name == 'workflow_dispatch'
         working-directory: OpenixSuit-CE
         run: npm run tauri -- build --target ${{ matrix.target }}
+
+      - name: Build signed updater artifacts
+        if: github.event_name == 'push'
+        working-directory: OpenixSuit-CE
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          OPENIXSUIT_UPDATER_PUBLIC_KEY: ${{ vars.OPENIXSUIT_UPDATER_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" || -z "$OPENIXSUIT_UPDATER_PUBLIC_KEY" ]]; then
+            echo "Configure TAURI_SIGNING_PRIVATE_KEY and OPENIXSUIT_UPDATER_PUBLIC_KEY before publishing." >&2
+            exit 1
+          fi
+          node -e 'require("node:fs").writeFileSync("desktop-updater.conf.json", JSON.stringify({
+            bundle: { createUpdaterArtifacts: true },
+            plugins: { updater: { pubkey: process.env.OPENIXSUIT_UPDATER_PUBLIC_KEY.trim() } }
+          }))'
+          npm run tauri -- build --target ${{ matrix.target }} --config desktop-updater.conf.json
 
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
@@ -102,30 +147,43 @@ jobs:
           path: |
             OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
             OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
-            OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
-            OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+            OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage*
+            OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*
+            OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*
             OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.tar.gz
-          if-no-files-found: warn
+            OpenixSuit-CE/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.tar.gz*
+          if-no-files-found: error
 
   release-upload:
-    name: Upload Release Assets
-    if: github.event_name == 'release'
+    name: Upload Desktop Release Assets
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: Upload assets to GitHub Release
+      - name: Generate static updater manifest
+        run: |
+          python3 scripts/generate-openixsuit-update-manifest.py \
+            --artifacts artifacts \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" \
+            --version "${GITHUB_REF_NAME#openixsuit-ce-v}" \
+            --pub-date "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --output artifacts/openixsuit-ce-update.json
+      - name: Upload assets to desktop GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ github.ref_name }}
           files: artifacts/**/*
+          make_latest: false
+          fail_on_unmatched_files: true
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

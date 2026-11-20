@@ -33,7 +33,7 @@ OpenixCLI 是一款专为全志 SoC 设备设计的固件烧录工具，同时�
 ### 从源码构建
 
 ```bash
-git clone https://github.com/YuzukiTsuru/OpenixCLI
+git clone https://github.com/zhangwei43721/OpenixCLI.git
 cd OpenixCLI
 cargo build --release
 ```
@@ -210,6 +210,15 @@ AI 可用 `openixsuit-ai` 保存 USB CDC、串口、ADB 命令和串口互转配
 ```bash
 git -c protocol.file.allow=always submodule update --init -- OpenixSuit-CE/skills/openixsuit-ce
 ```
+
+### GitHub 版本与更新
+
+- **Skill** 从独立仓库按标签安装和升级，桌面仓记录经过核对的子模块提交。先推送 Skill 的提交及标签，再在桌面仓提交对应的子模块指针。从 GitHub 拉取源码时，使用 `git submodule update --init -- OpenixSuit-CE/skills/openixsuit-ce` 取得配套版本。详见 [Skill 安装与版本更新](OpenixSuit-CE/skills/openixsuit-ce/references/skill-installation.md)。
+- **桌面端** 在「系统设置 → 应用版本」检查更新。带签名配置的 AppImage、Windows 和 macOS 安装版可以直接下载并安装，安装后重启。DEB／RPM 从发布页下载安装。仓库私有期间，用户先登录 GitHub，再从「打开发布页」下载有权访问的安装包。
+
+桌面端发布由 `openixsuit-ce-v<版本>` 标签触发。例如发布 `0.1.1` 时，先统一 `OpenixSuit-CE/package.json`、`OpenixSuit-CE/src-tauri/Cargo.toml` 和 `tauri.conf.json` 的版本，并随需要更新 npm 锁文件。安装包全部构建后，工作流上传各平台安装包、签名和 `openixsuit-ce-update.json` 到同一个 Release。应用从这个清单获取经过签名的更新包。手动运行构建工作流可下载测试安装包。
+
+第一次发布前，用 Tauri CLI 的 `signer generate` 在仓库之外生成并保管更新密钥。GitHub Actions 的仓库变量 `OPENIXSUIT_UPDATER_PUBLIC_KEY` 填公钥内容，仓库 Secret `TAURI_SIGNING_PRIVATE_KEY` 填私钥内容。如果私钥有密码，同时设置 Secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。后续发布继续沿用同一签名密钥，旧安装版使用嵌入的公钥验证更新。 [Tauri 更新签名说明](https://v2.tauri.app/plugin/updater/#signing-updates)
 
 日志默认保存在系统「文档」文件夹下的 `OpenixSuit-CE/logs/serial/`。「设置 → 日志保存」可选择其他文件夹，保存后新开始的采集或互转会使用所选目录。历史日志同时保留对原日志目录的读取，在文件名上悬停可查看完整路径。这里也可关闭连续写文件，或设置关键词，自动保存命中行及指定行数的前后文。关键词匹配忽略大小写，触发片段单独保存，同一来源的重叠片段合并。
 

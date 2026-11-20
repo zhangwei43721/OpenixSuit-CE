@@ -100,9 +100,12 @@ export function LogCaptureSettings() {
   };
 
   return (
-    <form onSubmit={save} onChange={() => setSaved(false)} className="ui-card min-w-0 space-y-4 p-4">
-      <div className="space-y-1">
-        <h2 className="text-sm font-semibold">{t("multiLog.storage.directory")}</h2>
+    <form onSubmit={save} onChange={() => setSaved(false)} className="ui-card min-w-0 text-sm">
+      <div className="ui-card-header rounded-t-xl">
+        <h2 className="ui-title text-sm">{t("multiLog.settingsPage.storage")}</h2>
+      </div>
+      <div className="space-y-1 p-4">
+        <h3 className="font-medium">{t("multiLog.storage.directory")}</h3>
         <p className="select-text break-all font-mono text-xs text-slate-600 dark:text-slate-300">
           {directory ?? info?.default_directory ?? info?.directory ?? (!error && t("multiLog.storage.loading"))}
         </p>
@@ -128,16 +131,23 @@ export function LogCaptureSettings() {
         )}
       </div>
       {info && (
-        <fieldset disabled={saving} className="min-w-0 space-y-4">
-          <div className="space-y-1 border-t border-slate-200 pt-3 dark:border-slate-800">
-            <label className="flex w-fit items-center gap-2 text-sm font-medium">
-              <input type="checkbox" checked={continuous} onChange={(event) => setContinuous(event.target.checked)} />
-              {t("multiLog.storage.continuous")}
+        <fieldset disabled={saving} className="min-w-0 divide-y divide-slate-200 border-t border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+          <div className="p-4">
+            <label className="flex items-center justify-between gap-4">
+              <span className="space-y-0.5">
+                <span className="block font-medium">{t("multiLog.storage.continuous")}</span>
+                <span className="block text-xs text-slate-500 dark:text-slate-400">{t("multiLog.storage.continuousHint")}</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={continuous}
+                onChange={(event) => setContinuous(event.target.checked)}
+                className="shrink-0"
+              />
             </label>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{t("multiLog.storage.continuousHint")}</p>
           </div>
-          <div className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
-            <label className="block space-y-1 text-sm font-medium">
+          <div className="space-y-2 p-4">
+            <label className="block space-y-1 font-medium">
               <span>{t("multiLog.storage.keywords")}</span>
               <textarea
                 rows={4}
@@ -165,7 +175,7 @@ export function LogCaptureSettings() {
               ))}
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3 p-4">
             <button type="submit" className="ui-btn-primary">
               {t(saving ? "multiLog.storage.saving" : "multiLog.storage.save")}
             </button>
@@ -173,7 +183,7 @@ export function LogCaptureSettings() {
           </div>
         </fieldset>
       )}
-      {error && <p role="alert" className="break-words text-xs text-rose-600 dark:text-rose-400">{error}</p>}
+      {error && <p role="alert" className="break-words px-4 pb-4 text-xs text-rose-600 dark:text-rose-400">{error}</p>}
     </form>
   );
 }

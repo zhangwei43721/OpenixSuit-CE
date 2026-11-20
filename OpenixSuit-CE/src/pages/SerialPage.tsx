@@ -401,7 +401,6 @@ export function SerialPage({
   const isEn = i18n.language.startsWith("en");
 
   const [subView, setSubView] = useState<"live" | "logs" | "bridge" | "settings">("live");
-  const [settingsSection, setSettingsSection] = useState<"capture" | "bridge" | "storage">("capture");
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const bridgeSettingsRef = useRef<BridgeSettingsHandle>(null);
   const [paneSettings, setPaneSettings] = useState<{ paneId: string; anchor: HTMLButtonElement } | null>(null);
@@ -411,6 +410,13 @@ export function SerialPage({
     if (subView !== "live") closePaneSettings();
   }, [subView, closePaneSettings]);
   const [bridgeSettingsHost, setBridgeSettingsHost] = useState<HTMLDivElement | null>(null);
+  const showBridgeSettings = useRef(false);
+  useLayoutEffect(() => {
+    if (subView !== "settings" || !bridgeSettingsHost || !showBridgeSettings.current) return;
+    showBridgeSettings.current = false;
+    bridgeSettingsHost.scrollIntoView({ block: "start", inline: "nearest" });
+    bridgeSettingsHost.focus({ preventScroll: true });
+  }, [bridgeSettingsHost, subView]);
   const [enlargedPaneId, setEnlargedPaneId] = useState<string | null>(null);
   const [columnCount, setColumnCount] = useState(() => {
     const saved = Number(localStorage.getItem(LOG_COLUMNS_KEY));
@@ -731,6 +737,9 @@ export function SerialPage({
   };
 
   const handleLoadLogProfile = (profile: LogProfile) => {
+    if (!bridgeSettingsRef.current?.loadProfile(profile)) {
+      throw new Error(t("multiLog.profiles.stopBridgeToLoad"));
+    }
     const profilePanes = profile.sources.map(createProfilePane);
     setPanes((previous) => {
       const next = [...previous];
@@ -1130,7 +1139,8 @@ export function SerialPage({
             line_coding: pane.coding, serial_options: serialViewOptions(pane),
           });
     }
-    return sources.length ? { sources } : null;
+    const bridge = bridgeSettingsRef.current?.getProfileBridge(sources);
+    return sources.length || bridge ? { sources, bridge } : null;
   };
   const togglePanel = (pane: SerialPaneState, panel: LogPanePanel) => {
     updatePane(pane.paneId, { panel: pane.panel === panel ? undefined : panel });
@@ -1139,7 +1149,7 @@ export function SerialPage({
     setPaneSettings((current) => current?.paneId === paneId ? null : { paneId, anchor });
   };
   const openBridgeSettings = () => {
-    setSettingsSection("bridge");
+    showBridgeSettings.current = true;
     setSubView("settings");
   };
 
@@ -1264,62 +1274,48 @@ export function SerialPage({
       </div>
 
       {subView === "settings" && (
-        <section aria-label={t("multiLog.settingsPage.tab")} className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-y-auto">
-          <div className="ui-segmented w-fit max-w-full shrink-0 flex-wrap">
-            <button
-              type="button"
-              aria-pressed={settingsSection === "capture"}
-              onClick={() => setSettingsSection("capture")}
-              className={`ui-segmented-btn ${settingsSection === "capture" ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 dark:text-slate-300"}`}
-            >
-              {t("multiLog.settingsPage.capture")}
-            </button>
-            <button
-              type="button"
-              aria-pressed={settingsSection === "bridge"}
-              onClick={openBridgeSettings}
-              className={`ui-segmented-btn ${settingsSection === "bridge" ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 dark:text-slate-300"}`}
-            >
-              {t("multiLog.settingsPage.bridge")}
-            </button>
-            <button
-              type="button"
-              aria-pressed={settingsSection === "storage"}
-              onClick={() => setSettingsSection("storage")}
-              className={`ui-segmented-btn ${settingsSection === "storage" ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 dark:text-slate-300"}`}
-            >
-              {t("multiLog.settingsPage.storage")}
-            </button>
-          </div>
-          {settingsSection === "capture" ? (
-            <div className="ui-card flex min-w-0 flex-wrap items-center justify-between gap-3 p-3">
-              <LogProfileControls onLoad={handleLoadLogProfile} onLog={onLog} snapshot={logProfileSnapshot} />
-              {activeWorkspace && activeWorkspace.serial_ports.length > 0 && (
-                <button onClick={handleLoadFromWorkspace} className="ui-btn-secondary px-2.5 py-1">
-                  {isEn ? "Load Workspace Ports" : "载入工作区串口"}
-                </button>
-              )}
-              <label className="flex items-center gap-2 text-xs">
-                {t("multiLog.columnCount")}
-                <select
-                  value={columnCount}
-                  onChange={(event) => {
-                    setColumnCount(Number(event.target.value));
-                    localStorage.setItem(LOG_COLUMNS_KEY, event.target.value);
-                  }}
-                  className="ui-select py-1"
-                >
-                  {[2, 3, 4].map((count) => (
-                    <option key={count} value={count}>{t("multiLog.columns", { count })}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          ) : settingsSection === "bridge" ? (
-            <div ref={setBridgeSettingsHost} className="min-w-0" />
-          ) : (
+        <section aria-label={t("multiLog.settingsPage.tab")} className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-4xl space-y-4 p-1">
+            <section className="ui-card text-sm">
+              <div className="ui-card-header rounded-t-xl">
+                <h2 className="ui-title text-sm">{t("multiLog.profiles.select")}</h2>
+                <LogProfileControls onLoad={handleLoadLogProfile} onLog={onLog} snapshot={logProfileSnapshot} />
+              </div>
+              <section className="space-y-3 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="font-medium">{t("multiLog.settingsPage.capture")}</h3>
+                  {activeWorkspace && activeWorkspace.serial_ports.length > 0 && (
+                    <button onClick={handleLoadFromWorkspace} className="ui-btn-secondary px-2.5 py-1">
+                      {isEn ? "Load Workspace Ports" : "载入工作区串口"}
+                    </button>
+                  )}
+                </div>
+                <label className="flex flex-wrap items-center justify-between gap-3 text-xs">
+                  {t("multiLog.columnCount")}
+                  <select
+                    value={columnCount}
+                    onChange={(event) => {
+                      setColumnCount(Number(event.target.value));
+                      localStorage.setItem(LOG_COLUMNS_KEY, event.target.value);
+                    }}
+                    className="ui-select min-w-[140px]"
+                  >
+                    {[2, 3, 4].map((count) => (
+                      <option key={count} value={count}>{t("multiLog.columns", { count })}</option>
+                    ))}
+                  </select>
+                </label>
+              </section>
+              <div
+                ref={setBridgeSettingsHost}
+                role="group"
+                aria-label={t("multiLog.settingsPage.bridge")}
+                tabIndex={-1}
+                className="min-w-0 scroll-mt-1 rounded-b-xl"
+              />
+            </section>
             <LogCaptureSettings />
-          )}
+          </div>
         </section>
       )}
 

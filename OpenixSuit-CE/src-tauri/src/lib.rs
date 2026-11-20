@@ -28,7 +28,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
+        .manage(system::updates::PendingUpdate::default())
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon().cloned() {
@@ -150,6 +153,10 @@ pub fn run() {
             system::env_check::check_system_env,
             system::settings::load_settings,
             system::settings::save_settings,
+            system::updates::desktop_update_enabled,
+            system::updates::desktop_open_releases,
+            system::updates::desktop_check_update,
+            system::updates::desktop_install_update,
             // plugins
             plugins::list_plugins,
             plugins::install_plugin,
