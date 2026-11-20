@@ -1,0 +1,10 @@
+[submodule "openixsuit-ce-skill"]
+	path = OpenixSuit-CE/skills/openixsuit-ce
+	url = ../openixsuit-ce-skill.git
+	branch = main
+[submodule "OpenixIMG"]
+	path = OpenixSuit-CE/src-tauri/libs/OpenixIMG
+	url = https://github.com/YuzukiTsuru/OpenixIMG.git
+[submodule "libefex"]
+	path = OpenixSuit-CE/src-tauri/libs/libefex
+	url = https://github.com/YuzukiTsuru/libefex.git

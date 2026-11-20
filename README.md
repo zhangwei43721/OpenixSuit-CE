@@ -203,7 +203,13 @@ OpenixCLI 支持以下设备模式：
 
 串口分屏可设置波特率、数据位、校验位、停止位和流控。接收内容可切换文本与十六进制，发送栏也可独立选择格式。文本发送可追加行尾，十六进制按输入发送原始字节。开启自动滚动后，向上翻看会暂停跟随，回到底部后继续跟随。保存日志配置会记住分屏的串口线路参数、接收和发送格式及滚动设置。
 
-AI 可用 `openixsuit-ai` 保存 USB CDC、串口、ADB 命令和串口互转配置，也可以查询、启动和停止采集或互转。CLI 与「多路日志」共用同一批会话。在「多路日志 → 设置」里保存或载入采集与互转配置、调整分屏和线路参数。已保存的配置也能用 CLI 查询和启动。参数见 [AI 接口用法](OpenixSuit-CE/skills/openixsuit-ce/SKILL.md#串口电源监控与事件触发-cli-示例)。
+AI 可用 `openixsuit-ai` 保存 USB CDC、串口、ADB 命令和串口互转配置，也可以查询、启动和停止采集或互转。CLI 与「多路日志」共用同一批会话。在「多路日志 → 设置」里保存或载入采集与互转配置、调整分屏和线路参数。已保存的配置也能用 CLI 查询和启动。参数见[多路日志 CLI 用法](OpenixSuit-CE/skills/openixsuit-ce/references/logs.md)。
+
+客户端的 [Skill](OpenixSuit-CE/skills/openixsuit-ce/SKILL.md) 由 Git 子模块管理。本地开发时，子模块仓库 `openixsuit-ce-skill.git` 和主仓库放在同级目录。需要补拉 Skill 时，在从本地主仓库克隆出的副本中运行：
+
+```bash
+git -c protocol.file.allow=always submodule update --init -- OpenixSuit-CE/skills/openixsuit-ce
+```
 
 日志默认保存在系统「文档」文件夹下的 `OpenixSuit-CE/logs/serial/`。「设置 → 日志保存」可选择其他文件夹，保存后新开始的采集或互转会使用所选目录。历史日志同时保留对原日志目录的读取，在文件名上悬停可查看完整路径。这里也可关闭连续写文件，或设置关键词，自动保存命中行及指定行数的前后文。关键词匹配忽略大小写，触发片段单独保存，同一来源的重叠片段合并。
 
