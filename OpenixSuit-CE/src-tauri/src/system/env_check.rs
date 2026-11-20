@@ -47,17 +47,12 @@ pub fn check_system_env() -> EnvCheckReport {
 
     #[cfg(target_os = "macos")]
     {
-        let has_libusb = std::path::Path::new("/opt/homebrew/lib/libusb-1.0.dylib").exists()
-            || std::path::Path::new("/usr/local/lib/libusb-1.0.dylib").exists();
+        // 进程启动时已加载链接的 libusb，安装版从应用包内加载。
         return EnvCheckReport {
             os: "macos".into(),
-            ok: has_libusb,
-            summary: if has_libusb {
-                "已检测到 Homebrew libusb".into()
-            } else {
-                "未检测到 libusb 动态库".into()
-            },
-            fix_hint: "brew install libusb".into(),
+            ok: true,
+            summary: "libusb 已可用".into(),
+            fix_hint: String::new(),
         };
     }
 }

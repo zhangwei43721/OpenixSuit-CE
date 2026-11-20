@@ -115,30 +115,85 @@ jobs:
             npm install
           fi
 
-      - name: Build unsigned artifacts
-        if: github.event_name == 'workflow_dispatch'
-        working-directory: OpenixSuit-CE
-        run: npm run tauri -- build --target ${{ matrix.target }}
-
-      - name: Build signed updater artifacts
-        if: github.event_name == 'push'
+      - name: Configure desktop updater
         working-directory: OpenixSuit-CE
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           OPENIXSUIT_UPDATER_PUBLIC_KEY: ${{ vars.OPENIXSUIT_UPDATER_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" || -z "$OPENIXSUIT_UPDATER_PUBLIC_KEY" ]]; then
-            echo "Configure TAURI_SIGNING_PRIVATE_KEY and OPENIXSUIT_UPDATER_PUBLIC_KEY before publishing." >&2
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            printf '{}\n' > desktop-updater.conf.json
+            exit 0
+          fi
+          if [[ -z "$OPENIXSUIT_UPDATER_PUBLIC_KEY" ]]; then
+            echo "Configure OPENIXSUIT_UPDATER_PUBLIC_KEY before publishing." >&2
             exit 1
           fi
           node -e 'require("node:fs").writeFileSync("desktop-updater.conf.json", JSON.stringify({
             bundle: { createUpdaterArtifacts: true },
             plugins: { updater: { pubkey: process.env.OPENIXSUIT_UPDATER_PUBLIC_KEY.trim() } }
           }))'
-          npm run tauri -- build --target ${{ matrix.target }} --config desktop-updater.conf.json
+
+      - name: Compile desktop binaries
+        working-directory: OpenixSuit-CE
+        run: npm run tauri -- build --target ${{ matrix.target }} --no-bundle --config desktop-updater.conf.json
+
+      - name: Prepare bundled USB libraries
+        working-directory: OpenixSuit-CE/src-tauri
+        shell: bash
+        env:
+          DESKTOP_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          release_dir="target/$DESKTOP_TARGET/release"
+          case "$RUNNER_OS" in
+            Windows)
+              test -f "$release_dir/libusb-1.0.dll"
+              printf '{"bundle":{"resources":{"%s/libusb-1.0.dll":"libusb-1.0.dll"}}}\n' \
+                "$release_dir" > ../desktop-runtime.conf.json
+              ;;
+            macOS)
+              libusb=$(otool -L "$release_dir/openixsuit-ce" | awk '$1 ~ /\/libusb-1[.]0([.][0-9]+)?[.]dylib$/ {print $1}')
+              test -f "$libusb"
+              libusb_name="${libusb##*/}"
+              cp "$libusb" "$release_dir/$libusb_name"
+              for binary in openixsuit-ce openixsuit-ai; do
+                install_name_tool -change "$libusb" "@loader_path/../Frameworks/$libusb_name" "$release_dir/$binary"
+              done
+              printf '{"bundle":{"macOS":{"frameworks":["%s/%s"],"signingIdentity":"-"}}}\n' \
+                "$release_dir" "$libusb_name" > ../desktop-runtime.conf.json
+              ;;
+            Linux)
+              printf '{}\n' > ../desktop-runtime.conf.json
+              ;;
+          esac
+
+      - name: Bundle desktop installers
+        working-directory: OpenixSuit-CE
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == push && -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo "Configure TAURI_SIGNING_PRIVATE_KEY before publishing." >&2
+            exit 1
+          fi
+          npm run tauri -- bundle --target ${{ matrix.target }} \
+            --config desktop-updater.conf.json --config desktop-runtime.conf.json
+
+      - name: Verify bundled macOS executables
+        if: matrix.platform == 'macos-arm64'
+        working-directory: OpenixSuit-CE/src-tauri
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="target/${{ matrix.target }}/release/bundle/macos/OpenixSuit-CE.app"
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/MacOS/openixsuit-ce" ai --help
+          "$app/Contents/MacOS/openixsuit-ai" --help
 
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
