@@ -37,8 +37,6 @@
     "customizeOrder": "Reorder",
     "doneEditing": "Done",
     "resetOrder": "Reset",
-    "moveUp": "Move up",
-    "moveDown": "Move down",
     "foldItem": "Move to Less Used",
     "unfoldItem": "Restore to group",
     "extensions": "Extensions",

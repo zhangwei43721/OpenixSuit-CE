@@ -4,8 +4,6 @@ import {
   Activity,
   Archive,
   ArchiveRestore,
-  ArrowDown,
-  ArrowUp,
   ArrowUpDown,
   Bot,
   Cable,
@@ -29,6 +27,7 @@ import {
 } from "lucide-react";
 import { ExtensionTabItem } from "../types/plugin";
 import { ExtensionIcon } from "./ExtensionIcon";
+import { useSidebarDrag } from "./useSidebarDrag";
 import { DeviceWorkspace } from "../types/workbench";
 
 export type CoreTabKey =
@@ -171,70 +170,6 @@ export function Sidebar({
   const { t } = useTranslation();
   const [layout, setLayout] = useState<SidebarLayoutConfig>(() => loadSidebarLayout());
   const [editingOrder, setEditingOrder] = useState(false);
-  const [activeDrag, setActiveDrag] = useState<
-    | { kind: "group"; groupId: GroupId }
-    | { kind: "item"; groupId: GroupId | "uncommon"; key: CoreTabKey }
-    | null
-  >(null);
-
-  useEffect(() => {
-    if (!activeDrag) return;
-    const onPointerMove = (e: PointerEvent) => {
-      const el = document.elementFromPoint(e.clientX, e.clientY);
-      if (!el) return;
-
-      if (activeDrag.kind === "group") {
-        const targetGroup = (el.closest("[data-sidebar-group]") as HTMLElement | null)?.dataset
-          .sidebarGroup as GroupId | undefined;
-        if (targetGroup && targetGroup !== activeDrag.groupId) {
-          setLayout((prev) => {
-            const fromIdx = prev.groupOrder.indexOf(activeDrag.groupId);
-            const toIdx = prev.groupOrder.indexOf(targetGroup);
-            if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev;
-            return { ...prev, groupOrder: reorderList(prev.groupOrder, fromIdx, toIdx) };
-          });
-        }
-        return;
-      }
-
-      const row = el.closest("[data-sidebar-item]") as HTMLElement | null;
-      const targetGroup = row?.dataset.sidebarItemGroup;
-      const targetKey = row?.dataset.sidebarItemKey as CoreTabKey | undefined;
-      if (!row || targetGroup !== activeDrag.groupId || !targetKey || targetKey === activeDrag.key) {
-        return;
-      }
-
-      setLayout((prev) => {
-        if (activeDrag.groupId === "uncommon") {
-          const fromIdx = prev.uncommonItems.indexOf(activeDrag.key);
-          const toIdx = prev.uncommonItems.indexOf(targetKey);
-          if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev;
-          return { ...prev, uncommonItems: reorderList(prev.uncommonItems, fromIdx, toIdx) };
-        }
-        const raw = prev.itemOrder[activeDrag.groupId];
-        const fromIdx = raw.indexOf(activeDrag.key);
-        const toIdx = raw.indexOf(targetKey);
-        if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return prev;
-        return {
-          ...prev,
-          itemOrder: {
-            ...prev.itemOrder,
-            [activeDrag.groupId]: reorderList(raw, fromIdx, toIdx),
-          },
-        };
-      });
-    };
-
-    const stopDrag = () => setActiveDrag(null);
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", stopDrag);
-    window.addEventListener("pointercancel", stopDrag);
-    return () => {
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", stopDrag);
-      window.removeEventListener("pointercancel", stopDrag);
-    };
-  }, [activeDrag]);
 
   useEffect(() => {
     try {
@@ -318,42 +253,6 @@ export function Sidebar({
     }));
   };
 
-  const moveGroup = (groupId: GroupId, dir: -1 | 1) => {
-    setLayout((prev) => {
-      const idx = prev.groupOrder.indexOf(groupId);
-      const nextOrder = reorderList(prev.groupOrder, idx, idx + dir);
-      return { ...prev, groupOrder: nextOrder };
-    });
-  };
-
-  const moveItem = (groupId: GroupId | "uncommon", key: CoreTabKey, dir: -1 | 1) => {
-    setLayout((prev) => {
-      if (groupId === "uncommon") {
-        const idx = prev.uncommonItems.indexOf(key);
-        return {
-          ...prev,
-          uncommonItems: reorderList(prev.uncommonItems, idx, idx + dir),
-        };
-      }
-      const currentVisible = prev.itemOrder[groupId].filter((k) => !prev.uncommonItems.includes(k));
-      const visIdx = currentVisible.indexOf(key);
-      const targetKey = currentVisible[visIdx + dir];
-      if (!targetKey) return prev;
-      const raw = [...prev.itemOrder[groupId]];
-      const a = raw.indexOf(key);
-      const b = raw.indexOf(targetKey);
-      if (a < 0 || b < 0) return prev;
-      [raw[a], raw[b]] = [raw[b], raw[a]];
-      return {
-        ...prev,
-        itemOrder: {
-          ...prev.itemOrder,
-          [groupId]: raw,
-        },
-      };
-    });
-  };
-
   const foldToUncommon = (key: CoreTabKey) => {
     setLayout((prev) => {
       if (prev.uncommonItems.includes(key)) return prev;
@@ -377,6 +276,28 @@ export function Sidebar({
 
   const activeWs = workspaces.find((w) => w.id === activeWorkspaceId) || null;
   const showEditMode = editingOrder && !collapsed;
+  const startDrag = useSidebarDrag(showEditMode && !locked);
+
+  const dropGroup = (groupId: GroupId, target: GroupId) => {
+    setLayout((prev) => ({
+      ...prev,
+      groupOrder: reorderList(
+        prev.groupOrder,
+        prev.groupOrder.indexOf(groupId),
+        prev.groupOrder.indexOf(target)
+      ),
+    }));
+  };
+
+  const dropItem = (groupId: GroupId | "uncommon", key: CoreTabKey, target: CoreTabKey) => {
+    setLayout((prev) => {
+      const order = groupId === "uncommon" ? prev.uncommonItems : prev.itemOrder[groupId];
+      const next = reorderList(order, order.indexOf(key), order.indexOf(target));
+      return groupId === "uncommon"
+        ? { ...prev, uncommonItems: next }
+        : { ...prev, itemOrder: { ...prev.itemOrder, [groupId]: next } };
+    });
+  };
 
   return (
     <aside
@@ -497,17 +418,15 @@ export function Sidebar({
                 <div className="mb-1 flex items-center justify-between px-2">
                   <button
                     type="button"
-                    onPointerDown={(e) => {
-                      if (!showEditMode || e.button !== 0) return;
-                      e.preventDefault();
-                      setActiveDrag({ kind: "group", groupId });
-                    }}
+                    onPointerDown={(event) =>
+                      startDrag(event, "[data-sidebar-group]", (target) =>
+                        dropGroup(groupId, target.dataset.sidebarGroup as GroupId)
+                      )
+                    }
                     onClick={() => !showEditMode && toggleGroupCollapsed(groupId)}
                     className={`flex flex-1 select-none items-center gap-1 rounded-md px-1 py-0.5 text-left text-[11px] font-medium uppercase tracking-wider transition ${
-                      activeDrag?.kind === "group" && activeDrag.groupId === groupId
-                        ? "cursor-grabbing text-blue-600 dark:text-blue-400"
-                        : showEditMode
-                        ? "cursor-grab text-slate-600 dark:text-slate-300"
+                      showEditMode
+                        ? "cursor-grab touch-none text-slate-600 dark:text-slate-300"
                         : "text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300"
                     }`}
                   >
@@ -525,65 +444,34 @@ export function Sidebar({
                       </span>
                     )}
                   </button>
-
-                  {showEditMode && (
-                    <div className="flex items-center gap-0.5">
-                      <button
-                        type="button"
-                        disabled={gIdx === 0}
-                        onClick={() => moveGroup(groupId, -1)}
-                        title={t("nav.moveUp")}
-                        className="rounded-md p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 dark:hover:bg-slate-800"
-                      >
-                        <ArrowUp className="h-3 w-3" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={gIdx === layout.groupOrder.length - 1}
-                        onClick={() => moveGroup(groupId, 1)}
-                        title={t("nav.moveDown")}
-                        className="rounded-md p-0.5 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 dark:hover:bg-slate-800"
-                      >
-                        <ArrowDown className="h-3 w-3" />
-                      </button>
-                    </div>
-                  )}
                 </div>
               )}
 
               {(!isGroupCollapsed || collapsed) && (
                 <div className="space-y-1">
-                  {visibleKeys.map((key, idx) => {
+                  {visibleKeys.map((key) => {
                     const meta = itemMeta[key as Exclude<CoreTabKey, "settings">];
                     if (!meta) return null;
-                    const isDraggingThis =
-                      activeDrag?.kind === "item" &&
-                      activeDrag.groupId === groupId &&
-                      activeDrag.key === key;
                     return (
                       <div
                         key={key}
                         data-sidebar-item="true"
                         data-sidebar-item-group={groupId}
                         data-sidebar-item-key={key}
-                        className={`flex items-center gap-1 rounded-lg ${
-                          isDraggingThis ? "bg-blue-500/10 ring-2 ring-blue-500/40" : ""
-                        }`}
+                        className="flex items-center gap-1 rounded-lg"
                       >
                         <button
                           disabled={locked}
                           title={collapsed ? meta.label : undefined}
-                          onPointerDown={(e) => {
-                            if (!showEditMode || e.button !== 0) return;
-                            e.preventDefault();
-                            setActiveDrag({ kind: "item", groupId, key });
-                          }}
+                          onPointerDown={(event) =>
+                            startDrag(event, "[data-sidebar-item]", (target) =>
+                              dropItem(groupId, key, target.dataset.sidebarItemKey as CoreTabKey)
+                            )
+                          }
                           onClick={() => !showEditMode && onSelect(key)}
                           className={`flex min-w-0 flex-1 select-none items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition disabled:opacity-50 ${
-                            isDraggingThis
-                              ? "cursor-grabbing text-blue-600 dark:text-blue-400"
-                              : showEditMode
-                              ? "cursor-grab text-slate-700 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
+                            showEditMode
+                              ? "cursor-grab touch-none text-slate-700 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
                               : activeTab === key
                               ? "bg-blue-600 text-white shadow-sm"
                               : "text-slate-700 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-800"
@@ -595,34 +483,14 @@ export function Sidebar({
                         </button>
 
                         {showEditMode && (
-                          <div className="flex shrink-0 items-center gap-0.5">
-                            <button
-                              type="button"
-                              disabled={idx === 0}
-                              onClick={() => moveItem(groupId, key, -1)}
-                              title={t("nav.moveUp")}
-                              className="rounded-md p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 dark:hover:bg-slate-800"
-                            >
-                              <ArrowUp className="h-3 w-3" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={idx === visibleKeys.length - 1}
-                              onClick={() => moveItem(groupId, key, 1)}
-                              title={t("nav.moveDown")}
-                              className="rounded-md p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 dark:hover:bg-slate-800"
-                            >
-                              <ArrowDown className="h-3 w-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => foldToUncommon(key)}
-                              title={t("nav.foldItem")}
-                              className="rounded-md p-1 text-slate-400 hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400"
-                            >
-                              <Archive className="h-3 w-3" />
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => foldToUncommon(key)}
+                            title={t("nav.foldItem")}
+                            className="rounded-md p-1 text-slate-400 hover:bg-amber-500/15 hover:text-amber-600 dark:hover:text-amber-400"
+                          >
+                            <Archive className="h-3 w-3" />
+                          </button>
                         )}
                       </div>
                     );
@@ -660,37 +528,29 @@ export function Sidebar({
 
             {(!layout.collapsedGroups.uncommon || showEditMode || collapsed) && (
               <div className="space-y-1">
-                {layout.uncommonItems.map((key, idx) => {
+                {layout.uncommonItems.map((key) => {
                   const meta = itemMeta[key as Exclude<CoreTabKey, "settings">];
                   if (!meta) return null;
-                  const isDraggingThis =
-                    activeDrag?.kind === "item" &&
-                    activeDrag.groupId === "uncommon" &&
-                    activeDrag.key === key;
                   return (
                     <div
                       key={key}
                       data-sidebar-item="true"
                       data-sidebar-item-group="uncommon"
                       data-sidebar-item-key={key}
-                      className={`flex items-center gap-1 rounded-lg ${
-                        isDraggingThis ? "bg-blue-500/10 ring-2 ring-blue-500/40" : ""
-                      }`}
+                      className="flex items-center gap-1 rounded-lg"
                     >
                       <button
                         disabled={locked}
                         title={collapsed ? meta.label : undefined}
-                        onPointerDown={(e) => {
-                          if (!showEditMode || e.button !== 0) return;
-                          e.preventDefault();
-                          setActiveDrag({ kind: "item", groupId: "uncommon", key });
-                        }}
+                        onPointerDown={(event) =>
+                          startDrag(event, "[data-sidebar-item]", (target) =>
+                            dropItem("uncommon", key, target.dataset.sidebarItemKey as CoreTabKey)
+                          )
+                        }
                         onClick={() => !showEditMode && onSelect(key)}
                         className={`flex min-w-0 flex-1 select-none items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition disabled:opacity-50 ${
-                          isDraggingThis
-                            ? "cursor-grabbing text-blue-600 dark:text-blue-400"
-                            : showEditMode
-                            ? "cursor-grab text-slate-600 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-800"
+                          showEditMode
+                            ? "cursor-grab touch-none text-slate-600 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-800"
                             : activeTab === key
                             ? "bg-blue-600 text-white shadow-sm"
                             : "text-slate-600 hover:bg-slate-200 dark:text-slate-400 dark:hover:bg-slate-800"
@@ -702,34 +562,14 @@ export function Sidebar({
                       </button>
 
                       {showEditMode && (
-                        <div className="flex shrink-0 items-center gap-0.5">
-                          <button
-                            type="button"
-                            disabled={idx === 0}
-                            onClick={() => moveItem("uncommon", key, -1)}
-                            title={t("nav.moveUp")}
-                            className="rounded-md p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 dark:hover:bg-slate-800"
-                          >
-                            <ArrowUp className="h-3 w-3" />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={idx === layout.uncommonItems.length - 1}
-                            onClick={() => moveItem("uncommon", key, 1)}
-                            title={t("nav.moveDown")}
-                            className="rounded-md p-1 text-slate-400 hover:bg-slate-200 hover:text-slate-700 disabled:opacity-30 dark:hover:bg-slate-800"
-                          >
-                            <ArrowDown className="h-3 w-3" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => restoreFromUncommon(key)}
-                            title={t("nav.unfoldItem")}
-                            className="rounded-md p-1 text-slate-400 hover:bg-emerald-500/15 hover:text-emerald-600 dark:hover:text-emerald-400"
-                          >
-                            <ArchiveRestore className="h-3 w-3" />
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => restoreFromUncommon(key)}
+                          title={t("nav.unfoldItem")}
+                          className="rounded-md p-1 text-slate-400 hover:bg-emerald-500/15 hover:text-emerald-600 dark:hover:text-emerald-400"
+                        >
+                          <ArchiveRestore className="h-3 w-3" />
+                        </button>
                       )}
                     </div>
                   );

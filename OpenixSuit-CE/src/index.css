@@ -11,6 +11,18 @@ html.dark {
 }
 
 @layer components {
+  .sidebar-sort-active {
+    @apply relative z-10 rounded-lg bg-white shadow-lg ring-1 ring-blue-500/40 dark:bg-slate-800;
+  }
+
+  .sidebar-sort-active .cursor-grab {
+    cursor: grabbing;
+  }
+
+  .sidebar-sort-sibling {
+    @apply transition-transform duration-150 ease-out motion-reduce:transition-none;
+  }
+
   .ui-toolbar {
     @apply flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 shadow-sm dark:border-slate-800 dark:bg-slate-900;
   }
