@@ -131,6 +131,8 @@ openixsuit-ce ai plugin-run v881-ab-ota --serial <serial> --inputs '{"slot_image
 openixsuit-ce ai plugin-uninstall v881-ab-ota
 ```
 
+插件有多个标签页时，先从 `plugins` 返回的清单查找标签 ID，再为 `plugin-run` 加 `--tab <tab-id>`。
+
 ## 八、HTTP JSON 接口清单
 
 当运行环境未将 `openixsuit-ce` / `openixsuit-ai` 加入 `PATH` 时，可直接调用 `http://127.0.0.1:28765`（请求头 `Content-Type: application/json`）：
@@ -139,7 +141,9 @@ openixsuit-ce ai plugin-uninstall v881-ab-ota
 - `GET /api/serial/ports`、`GET /api/serial/logs?session_id=...&tail_lines=200`。向 `POST /api/serial/write` 发送 `session_id`、`data`，十六进制内容加 `hex: true`
 - `POST /api/serial/open` 接收 `port_name`、可选 `baud_rate` 和 `session_id`，`POST /api/serial/close` 接收 `session_id`
 - `POST /api/power/action`：`{"profile_id": "...", "action": "on|off|cycle"}`
-- `GET /api/monitor/metrics?serial=...`
+- `GET /api/monitor/metrics?serial=...&sample_ms=1000`
+- `GET /api/triggers/rules`、`POST /api/triggers/rules` 读规则和保存单条规则草稿
+- `GET /api/power/profiles`、`POST /api/power/profiles` 读配置和保存单个电源草稿
 - `GET /api/log-profiles`、`POST /api/log-profiles` 读取日志配置和按 ID 保存单组日志来源
 - `GET /api/log-sessions` 查询正在运行的采集。用 `POST /api/log-sessions/start` 传 `profile_id` 和来源标签 `source`，用 `POST /api/log-sessions/stop` 传 `session_id`
 - `POST /api/log-ui` 传 `action` 和可选的 `params`，读取或修改当前桌面的分屏、布局及互转设置
@@ -149,7 +153,7 @@ openixsuit-ce ai plugin-uninstall v881-ab-ota
 - `GET /api/plugins`
 - `POST /api/plugins/install`：`{"package_path": "..."}`
 - `POST /api/plugins/uninstall`：`{"plugin_id": "..."}`
-- `POST /api/plugins/run`：`{"plugin_id": "...", "serial": "", "inputs": {}}`
+- `POST /api/plugins/run`：`{"plugin_id": "...", "tab_id": "...", "serial": "", "inputs": {}}`，`tab_id` 可省略
 
 ### 串口、电源、监控与事件触发 CLI 示例
 
@@ -174,12 +178,16 @@ openixsuit-ai log-ui layout-set /path/to/layout-update.json
 openixsuit-ai log-ui bridge-set /path/to/bridge-update.json
 openixsuit-ai log-storage
 openixsuit-ai log-storage-save /path/to/storage-update.json
+openixsuit-ce ai rules
+openixsuit-ce ai rule-save /path/to/rule.json
+openixsuit-ce ai power-profiles
+openixsuit-ce ai power-profile-save /path/to/power-profile.json
 openixsuit-ce ai power <profile_id> cycle
-openixsuit-ce ai metrics --serial <serial>
+openixsuit-ce ai metrics --serial <serial> --sample-ms 1000
 openixsuit-ce ai incidents
 ```
 
-`serial-open` 返回的 `session.id` 用于后续读写或关闭。
+`serial-open` 返回的 `session.id` 用于后续读写或关闭。`metrics --sample-ms 1000` 间隔约一秒采两次，计算这段时间内的 CPU 使用率、网络和磁盘速率。省略 `--sample-ms` 沿用单次采样。
 
 `serial-send --hex` 接受连续或以空白隔开的十六进制字节，默认按输入原样发送。文本发送默认追加 LF。可用 `--append-newline none|lf|cr|crlf` 明确指定追加方式。
 
@@ -198,6 +206,24 @@ openixsuit-ce ai incidents
 等待设备的分屏没有当前会话 ID，可用 `log-ui pane-set` 提交 `pane_id` 和 `"restore_on_startup":false` 取消该路恢复。用 `bridge-stop` 取消尚在等待两端连接的互转。
 
 `log-storage-save` 接受需要更新的字段，支持 `save_continuous`、`keywords`、`before_lines`、`after_lines` 和 `directory`。将 `directory` 设为 `null` 可恢复默认目录。CLI 修改的设置会出现在桌面端界面。
+
+`rule-save` 和 `power-profile-save` 接收一个 JSON 对象，路径 `-` 表示从标准输入读取。规则至少填写 `id`、`name` 和 `condition.kind`，电源配置至少填写 `id`、`name` 和 `kind`。返回值里的 `draft: true` 表示草稿已保存，可在「事件与电源」核对。相同 ID 可更新未确认的草稿，已确认配置请使用新的草稿 ID。规则草稿保持停用，用户核对后勾选「启用」并保存。电源草稿需点击「确认电源配置」后才能执行。
+
+例如，保存一条收集 `Kernel panic` 现场的草稿：
+
+```bash
+openixsuit-ce ai rule-save - <<'JSON'
+{
+  "id": "kernel-panic-log",
+  "name": "内核异常日志",
+  "condition": {"kind": "contains", "pattern": "Kernel panic"},
+  "actions": [{"kind": "send_ai", "include_serial_lines": 100}],
+  "cooldown_secs": 60
+}
+JSON
+```
+
+要自动分析异常，在这一规则里保留「生成 AI 排障上下文」动作，再到「AI 协同台」启用自动分析。桌面端会把真实串口事件的日志快照交给本机 Codex CLI，并在该事件旁显示分析进度、结果或失败原因。Codex 不在桌面应用的 `PATH` 时，在同一页面填写可执行文件的绝对路径。
 
 - `POST /api/adb/shell`：`{"serial": "", "command": "..."}`
 - `POST /api/adb/push`：`{"serial": "", "local_path": "...", "remote_path": "..."}`

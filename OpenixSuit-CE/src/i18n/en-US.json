@@ -176,6 +176,13 @@
     "clear": "Clear",
     "empty": "No logs yet"
   },
+  "automationDraft": {
+    "badge": "AI Draft",
+    "ruleReview": "Review the serial session, trigger condition, and actions, then select Enabled and save the rule.",
+    "powerReview": "Review the power target, control commands, and off duration before confirming this profile.",
+    "confirmPower": "Confirm Power Profile",
+    "powerConfirmed": "Power profile confirmed and ready to use."
+  },
   "common": {
     "refresh": "Refresh",
     "browse": "Browse",
@@ -376,6 +383,20 @@
     "aiTitle": "AI Local Control API (CLI Sync)",
     "aiDesc": "Endpoint for external AI agents / openixsuit-ce ai (single-binary CLI mode) or openixsuit-ai CLI to sync actions with the GUI",
     "aiExamples": "Example Commands"
+  },
+  "incidentAnalysis": {
+    "title": "Automatic Incident Analysis",
+    "description": "When an enabled rule with an AI analysis action fires, OpenixSuit-CE submits the match and captured serial logs to Codex. The analysis runs in read-only mode. Testing a rule does not submit logs.",
+    "enable": "Enable automatic analysis with Codex",
+    "codexPath": "Codex CLI executable",
+    "codexPathPlaceholder": "Absolute path, or leave empty to use PATH",
+    "saved": "Analysis settings saved",
+    "status": {
+      "queued": "Waiting for AI analysis",
+      "running": "AI analysis in progress",
+      "completed": "AI analysis complete",
+      "failed": "AI analysis failed"
+    }
   },
   "plugins": {
     "title": "Plugins",

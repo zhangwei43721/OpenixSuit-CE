@@ -14,6 +14,7 @@ use crate::triggers;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -178,6 +179,7 @@ struct PluginUninstallReq {
 #[derive(Deserialize)]
 struct PluginRunReq {
     plugin_id: String,
+    tab_id: Option<String>,
     #[serde(default)]
     serial: String,
     #[serde(default)]
@@ -228,6 +230,52 @@ struct PowerActionReq {
 
 fn default_power_action() -> String {
     "cycle".to_string()
+}
+
+async fn sample_metrics(
+    serial: String,
+    sample_ms: u64,
+) -> Result<(monitor::DeviceMetrics, u64), (u16, String)> {
+    let serial = if serial.is_empty() {
+        let devices = run_blocking(adb::adb_list_devices).await?;
+        match &devices[..] {
+            [device] => device.serial.clone(),
+            [] => return Err((400, "No ADB device is connected".to_string())),
+            _ => {
+                return Err((
+                    400,
+                    "Specify --serial when multiple ADB devices are connected".to_string(),
+                ));
+            }
+        }
+    } else {
+        serial
+    };
+    let first_serial = serial.clone();
+    let first = run_blocking(move || {
+        monitor::adb_get_metrics(first_serial, None, Some(false), Some(false), Some(false))
+    })
+    .await?;
+    let first_time = first.snapshot.timestamp_ms;
+    let first_cpu_total = first.snapshot.total;
+    let first_uptime = first.uptime_s;
+    tokio::time::sleep(Duration::from_millis(sample_ms)).await;
+    let second = run_blocking(move || {
+        monitor::adb_get_metrics(serial, Some(first.snapshot), None, None, None)
+    })
+    .await?;
+    let interval_ms = second.snapshot.timestamp_ms.saturating_sub(first_time);
+    if interval_ms == 0
+        || first_cpu_total == 0
+        || second.snapshot.total <= first_cpu_total
+        || second.uptime_s < first_uptime
+    {
+        return Err((
+            500,
+            "Cannot calculate interval metrics from the two device samples".to_string(),
+        ));
+    }
+    Ok((second, interval_ms))
 }
 
 pub fn start_ipc_server(app: AppHandle) {
@@ -505,8 +553,7 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                 "started",
                 format!("adb shell: {}", body.command),
             );
-            let res =
-                run_blocking(move || adb::adb_exec_shell(body.serial, body.command)).await;
+            let res = run_blocking(move || adb::adb_exec_shell(body.serial, body.command)).await;
             match res {
                 Ok(output) => {
                     emit_ai_sync(app, "ai", "adb-shell", "completed", "adb shell completed");
@@ -644,11 +691,23 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                 Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
             };
             let fw = body.firmware_path.clone();
-            emit_ai_sync(app, "ai", "inspect", "started", format!("Inspecting {}", fw));
+            emit_ai_sync(
+                app,
+                "ai",
+                "inspect",
+                "started",
+                format!("Inspecting {}", fw),
+            );
             let res = run_blocking(move || packer::inspect_image(body.firmware_path)).await;
             match res {
                 Ok(info) => {
-                    emit_ai_sync(app, "ai", "inspect", "completed", format!("Inspected {}", fw));
+                    emit_ai_sync(
+                        app,
+                        "ai",
+                        "inspect",
+                        "completed",
+                        format!("Inspected {}", fw),
+                    );
                     (200, json!({ "ok": true, "info": info }))
                 }
                 Err((c, e)) => {
@@ -1009,7 +1068,7 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                 &state,
                 "ai",
                 body.plugin_id,
-                None,
+                body.tab_id,
                 body.serial,
                 body.inputs,
             )
@@ -1338,11 +1397,62 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
 
         ("GET", "/api/monitor/metrics") => {
             let serial = req.query.get("serial").cloned().unwrap_or_default();
+            if let Some(sample_ms) = req.query.get("sample_ms") {
+                let Ok(sample_ms @ 1..=30_000) = sample_ms.parse::<u64>() else {
+                    return (
+                        400,
+                        json!({ "ok": false, "error": "sample_ms must be an integer from 1 to 30000" }),
+                    );
+                };
+                return match sample_metrics(serial, sample_ms).await {
+                    Ok((metrics, interval_ms)) => (
+                        200,
+                        json!({
+                            "ok": true, "metrics": metrics, "sample_interval_ms": interval_ms,
+                        }),
+                    ),
+                    Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+                };
+            }
             let res =
                 run_blocking(move || monitor::adb_get_metrics(serial, None, None, None, None))
                     .await;
             match res {
                 Ok(metrics) => (200, json!({ "ok": true, "metrics": metrics })),
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+            }
+        }
+
+        ("GET", "/api/power/profiles") => match run_blocking(power::power_list_profiles).await {
+            Ok(profiles) => (200, json!({ "ok": true, "profiles": profiles })),
+            Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+        },
+
+        ("POST", "/api/power/profiles") => {
+            let profile: power::PowerProfile = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let worker_app = app.clone();
+            match run_blocking(move || power::save_profile_draft(&worker_app, profile)).await {
+                Ok(profile) => (200, json!({ "ok": true, "profile": profile })),
+                Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+            }
+        }
+
+        ("GET", "/api/triggers/rules") => match run_blocking(triggers::trigger_list_rules).await {
+            Ok(rules) => (200, json!({ "ok": true, "rules": rules })),
+            Err((c, e)) => (c, json!({ "ok": false, "error": e })),
+        },
+
+        ("POST", "/api/triggers/rules") => {
+            let rule: triggers::TriggerRule = match parse_json(&req.body) {
+                Ok(v) => v,
+                Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
+            };
+            let worker_app = app.clone();
+            match run_blocking(move || triggers::save_rule_draft(&worker_app, rule)).await {
+                Ok(rule) => (200, json!({ "ok": true, "rule": rule })),
                 Err((c, e)) => (c, json!({ "ok": false, "error": e })),
             }
         }

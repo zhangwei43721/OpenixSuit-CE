@@ -5,6 +5,7 @@ mod disasm;
 mod efex;
 mod gpio;
 mod hotplug;
+mod incident_analysis;
 mod ipc_server;
 mod log_capture;
 mod log_profiles;
@@ -36,6 +37,7 @@ pub fn run() {
             }
             hotplug::watcher::start_hotplug_watcher(app.handle().clone());
             ipc_server::start_ipc_server(app.handle().clone());
+            incident_analysis::start(app.handle());
             triggers::start_trigger_watcher(app.handle().clone());
             Ok(())
         })
@@ -124,6 +126,7 @@ pub fn run() {
             // power
             power::power_list_profiles,
             power::power_save_profiles,
+            power::power_confirm_profile,
             power::power_execute,
             // triggers
             triggers::trigger_list_rules,
@@ -131,6 +134,9 @@ pub fn run() {
             triggers::trigger_test_rule,
             triggers::trigger_list_incidents,
             triggers::trigger_clear_incidents,
+            incident_analysis::incident_analysis_settings,
+            incident_analysis::incident_analysis_save_settings,
+            incident_analysis::incident_analysis_results,
             // monitor & workspaces & flash history
             monitor::adb_get_metrics,
             monitor::adb_storage_mount,

@@ -43,6 +43,7 @@ export interface SerialLogEntry {
 }
 
 export interface PowerProfile {
+  draft?: boolean;
   id: string;
   name: string;
   kind: "serial_relay" | "serial_dtr_rts" | "http" | "command";
@@ -76,6 +77,7 @@ export interface TriggerAction {
 }
 
 export interface TriggerRule {
+  draft?: boolean;
   id: string;
   name: string;
   enabled: boolean;
@@ -95,7 +97,7 @@ export interface IncidentReport {
   port_name: string;
   matched_text: string;
   prompt: string;
-  log_tail: string;
+  log_tail: string[];
   created_at: number;
   action_results: string[];
 }

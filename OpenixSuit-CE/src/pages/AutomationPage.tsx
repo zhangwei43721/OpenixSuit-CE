@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -36,6 +36,11 @@ import {
 
 interface AutomationPageProps {
   onLog: (msg: string) => void;
+}
+
+function upsertById<T extends { id: string }>(items: T[], item: T): T[] {
+  const index = items.findIndex((existing) => existing.id === item.id);
+  return index === -1 ? [...items, item] : items.map((existing, i) => i === index ? item : existing);
 }
 
 function createEmptyRule(idx: number): TriggerRule {
@@ -98,7 +103,7 @@ function createEmptyPowerProfile(idx: number): PowerProfile {
 }
 
 export function AutomationPage({ onLog }: AutomationPageProps) {
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const isEn = i18n.language.startsWith("en");
 
   const [activeTab, setActiveTab] = useState<"rules" | "power">("rules");
@@ -112,6 +117,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
   const [testSampleText, setTestSampleText] = useState("Kernel panic - not syncing: VFS");
   const [savingRules, setSavingRules] = useState(false);
   const [testingRule, setTestingRule] = useState(false);
+  const removedRuleIds = useRef(new Set<string>());
 
   // Power Profiles State
   const [profiles, setProfiles] = useState<PowerProfile[]>([]);
@@ -119,6 +125,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
   const [serialPorts, setSerialPorts] = useState<SerialPortInfo[]>([]);
   const [savingProfiles, setSavingProfiles] = useState(false);
   const [powerBusy, setPowerBusy] = useState<string | null>(null);
+  const removedProfileIds = useRef(new Set<string>());
 
   const [statusBanner, setStatusBanner] = useState<{
     type: "ok" | "err";
@@ -136,6 +143,8 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
 
     const safeRules = Array.isArray(rulesRes) ? rulesRes : [];
     const safeProfiles = Array.isArray(profilesRes) ? profilesRes : [];
+    removedRuleIds.current.clear();
+    removedProfileIds.current.clear();
     setRules(safeRules);
     setProfiles(safeProfiles);
     setIncidents(Array.isArray(incidentsRes) ? incidentsRes : []);
@@ -151,7 +160,25 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
   }, []);
 
   useEffect(() => {
-    loadAll();
+    const ruleListener = listen<TriggerRule>("automation-rule-draft-saved", ({ payload }) => {
+      if (removedRuleIds.current.has(payload.id)) return;
+      setRules((previous) => upsertById(previous, payload));
+      setSelectedRuleId((selected) => selected || payload.id);
+    });
+    const powerListener = listen<PowerProfile>("automation-power-draft-saved", ({ payload }) => {
+      if (removedProfileIds.current.has(payload.id)) return;
+      setProfiles((previous) => upsertById(previous, payload));
+      setSelectedProfileId((selected) => selected || payload.id);
+    });
+    let mounted = true;
+    Promise.allSettled([ruleListener, powerListener]).then(() => {
+      if (mounted) loadAll();
+    });
+    return () => {
+      mounted = false;
+      ruleListener.then((unlisten) => unlisten()).catch(() => {});
+      powerListener.then((unlisten) => unlisten()).catch(() => {});
+    };
   }, [loadAll]);
 
   // Listen to trigger-fired events
@@ -215,11 +242,19 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
     updateSelectedRule({ actions: next });
   };
 
+  const saveRules = async () => {
+    const removedIds = [...removedRuleIds.current];
+    const confirmedIds = new Set(rules.filter((rule) => rule.draft && rule.enabled).map((rule) => rule.id));
+    await invoke("trigger_save_rules", { rules, removedIds });
+    removedIds.forEach((id) => removedRuleIds.current.delete(id));
+    setRules((previous) => previous.map((rule) => confirmedIds.has(rule.id) ? { ...rule, draft: false } : rule));
+  };
+
   const handleSaveRules = async () => {
     setSavingRules(true);
     setStatusBanner(null);
     try {
-      await invoke("trigger_save_rules", { rules });
+      await saveRules();
       setStatusBanner({
         type: "ok",
         text: isEn ? "Trigger rules saved" : "触发规则已保存",
@@ -235,11 +270,11 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
   };
 
   const handleTestRule = async () => {
-    if (!selectedRule) return;
+    if (!selectedRule || selectedRule.draft) return;
     setTestingRule(true);
     setStatusBanner(null);
     try {
-      await invoke("trigger_save_rules", { rules });
+      await saveRules();
       const result = await invoke<unknown>("trigger_test_rule", {
         ruleId: selectedRule.id,
         sampleLine: testSampleText,
@@ -286,11 +321,17 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
     );
   };
 
+  const saveProfiles = async () => {
+    const removedIds = [...removedProfileIds.current];
+    await invoke("power_save_profiles", { profiles, removedIds });
+    removedIds.forEach((id) => removedProfileIds.current.delete(id));
+  };
+
   const handleSaveProfiles = async () => {
     setSavingProfiles(true);
     setStatusBanner(null);
     try {
-      await invoke("power_save_profiles", { profiles });
+      await saveProfiles();
       setStatusBanner({
         type: "ok",
         text: isEn ? "Power profiles saved" : "电源配置已保存",
@@ -305,14 +346,29 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
     }
   };
 
+  const handleConfirmProfile = async (profile: PowerProfile) => {
+    setSavingProfiles(true);
+    setStatusBanner(null);
+    try {
+      const confirmed = await invoke<PowerProfile>("power_confirm_profile", { profile });
+      setProfiles((previous) => upsertById(previous, confirmed));
+      setStatusBanner({ type: "ok", text: t("automationDraft.powerConfirmed") });
+    } catch (err) {
+      setStatusBanner({ type: "err", text: String(err) });
+    } finally {
+      setSavingProfiles(false);
+    }
+  };
+
   const handleExecutePower = async (
     profile: PowerProfile,
     action: "on" | "off" | "cycle"
   ) => {
+    if (profile.draft) return;
     setPowerBusy(`${profile.id}:${action}`);
     setStatusBanner(null);
     try {
-      await invoke("power_save_profiles", { profiles });
+      await saveProfiles();
       await invoke("power_execute", {
         profileId: profile.id,
         action,
@@ -502,6 +558,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                           <div className="mt-0.5 truncate font-mono text-[11px] text-slate-400">
                             {conditionLabel(r.condition)}
                           </div>
+                          {r.draft && <div className="text-[11px] text-blue-600 dark:text-blue-400">{t("automationDraft.badge")}</div>}
                         </div>
                         <span className="shrink-0 rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-slate-500 dark:bg-slate-800">
                           {r.trigger_count}x
@@ -545,6 +602,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                       <button
                         type="button"
                         onClick={() => {
+                          removedRuleIds.current.add(selectedRule.id);
                           const filtered = rules.filter((r) => r.id !== selectedRule.id);
                           setRules(filtered);
                           setSelectedRuleId(filtered[0]?.id || "");
@@ -558,6 +616,9 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                   </div>
 
                   <div className="flex flex-1 flex-col gap-4 p-4">
+                    {selectedRule.draft && (
+                      <p className="text-xs text-slate-600 dark:text-slate-300">{t("automationDraft.ruleReview")}</p>
+                    )}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="flex flex-col gap-1.5">
                         <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
@@ -774,7 +835,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                                   </option>
                                   {profiles.map((p) => (
                                     <option key={p.id} value={p.id}>
-                                      {p.name}
+                                      {p.draft ? `${p.name} (${t("automationDraft.badge")})` : p.name}
                                     </option>
                                   ))}
                                 </select>
@@ -857,7 +918,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                       <button
                         type="button"
                         onClick={handleTestRule}
-                        disabled={testingRule}
+                        disabled={testingRule || selectedRule.draft}
                         className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-amber-600 disabled:pointer-events-none disabled:opacity-45"
                       >
                         <Play className="h-3.5 w-3.5" />
@@ -1022,7 +1083,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                             </div>
                           )}
                           <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-slate-700 dark:text-slate-300">
-                            {inc.log_tail || "(empty log tail)"}
+                            {inc.log_tail.join("\n") || "(empty log tail)"}
                           </pre>
                         </div>
                       )}
@@ -1079,7 +1140,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                           {p.name}
                         </span>
                         <span className="rounded-md bg-slate-100 px-1.5 py-0.5 font-mono text-[10px] text-slate-500 dark:bg-slate-800">
-                          {p.kind}
+                          {p.draft ? t("automationDraft.badge") : p.kind}
                         </span>
                       </div>
                       <div className="flex items-center gap-1.5">
@@ -1089,7 +1150,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                             e.stopPropagation();
                             handleExecutePower(p, "on");
                           }}
-                          disabled={powerBusy !== null}
+                          disabled={Boolean(p.draft) || powerBusy !== null}
                           className="ui-btn-success flex-1 px-2 py-1 text-[11px]"
                         >
                           {isEn ? "ON" : "上电"}
@@ -1100,7 +1161,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                             e.stopPropagation();
                             handleExecutePower(p, "off");
                           }}
-                          disabled={powerBusy !== null}
+                          disabled={Boolean(p.draft) || powerBusy !== null}
                           className="ui-btn-danger flex-1 px-2 py-1 text-[11px]"
                         >
                           {isEn ? "OFF" : "断电"}
@@ -1111,7 +1172,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                             e.stopPropagation();
                             handleExecutePower(p, "cycle");
                           }}
-                          disabled={powerBusy !== null}
+                          disabled={Boolean(p.draft) || powerBusy !== null}
                           className="inline-flex flex-1 items-center justify-center rounded-lg bg-amber-500 px-2 py-1 text-[11px] font-medium text-white shadow-sm transition hover:bg-amber-600 disabled:pointer-events-none disabled:opacity-45"
                         >
                           {isEn ? "Cycle" : "循环"}
@@ -1148,7 +1209,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                     <button
                       type="button"
                       onClick={() => handleExecutePower(selectedProfile, "on")}
-                      disabled={powerBusy !== null}
+                      disabled={Boolean(selectedProfile.draft) || powerBusy !== null}
                       className="ui-btn-success"
                     >
                       {isEn ? "Power ON" : "上电 (ON)"}
@@ -1156,7 +1217,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                     <button
                       type="button"
                       onClick={() => handleExecutePower(selectedProfile, "off")}
-                      disabled={powerBusy !== null}
+                      disabled={Boolean(selectedProfile.draft) || powerBusy !== null}
                       className="ui-btn-danger"
                     >
                       {isEn ? "Power OFF" : "断电 (OFF)"}
@@ -1164,7 +1225,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                     <button
                       type="button"
                       onClick={() => handleExecutePower(selectedProfile, "cycle")}
-                      disabled={powerBusy !== null}
+                      disabled={Boolean(selectedProfile.draft) || powerBusy !== null}
                       className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-amber-600 disabled:pointer-events-none disabled:opacity-45"
                     >
                       {isEn ? "Power Cycle" : "电源循环 (Cycle)"}
@@ -1172,6 +1233,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                     <button
                       type="button"
                       onClick={() => {
+                        removedProfileIds.current.add(selectedProfile.id);
                         const filtered = profiles.filter((p) => p.id !== selectedProfile.id);
                         setProfiles(filtered);
                         setSelectedProfileId(filtered[0]?.id || "");
@@ -1184,6 +1246,19 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                 </div>
 
                 <div className="flex flex-col gap-4 p-4">
+                  {selectedProfile.draft && (
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-xs text-slate-600 dark:text-slate-300">{t("automationDraft.powerReview")}</p>
+                      <button
+                        type="button"
+                        disabled={savingProfiles || powerBusy !== null}
+                        onClick={() => handleConfirmProfile(selectedProfile)}
+                        className="ui-btn-primary"
+                      >
+                        {t("automationDraft.confirmPower")}
+                      </button>
+                    </div>
+                  )}
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400">

@@ -2,14 +2,16 @@ use crate::state::{app_data_dir, emit_ai_sync, load_json_or_default, save_json_p
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct PowerProfile {
     pub id: String,
     pub name: String,
+    pub draft: bool,
     pub kind: String,
     pub port_name: String,
     pub baud_rate: u32,
@@ -21,6 +23,14 @@ pub struct PowerProfile {
     pub cmd_on: String,
     pub cmd_off: String,
     pub cycle_delay_ms: u64,
+}
+
+static PROFILE_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_profiles() -> Result<MutexGuard<'static, ()>, String> {
+    PROFILE_LOCK
+        .lock()
+        .map_err(|_| "Power profiles lock poisoned".to_string())
 }
 
 fn profiles_path() -> Result<PathBuf, String> {
@@ -289,6 +299,12 @@ pub async fn power_execute_async(profile_id: &str, action: &str) -> Result<Strin
         .into_iter()
         .find(|p| p.id == profile_id)
         .ok_or_else(|| format!("Power profile not found: {}", profile_id))?;
+    if profile.draft {
+        return Err(format!(
+            "Confirm the power profile '{}' before executing it",
+            profile.name
+        ));
+    }
 
     let act = action.trim().to_ascii_lowercase();
     match act.as_str() {
@@ -332,14 +348,84 @@ pub fn power_execute_internal(profile_id: &str, action: &str) -> Result<String, 
 
 #[tauri::command]
 pub fn power_list_profiles() -> Result<Vec<PowerProfile>, String> {
-    let path = profiles_path()?;
-    load_json_or_default(&path)
+    let _guard = lock_profiles()?;
+    load_json_or_default(&profiles_path()?)
 }
 
 #[tauri::command]
-pub fn power_save_profiles(profiles: Vec<PowerProfile>) -> Result<(), String> {
+pub fn power_save_profiles(
+    mut profiles: Vec<PowerProfile>,
+    removed_ids: Option<Vec<String>>,
+) -> Result<(), String> {
+    let _guard = lock_profiles()?;
     let path = profiles_path()?;
+    if let Some(removed_ids) = removed_ids {
+        let mut merged: Vec<PowerProfile> = load_json_or_default(&path)?;
+        merged.retain(|profile| !removed_ids.contains(&profile.id));
+        for profile in profiles {
+            if let Some(previous) = merged.iter_mut().find(|previous| previous.id == profile.id) {
+                *previous = profile;
+            } else {
+                merged.push(profile);
+            }
+        }
+        profiles = merged;
+    }
     save_json_pretty(&path, &profiles)
+}
+
+pub fn save_profile_draft(
+    app: &AppHandle,
+    mut profile: PowerProfile,
+) -> Result<PowerProfile, String> {
+    if profile.id.trim().is_empty() || profile.name.trim().is_empty() {
+        return Err("A power profile draft requires an ID and a name".to_string());
+    }
+    if !matches!(
+        profile.kind.as_str(),
+        "serial_relay" | "serial_dtr_rts" | "http" | "command"
+    ) {
+        return Err(format!(
+            "Unsupported power profile kind: '{}'",
+            profile.kind
+        ));
+    }
+    profile.draft = true;
+    let _guard = lock_profiles()?;
+    let path = profiles_path()?;
+    let mut profiles: Vec<PowerProfile> = load_json_or_default(&path)?;
+    if let Some(previous) = profiles
+        .iter_mut()
+        .find(|previous| previous.id == profile.id)
+    {
+        if !previous.draft {
+            return Err(format!(
+                "Power profile '{}' is already confirmed. Use a new draft ID",
+                profile.id
+            ));
+        }
+        *previous = profile.clone();
+    } else {
+        profiles.push(profile.clone());
+    }
+    save_json_pretty(&path, &profiles)?;
+    let _ = app.emit("automation-power-draft-saved", &profile);
+    Ok(profile)
+}
+
+#[tauri::command]
+pub fn power_confirm_profile(mut profile: PowerProfile) -> Result<PowerProfile, String> {
+    let _guard = lock_profiles()?;
+    let path = profiles_path()?;
+    let mut profiles: Vec<PowerProfile> = load_json_or_default(&path)?;
+    let previous = profiles
+        .iter_mut()
+        .find(|previous| previous.id == profile.id && previous.draft)
+        .ok_or_else(|| format!("Power profile draft not found: {}", profile.id))?;
+    profile.draft = false;
+    *previous = profile.clone();
+    save_json_pretty(&path, &profiles)?;
+    Ok(profile)
 }
 
 #[tauri::command]

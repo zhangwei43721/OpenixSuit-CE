@@ -11,7 +11,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -43,6 +43,7 @@ pub struct TriggerRule {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+    pub draft: bool,
     pub target_session_id: String,
     pub condition: TriggerCondition,
     pub actions: Vec<TriggerAction>,
@@ -69,6 +70,7 @@ pub struct IncidentReport {
 static RULES_CACHE: OnceLock<Mutex<Vec<TriggerRule>>> = OnceLock::new();
 static COUNTERS: OnceLock<Mutex<HashMap<(String, String), u32>>> = OnceLock::new();
 static REGEX_CACHE: OnceLock<Mutex<HashMap<String, Regex>>> = OnceLock::new();
+static INCIDENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn rules_path() -> Result<PathBuf, String> {
     Ok(app_data_dir()?.join("trigger_rules.json"))
@@ -153,7 +155,11 @@ async fn execute_rule_and_report(
         .map(|a| a.include_serial_lines)
         .max()
         .unwrap_or(50);
-    let tail_count = if tail_requested == 0 { 50 } else { tail_requested };
+    let tail_count = if tail_requested == 0 {
+        50
+    } else {
+        tail_requested
+    };
 
     let log_tail = {
         let state = app.state::<AppState>();
@@ -244,7 +250,8 @@ async fn execute_rule_and_report(
                             .timeout(Duration::from_secs(10))
                             .build()
                             .map_err(|e| e.to_string())?;
-                        let body_str = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+                        let body_str =
+                            serde_json::to_string(&payload).map_err(|e| e.to_string())?;
                         let resp = client
                             .post(url)
                             .header("Content-Type", "application/json")
@@ -294,7 +301,8 @@ async fn execute_rule_and_report(
     }
 
     let created_at = epoch_secs();
-    let id = format!("inc-{}-{}", epoch_ms(), rule.trigger_count);
+    let sequence = INCIDENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let id = format!("inc-{}-{sequence:020}", epoch_ms());
     let report = IncidentReport {
         id: id.clone(),
         rule_id: rule.id.clone(),
@@ -319,7 +327,10 @@ async fn execute_rule_and_report(
         "trigger",
         "incident",
         "completed",
-        format!("[{}] {}: {}", report.rule_name, report.port_name, report.matched_text),
+        format!(
+            "[{}] {}: {}",
+            report.rule_name, report.port_name, report.matched_text
+        ),
     );
 
     report
@@ -403,7 +414,9 @@ pub fn on_serial_line(app: &AppHandle, session_id: &str, port_name: &str, line: 
         let pname = port_name.to_string();
         let line_owned = line.to_string();
         tauri::async_runtime::spawn(async move {
-            let _ = execute_rule_and_report(app_clone, rule, sid, pname, line_owned).await;
+            let report =
+                execute_rule_and_report(app_clone.clone(), rule, sid, pname, line_owned).await;
+            crate::incident_analysis::enqueue(&app_clone, report);
         });
     }
 }
@@ -489,7 +502,9 @@ pub fn start_trigger_watcher(app: AppHandle) {
             for (rule, sid, pname, reason) in to_fire {
                 let app_clone = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = execute_rule_and_report(app_clone, rule, sid, pname, reason).await;
+                    let report =
+                        execute_rule_and_report(app_clone.clone(), rule, sid, pname, reason).await;
+                    crate::incident_analysis::enqueue(&app_clone, report);
                 });
             }
         }
@@ -505,16 +520,99 @@ pub fn trigger_list_rules() -> Result<Vec<TriggerRule>, String> {
 }
 
 #[tauri::command]
-pub fn trigger_save_rules(rules: Vec<TriggerRule>) -> Result<(), String> {
-    let path = rules_path()?;
-    save_json_pretty(&path, &rules)?;
-    if let Ok(mut guard) = rules_mutex().lock() {
-        *guard = rules;
+pub fn trigger_save_rules(
+    mut rules: Vec<TriggerRule>,
+    removed_ids: Option<Vec<String>>,
+) -> Result<(), String> {
+    let mut current = rules_mutex()
+        .lock()
+        .map_err(|_| "Trigger rules lock poisoned".to_string())?;
+    if let Some(removed_ids) = removed_ids {
+        let mut merged = current.clone();
+        merged.retain(|rule| !removed_ids.contains(&rule.id));
+        for rule in rules {
+            if let Some(previous) = merged.iter_mut().find(|previous| previous.id == rule.id) {
+                let mut rule = rule;
+                rule.trigger_count = previous.trigger_count;
+                rule.last_triggered_at = previous.last_triggered_at;
+                *previous = rule;
+            } else {
+                merged.push(rule);
+            }
+        }
+        rules = merged;
     }
+    for rule in &mut rules {
+        if rule.enabled {
+            rule.draft = false;
+        }
+    }
+    save_json_pretty(&rules_path()?, &rules)?;
+    *current = rules;
     if let Ok(mut counters) = counters_mutex().lock() {
         counters.clear();
     }
     Ok(())
+}
+
+pub fn save_rule_draft(app: &AppHandle, mut rule: TriggerRule) -> Result<TriggerRule, String> {
+    if rule.id.trim().is_empty() || rule.name.trim().is_empty() {
+        return Err("A rule draft requires an ID and a name".to_string());
+    }
+    if !matches!(
+        rule.condition.kind.as_str(),
+        "contains" | "contains_cs" | "regex" | "timeout" | "count"
+    ) {
+        return Err(format!(
+            "Unknown trigger condition: {}",
+            rule.condition.kind
+        ));
+    }
+    if rule.condition.kind == "regex" {
+        Regex::new(&rule.condition.pattern).map_err(|e| format!("Invalid trigger regex: {e}"))?;
+    }
+    if rule.condition.kind == "timeout"
+        && rule
+            .condition
+            .timeout_secs
+            .checked_mul(1000)
+            .filter(|&ms| ms > 0)
+            .is_none()
+    {
+        return Err("Trigger timeout must be positive and fit in milliseconds".to_string());
+    }
+    if let Some(action) = rule.actions.iter().find(|action| {
+        !matches!(
+            action.kind.as_str(),
+            "power_control" | "send_ai" | "adb_reboot" | "serial_send" | "notify_webhook"
+        )
+    }) {
+        return Err(format!("Unknown trigger action: {}", action.kind));
+    }
+    rule.enabled = false;
+    rule.draft = true;
+    rule.trigger_count = 0;
+    rule.last_triggered_at = 0;
+
+    let mut current = rules_mutex()
+        .lock()
+        .map_err(|_| "Trigger rules lock poisoned".to_string())?;
+    let mut updated = current.clone();
+    if let Some(previous) = updated.iter_mut().find(|previous| previous.id == rule.id) {
+        if !previous.draft || previous.enabled {
+            return Err(format!(
+                "Rule '{}' is already confirmed. Use a new draft ID",
+                rule.id
+            ));
+        }
+        *previous = rule.clone();
+    } else {
+        updated.push(rule.clone());
+    }
+    save_json_pretty(&rules_path()?, &updated)?;
+    *current = updated;
+    let _ = app.emit("automation-rule-draft-saved", &rule);
+    Ok(rule)
 }
 
 #[tauri::command]
@@ -534,6 +632,10 @@ pub async fn trigger_test_rule(
             .cloned()
             .ok_or_else(|| format!("Trigger rule not found: {}", rule_id))?
     };
+
+    if rule.draft {
+        return Err("Enable and save the draft before testing it".to_string());
+    }
 
     let (session_id, port_name) = {
         let guard = state
@@ -584,7 +686,7 @@ pub fn trigger_list_incidents() -> Result<Vec<IncidentReport>, String> {
 }
 
 #[tauri::command]
-pub fn trigger_clear_incidents() -> Result<(), String> {
+pub fn trigger_clear_incidents(app: AppHandle) -> Result<(), String> {
     let dir = incidents_dir()?;
     let entries = fs::read_dir(&dir).map_err(|e| format!("Failed to read incidents dir: {}", e))?;
     for entry in entries.flatten() {
@@ -593,5 +695,5 @@ pub fn trigger_clear_incidents() -> Result<(), String> {
             let _ = fs::remove_file(&path);
         }
     }
-    Ok(())
+    crate::incident_analysis::clear(&app)
 }

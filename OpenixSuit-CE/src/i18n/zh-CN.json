@@ -175,6 +175,13 @@
     "clear": "清空",
     "empty": "暂无日志"
   },
+  "automationDraft": {
+    "badge": "AI 草稿",
+    "ruleReview": "核对监听串口、触发条件和动作后，勾选「启用」并保存规则。",
+    "powerReview": "核对电源目标、控制命令和断电时长后，确认此配置。",
+    "confirmPower": "确认电源配置",
+    "powerConfirmed": "电源配置已确认，可以执行控制动作。"
+  },
   "common": {
     "refresh": "刷新",
     "browse": "浏览",
@@ -375,6 +382,20 @@
     "aiTitle": "AI 本地控制接口 (CLI 同步)",
     "aiDesc": "供外部 AI Agent / openixsuit-ce ai（单二进制 CLI 模式）或 openixsuit-ai CLI 实时协同并同步状态到界面",
     "aiExamples": "调用示例命令"
+  },
+  "incidentAnalysis": {
+    "title": "异常自动分析",
+    "description": "含 AI 排障动作的规则触发后，OpenixSuit-CE 会把命中内容和串口日志快照提交给 Codex，以只读方式分析。测试规则时不提交日志。",
+    "enable": "启用 Codex 自动分析",
+    "codexPath": "Codex CLI 可执行文件",
+    "codexPathPlaceholder": "填写绝对路径，或留空从 PATH 查找",
+    "saved": "分析设置已保存",
+    "status": {
+      "queued": "等待 AI 分析",
+      "running": "AI 分析中",
+      "completed": "AI 分析完成",
+      "failed": "AI 分析失败"
+    }
   },
   "plugins": {
     "title": "扩展插件管理",

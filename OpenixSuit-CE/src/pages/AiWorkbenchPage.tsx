@@ -14,6 +14,11 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { IncidentReport } from "../types/workbench";
+import {
+  IncidentAnalysisOptions,
+  IncidentAnalysisRecord,
+  IncidentAnalysisResult,
+} from "../components/IncidentAnalysis";
 
 export interface AiSyncTimelineItem {
   time: string;
@@ -78,7 +83,7 @@ function buildIncidentPrompt(inc: IncidentReport): string {
     "",
     "### 最近串口日志现场",
     "```log",
-    inc.log_tail || "(no serial tail captured)",
+    inc.log_tail.join("\n") || "(no serial tail captured)",
     "```",
     "",
     "如需要进一步获取设备状态、读取日志或执行电源循环，请直接调用 `openixsuit-ce ai ...` CLI 命令。",
@@ -92,6 +97,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
   const isEn = i18n.language.startsWith("en");
 
   const [incidents, setIncidents] = useState<IncidentReport[]>([]);
+  const [analyses, setAnalyses] = useState<Record<string, IncidentAnalysisRecord>>({});
   const [loading, setLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
@@ -100,6 +106,23 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
     try {
       const list = await invoke<IncidentReport[]>("trigger_list_incidents");
       setIncidents(Array.isArray(list) ? list : []);
+      if (Array.isArray(list) && list.length > 0) {
+        const saved = await invoke<Record<string, IncidentAnalysisRecord>>(
+          "incident_analysis_results",
+          { incidentIds: list.map((incident) => incident.id) }
+        );
+        setAnalyses((current) => {
+          const merged = { ...current };
+          for (const [id, incoming] of Object.entries(saved)) {
+            const status = merged[id]?.status;
+            if (status !== "completed" && status !== "failed" &&
+                !(status === "running" && incoming.status === "queued")) {
+              merged[id] = incoming;
+            }
+          }
+          return merged;
+        });
+      }
     } catch (err) {
       onLog(`trigger_list_incidents error: ${String(err)}`);
     } finally {
@@ -112,16 +135,21 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
   }, [loadIncidents]);
 
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<IncidentReport>("trigger-fired", (event) => {
+    const unlistenIncident = listen<IncidentReport>("trigger-fired", (event) => {
       if (event.payload) {
-        setIncidents((prev) => [event.payload, ...prev].slice(0, 200));
+        setIncidents((prev) => [
+          event.payload,
+          ...prev.filter((incident) => incident.id !== event.payload.id),
+        ].slice(0, 200));
       }
-    }).then((fn) => {
-      unlisten = fn;
+    });
+    const unlistenAnalysis = listen<IncidentAnalysisRecord>("incident-analysis-updated", (event) => {
+      const analysis = event.payload;
+      setAnalyses((current) => ({ ...current, [analysis.incident_id]: analysis }));
     });
     return () => {
-      if (unlisten) unlisten();
+      unlistenIncident.then((unlisten) => unlisten());
+      unlistenAnalysis.then((unlisten) => unlisten());
     };
   }, []);
 
@@ -142,6 +170,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
     try {
       await invoke("trigger_clear_incidents");
       setIncidents([]);
+      setAnalyses({});
       onLog(isEn ? "Cleared incidents" : "已清空异常事件");
     } catch (err) {
       onLog(`trigger_clear_incidents error: ${String(err)}`);
@@ -220,7 +249,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
               <button
                 type="button"
                 onClick={handleClearIncidents}
-                disabled={incidents.length === 0}
+                disabled={loading || incidents.length === 0}
                 className="ui-btn-secondary px-2.5 py-1 hover:text-rose-500"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -239,6 +268,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
             ) : (
               incidents.map((inc) => {
                 const isCopied = copiedId === `inc-${inc.id}`;
+                const analysis = analyses[inc.id];
                 return (
                   <div key={inc.id} className="space-y-2.5 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -293,11 +323,12 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
                       </div>
                     )}
 
-                    {inc.log_tail && (
+                    {inc.log_tail.length > 0 && (
                       <pre className="ui-terminal max-h-36 overflow-auto whitespace-pre-wrap p-3 text-[11px]">
-                        {inc.log_tail}
+                        {inc.log_tail.join("\n")}
                       </pre>
                     )}
+                    {analysis && <IncidentAnalysisResult analysis={analysis} />}
                   </div>
                 );
               })
@@ -307,6 +338,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
 
         {/* Right: Live ai-sync-event Timeline + CLI Cheatsheet */}
         <div className="flex min-h-0 flex-col gap-4 xl:col-span-5">
+          <IncidentAnalysisOptions />
           {/* Live ai-sync-event Timeline */}
           <div className="ui-card flex min-h-[200px] flex-1 flex-col overflow-hidden">
             <div className="ui-card-header">

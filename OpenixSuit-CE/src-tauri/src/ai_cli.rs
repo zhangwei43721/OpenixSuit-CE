@@ -136,6 +136,8 @@ enum Commands {
     /// Run an installed declarative workflow plugin
     PluginRun {
         plugin_id: String,
+        #[arg(long, value_name = "TAB_ID")]
+        tab: Option<String>,
         #[arg(long, default_value = "")]
         serial: String,
         #[arg(long, default_value = "{}")]
@@ -210,11 +212,22 @@ enum Commands {
         #[arg(default_value = "cycle")]
         action: String,
     },
+    /// List the desktop app's power profiles
+    PowerProfiles,
+    /// Save a single power profile draft from a JSON file or stdin (-)
+    PowerProfileSave { json_file: PathBuf },
     /// Query live CPU/memory/thermal/top metrics via ADB
     Metrics {
         #[arg(long, default_value = "")]
         serial: String,
+        /// Wait this many milliseconds between two samples to measure interval rates
+        #[arg(long)]
+        sample_ms: Option<u64>,
     },
+    /// List automation rules
+    Rules,
+    /// Save a single disabled automation rule draft from a JSON file or stdin (-)
+    RuleSave { json_file: PathBuf },
     /// List recorded trigger incident reports
     Incidents,
 }
@@ -472,6 +485,7 @@ where
         ),
         Commands::PluginRun {
             plugin_id,
+            tab,
             serial,
             inputs,
         } => {
@@ -493,6 +507,7 @@ where
                 "/api/plugins/run".to_string(),
                 Some(json!({
                     "plugin_id": plugin_id,
+                    "tab_id": tab,
                     "serial": serial,
                     "inputs": parsed_inputs,
                 })),
@@ -562,14 +577,23 @@ where
                 "action": action,
             })),
         ),
-        Commands::Metrics { serial } => {
-            let p = if serial.is_empty() {
-                "/api/monitor/metrics".to_string()
-            } else {
-                format!("/api/monitor/metrics?serial={}", percent_encode(&serial))
-            };
-            ("GET", p, None)
+        Commands::Metrics { serial, sample_ms } => {
+            let mut params = Vec::new();
+            if !serial.is_empty() {
+                params.push(format!("serial={}", percent_encode(&serial)));
+            }
+            if let Some(sample_ms) = sample_ms {
+                params.push(format!("sample_ms={}", sample_ms));
+            }
+            let mut path = "/api/monitor/metrics".to_string();
+            if !params.is_empty() {
+                path.push('?');
+                path.push_str(&params.join("&"));
+            }
+            ("GET", path, None)
         }
+        Commands::Rules => ("GET", "/api/triggers/rules".to_string(), None),
+        Commands::PowerProfiles => ("GET", "/api/power/profiles".to_string(), None),
         Commands::LogProfiles => ("GET", "/api/log-profiles".to_string(), None),
         Commands::LogStorage => ("GET", "/api/log-storage".to_string(), None),
         Commands::LogUi { ref action, ref json_file } => {
@@ -608,9 +632,13 @@ where
         ),
         Commands::BridgeStop => ("POST", "/api/serial/bridge/stop".to_string(), None),
         Commands::BridgeStatus => ("GET", "/api/serial/bridge".to_string(), None),
-        Commands::LogStorageSave { ref json_file }
+        Commands::RuleSave { ref json_file }
+        | Commands::PowerProfileSave { ref json_file }
+        | Commands::LogStorageSave { ref json_file }
         | Commands::LogProfileSave { ref json_file } => {
             let path = match cli.command {
+                Commands::RuleSave { .. } => "/api/triggers/rules",
+                Commands::PowerProfileSave { .. } => "/api/power/profiles",
                 Commands::LogStorageSave { .. } => "/api/log-storage",
                 _ => "/api/log-profiles",
             };
