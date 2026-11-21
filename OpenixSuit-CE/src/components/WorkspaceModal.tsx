@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FolderOpen, Plus, Trash2, X } from "lucide-react";
+import { adbDeviceKey, resolveAdbDevice, type AdbDevice } from "./TopBar";
 import {
   DeviceWorkspace,
   PowerProfile,
@@ -11,7 +12,7 @@ import {
 
 interface WorkspaceModalProps {
   initial?: DeviceWorkspace | null;
-  adbDevices: { serial: string; state: string }[];
+  adbDevices: AdbDevice[];
   onClose: () => void;
   onSave: (ws: DeviceWorkspace) => Promise<void>;
 }
@@ -25,6 +26,7 @@ export function WorkspaceModal({
   const [name, setName] = useState(initial?.name || "");
   const [chip, setChip] = useState(initial?.chip || "V861");
   const [adbSerial, setAdbSerial] = useState(initial?.adb_serial || "");
+  const adbBoundDevice = resolveAdbDevice(adbSerial, adbDevices);
   const [workspaceDir, setWorkspaceDir] = useState(initial?.workspace_dir || "");
   const [powerProfileId, setPowerProfileId] = useState(initial?.power_profile_id || "");
   const [notes, setNotes] = useState(initial?.notes || "");
@@ -60,7 +62,7 @@ export function WorkspaceModal({
       id: initial?.id || `ws-${Date.now()}`,
       name: name.trim(),
       chip: chip.trim(),
-      adb_serial: adbSerial.trim(),
+      adb_serial: adbBoundDevice ? adbDeviceKey(adbBoundDevice) : adbSerial.trim(),
       workspace_dir: workspaceDir.trim(),
       power_profile_id: powerProfileId.trim(),
       serial_ports: serialPorts.filter((s) => s.port_name.trim() || s.label.trim()),
@@ -103,14 +105,15 @@ export function WorkspaceModal({
           <div>
             <div className="mb-1 text-[11px] text-slate-500">绑定 ADB 设备</div>
             <select
-              value={adbSerial}
+              value={adbBoundDevice ? adbDeviceKey(adbBoundDevice) : adbSerial}
               onChange={(e) => setAdbSerial(e.target.value)}
               className="ui-select w-full"
             >
               <option value="">自动匹配当前在线 ADB</option>
+              {adbSerial && !adbBoundDevice && <option value={adbSerial}>{adbSerial}（不可用）</option>}
               {adbDevices.map((d) => (
-                <option key={d.serial} value={d.serial}>
-                  {d.serial} ({d.state})
+                <option key={adbDeviceKey(d)} value={adbDeviceKey(d)}>
+                  {d.serial}{d.usb_path ? ` · ${d.usb_path}` : ""} ({d.state})
                 </option>
               ))}
             </select>

@@ -239,7 +239,7 @@ async fn sample_metrics(
     let serial = if serial.is_empty() {
         let devices = run_blocking(adb::adb_list_devices).await?;
         match &devices[..] {
-            [device] => device.serial.clone(),
+            [device] => device.target().to_owned(),
             [] => return Err((400, "No ADB device is connected".to_string())),
             _ => {
                 return Err((
@@ -571,7 +571,6 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                 Ok(v) => v,
                 Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
             };
-            let serial = body.serial.clone();
             let local_path = body.local_path.clone();
             let remote_path = body.remote_path.clone();
             emit_ai_sync(
@@ -582,11 +581,11 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                 format!("adb push {} -> {}", local_path, remote_path),
             );
             let res = run_blocking(move || {
-                adb::adb_push_file(body.serial, body.local_path, body.remote_path)
+                adb::push_file_to_device(body.serial, body.local_path, body.remote_path)
             })
             .await;
             match res {
-                Ok(()) => {
+                Ok(serial) => {
                     let _ = app.emit(
                         "adb-sync",
                         AdbSyncPayload {

@@ -1,10 +1,10 @@
 use crate::state::AppState;
-use adb_client::{ADBDeviceExt, ADBListItemType, ADBServer};
+use adb_client::{ADBDeviceExt, ADBListItemType};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
@@ -14,11 +14,10 @@ use std::os::fd::{AsRawFd, FromRawFd};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-#[derive(Serialize)]
-pub struct AdbDevice {
-    pub serial: String,
-    pub state: String,
-}
+mod devices;
+pub use devices::AdbDevice;
+use devices::get_server_device;
+pub(crate) use devices::resolve_device;
 
 #[derive(Serialize)]
 pub struct AdbFileEntry {
@@ -27,26 +26,9 @@ pub struct AdbFileEntry {
     pub size: u64,
 }
 
-fn get_server_device(serial: &str) -> Result<adb_client::ADBServerDevice, String> {
-    let mut server = ADBServer::default();
-    if serial.is_empty() {
-        server.get_device().map_err(|e| e.to_string())
-    } else {
-        server.get_device_by_name(serial).map_err(|e| e.to_string())
-    }
-}
-
 #[tauri::command]
 pub fn adb_list_devices() -> Result<Vec<AdbDevice>, String> {
-    let mut server = ADBServer::default();
-    let list = server.devices().map_err(|e| format!("连接 ADB 服务失败: {}", e))?;
-    Ok(list
-        .into_iter()
-        .map(|d| AdbDevice {
-            serial: d.identifier,
-            state: format!("{:?}", d.state),
-        })
-        .collect())
+    devices::list_devices()
 }
 
 #[tauri::command]
@@ -68,9 +50,15 @@ pub fn adb_list_dir(serial: String, remote_path: String) -> Result<Vec<AdbFileEn
 
 #[tauri::command]
 pub fn adb_push_file(serial: String, local_path: String, remote_path: String) -> Result<(), String> {
-    let mut device = get_server_device(&serial)?;
+    push_file_to_device(serial, local_path, remote_path).map(|_| ())
+}
+
+pub(crate) fn push_file_to_device(serial: String, local_path: String, remote_path: String) -> Result<String, String> {
+    let target = resolve_device(&serial)?;
+    let mut device = target.server_device();
     let file = File::open(&local_path).map_err(|e| e.to_string())?;
-    device.push(file, &remote_path).map_err(|e| e.to_string())
+    device.push(file, &remote_path).map_err(|e| e.to_string())?;
+    Ok(target.target().to_owned())
 }
 
 #[tauri::command]
@@ -82,16 +70,14 @@ pub fn adb_pull_file(serial: String, remote_path: String, local_path: String) ->
 
 #[tauri::command]
 pub fn adb_exec_shell(serial: String, command: String) -> Result<String, String> {
-    let mut device = get_server_device(&serial)?;
+    let target = resolve_device(&serial)?;
+    let mut device = target.server_device();
     let mut out = Vec::new();
     match device.shell_command(&[command.as_str()], &mut out) {
         Ok(()) => Ok(String::from_utf8_lossy(&out).to_string()),
         Err(_) => {
-            let mut cmd = Command::new("adb");
-            if !serial.is_empty() {
-                cmd.args(["-s", &serial]);
-            }
-            let output = cmd
+            let output = target
+                .command()
                 .args(["shell", &command])
                 .output()
                 .map_err(|e| format!("设备不支持 ShellV2，且本地 adb 回退失败: {}", e))?;
@@ -104,11 +90,14 @@ pub fn adb_exec_shell(serial: String, command: String) -> Result<String, String>
 
 #[tauri::command]
 pub fn adb_root(serial: String) -> Result<String, String> {
-    let mut cmd = Command::new("adb");
-    if !serial.is_empty() {
-        cmd.args(["-s", &serial]);
+    let output = resolve_device(&serial)?
+        .command()
+        .arg("root")
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!("ADB root failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
     }
-    let output = cmd.arg("root").output().map_err(|e| e.to_string())?;
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
@@ -122,18 +111,15 @@ pub fn adb_reboot(serial: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn adb_reboot_efex(serial: String) -> Result<String, String> {
-    let mut cmd = Command::new("adb");
-    if !serial.is_empty() {
-        cmd.args(["-s", &serial]);
-    }
-    let out = cmd.args(["reboot", "efex"]).output();
+    let target = resolve_device(&serial)?;
+    let out = target.command().args(["reboot", "efex"]).output();
     if let Ok(res) = out {
         if res.status.success() {
             return Ok("已发送 adb reboot efex，设备正在重启进入烧录模式".into());
         }
     }
     // 部分全志固件通过 shell 命令进入 efex/fel
-    adb_exec_shell(serial, "reboot efex 2>/dev/null || reboot fel".into())
+    adb_exec_shell(target.target().to_owned(), "reboot efex 2>/dev/null || reboot fel".into())
 }
 
 #[tauri::command]
@@ -408,6 +394,7 @@ pub fn adb_term_open(
     if sid.is_empty() {
         return Err("ADB terminal session_id cannot be empty".to_string());
     }
+    let mut cmd = resolve_device(&serial)?.command();
 
     {
         let mut guard = state
@@ -460,10 +447,6 @@ pub fn adb_term_open(
             .try_clone()
             .map_err(|e| format!("Failed to clone PTY master: {}", e))?;
 
-        let mut cmd = Command::new("adb");
-        if !serial.trim().is_empty() {
-            cmd.args(["-s", serial.trim()]);
-        }
         cmd.arg("shell");
         cmd.env("TERM", "xterm-256color");
         cmd.stdin(Stdio::null());
@@ -548,10 +531,6 @@ pub fn adb_term_open(
 
     #[cfg(not(unix))]
     {
-        let mut cmd = Command::new("adb");
-        if !serial.trim().is_empty() {
-            cmd.args(["-s", serial.trim()]);
-        }
         cmd.arg("shell");
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
@@ -785,11 +764,8 @@ pub fn adb_screen_info(serial: String) -> Result<AdbScreenInfo, String> {
 
 #[tauri::command]
 pub fn adb_screencap_png(serial: String) -> Result<String, String> {
-    let mut cmd = Command::new("adb");
-    if !serial.trim().is_empty() {
-        cmd.args(["-s", serial.trim()]);
-    }
-    let output = cmd
+    let output = resolve_device(&serial)?
+        .command()
         .args(["exec-out", "screencap", "-p"])
         .output()
         .map_err(|e| format!("Failed to execute adb screencap: {}", e))?;

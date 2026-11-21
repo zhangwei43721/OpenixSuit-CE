@@ -7,11 +7,13 @@ use std::path::PathBuf;
 
 #[test]
 fn adb_log_command_leaves_terminal_mode_automatic() {
-    let adb = adb_log_command("test-device", "-leading-option");
+    let mut command = std::process::Command::new("adb");
+    command.args(["-t", "383"]);
+    let adb = adb_log_command(command, "-leading-option");
     let args = adb.as_std().get_args().collect::<Vec<_>>();
     assert_eq!(
         args,
-        ["-s", "test-device", "shell", "--", "-leading-option"]
+        ["-t", "383", "shell", "--", "-leading-option"]
     );
 }
 

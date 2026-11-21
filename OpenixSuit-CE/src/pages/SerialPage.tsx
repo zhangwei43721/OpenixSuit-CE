@@ -26,7 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { AdbDevice } from "../components/TopBar";
+import { adbDeviceKey, adbDeviceOnline, adbSerialAmbiguous, resolveAdbDevice, type AdbDevice } from "../components/TopBar";
 import {
   DeviceWorkspace,
   LogProfile,
@@ -260,15 +260,21 @@ function normalizeAdbCommand(command: string): string {
   return command.trim().replace(/^adb\s+(?:shell\s+|(?=logcat(?:\s|$)))/, "");
 }
 
+function adbTarget(value: string, devices: AdbDevice[]): string {
+  const device = resolveAdbDevice(value, devices);
+  return device ? adbDeviceKey(device) : value;
+}
+
 function matchesProfilePane(
   pane: SerialPaneState,
   profilePane: SerialPaneState,
-  selectedAdbSerial: string
+  selectedAdbSerial: string,
+  adbDevices: AdbDevice[],
 ): boolean {
   if (pane.source !== profilePane.source) return false;
   return pane.source === "serial"
     ? pane.portName === profilePane.portName && pane.baudRate === profilePane.baudRate
-    : (pane.adbSerial || selectedAdbSerial) === profilePane.adbSerial &&
+    : adbTarget(pane.adbSerial || selectedAdbSerial, adbDevices) === adbTarget(profilePane.adbSerial, adbDevices) &&
         normalizeAdbCommand(pane.adbCommand) === normalizeAdbCommand(profilePane.adbCommand);
 }
 
@@ -283,6 +289,7 @@ function attachLogSession(
   session: LogSession,
   selectedAdbSerial: string,
   ports: SerialPortInfo[],
+  adbDevices: AdbDevice[],
 ): SerialPaneState[] {
   let index = panes.findIndex((pane) => pane.sessionId === session.id);
   const sourcePane = createProfilePane({ ...session, label: session.label || "" });
@@ -294,7 +301,7 @@ function attachLogSession(
         return pane.source === "serial" && pane.baudRate === session.baud_rate &&
           findSerialPort(ports, pane.portName, pane.serialBinding) === livePort;
       }
-      return matchesProfilePane(pane, sourcePane, selectedAdbSerial);
+      return matchesProfilePane(pane, sourcePane, selectedAdbSerial, adbDevices);
     };
     index = panes.findIndex((pane) => pane.resumeConnected && matches(pane));
     if (index < 0) index = panes.findIndex(matches);
@@ -349,9 +356,7 @@ function endLogSession(
 }
 
 function adbDeviceAvailable(devices: AdbDevice[], serial: string): boolean {
-  return devices.some((device) =>
-    device.serial === serial && (device.state === "Device" || device.state === "Recovery")
-  );
+  return adbDeviceOnline(resolveAdbDevice(serial, devices));
 }
 
 function appendChunkToLines(
@@ -471,6 +476,8 @@ export function SerialPage({
   portsRef.current = ports;
   const selectedAdbSerialRef = useRef(selectedAdbSerial);
   selectedAdbSerialRef.current = selectedAdbSerial;
+  const adbDevicesRef = useRef(adbDevices);
+  adbDevicesRef.current = adbDevices;
   const pendingSessionSnapshot = useRef<Set<string> | null>(null);
   const restoreSerialRef = useRef<(ports: SerialPortInfo[]) => void>(() => {});
   const serialRestoreAttempts = useRef(new Map<string, string>());
@@ -498,7 +505,7 @@ export function SerialPage({
       // 先收到的实时事件比会话列表的快照更新，优先采用实时状态。
       const unchanged = sessions.filter((session) => !changedIds.has(session.id));
       flushSync(() => setPanes((prev) => unchanged.reduce(
-        (next, session) => attachLogSession(next, session, selectedAdbSerialRef.current, portsRef.current), prev
+        (next, session) => attachLogSession(next, session, selectedAdbSerialRef.current, portsRef.current, adbDevicesRef.current), prev
       )));
       return true;
     } catch (error) {
@@ -636,7 +643,7 @@ export function SerialPage({
       pendingSessionSnapshot.current?.add(session.id);
       if (kind === "started") {
         flushSync(() => setPanes((prev) => attachLogSession(
-          prev, session, selectedAdbSerialRef.current, portsRef.current,
+          prev, session, selectedAdbSerialRef.current, portsRef.current, adbDevicesRef.current,
         )));
         return;
       }
@@ -740,12 +747,15 @@ export function SerialPage({
     if (!bridgeSettingsRef.current?.loadProfile(profile)) {
       throw new Error(t("multiLog.profiles.stopBridgeToLoad"));
     }
-    const profilePanes = profile.sources.map(createProfilePane);
+    const profilePanes = profile.sources.map((source) => {
+      const pane = createProfilePane(source);
+      return source.type === "adb" ? { ...pane, adbSerial: adbTarget(source.serial, adbDevices) } : pane;
+    });
     setPanes((previous) => {
       const next = [...previous];
       for (const [index, profilePane] of profilePanes.entries()) {
         const source = profile.sources[index];
-        const matches = (pane: SerialPaneState) => matchesProfilePane(pane, profilePane, selectedAdbSerial);
+        const matches = (pane: SerialPaneState) => matchesProfilePane(pane, profilePane, selectedAdbSerial, adbDevices);
         const activeIndex = next.findIndex((pane) => (pane.sessionId !== null || pane.connecting) && matches(pane));
         const matchingIndex = activeIndex >= 0 ? activeIndex : next.findIndex(matches);
         if (matchingIndex >= 0) {
@@ -895,7 +905,7 @@ export function SerialPage({
   };
 
   const adbDeviceForPane = (pane: SerialPaneState) =>
-    pane.adbSerial || selectedAdbSerial;
+    adbTarget(pane.adbSerial || selectedAdbSerial, adbDevices);
 
   const handleStartAdb = async (pane: SerialPaneState, serial = adbDeviceForPane(pane)) => {
     const command = pane.adbCommand.trim();
@@ -942,9 +952,11 @@ export function SerialPage({
 
   restoreAdbRef.current = (devices) => {
     for (const pane of panesRef.current) {
-      if (pane.source === "adb" && pane.resumeConnected && !pane.sessionId &&
-          adbDeviceAvailable(devices, pane.adbSerial)) {
-        void handleStartAdb(pane, pane.adbSerial);
+      if (pane.source !== "adb" || !pane.resumeConnected || pane.sessionId) continue;
+      if (adbSerialAmbiguous(pane.adbSerial, devices)) {
+        updatePane(pane.paneId, { resumeConnected: false, error: t("multiLog.adbSerialAmbiguous") });
+      } else if (adbDeviceAvailable(devices, pane.adbSerial)) {
+        void handleStartAdb(pane, adbTarget(pane.adbSerial, devices));
       }
     }
   };

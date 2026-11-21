@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import type { AdbDevice } from "../components/TopBar";
+import { adbDeviceKey, resolveAdbDevice, type AdbDevice } from "../components/TopBar";
 import type { SerialCharset, SerialFormat, SerialLineEnding, SerialPortInfo } from "../types/workbench";
 import type { SerialPaneState } from "./SerialPage";
 
@@ -37,7 +37,7 @@ export function SerialPaneSettings({
   const isAdb = pane.source === "adb";
   const busy = pane.connected || pane.connecting || pane.stopping || pane.resumeConnected;
   const hasPort = ports.some((port) => port.port_name === pane.portName);
-  const hasDevice = adbDevices.some((device) => device.serial === adbSerial);
+  const adbDevice = resolveAdbDevice(adbSerial, adbDevices);
 
   return (
     <div className="min-w-0 space-y-4">
@@ -75,16 +75,18 @@ export function SerialPaneSettings({
             <label className={FIELD}>
               {t("multiLog.adbDevice")}
               <select
-                value={adbSerial}
+                value={adbDevice ? adbDeviceKey(adbDevice) : adbSerial}
                 disabled={busy}
                 onChange={(event) => onChange({ adbSerial: event.target.value })}
                 className="ui-select w-full font-mono"
               >
                 <option value="">{t("multiLog.pickAdb")}</option>
                 {adbDevices.map((device) => (
-                  <option key={device.serial} value={device.serial}>{device.serial}</option>
+                  <option key={adbDeviceKey(device)} value={adbDeviceKey(device)}>
+                    {device.serial}{device.usb_path ? ` · ${device.usb_path}` : ""}
+                  </option>
                 ))}
-                {adbSerial && !hasDevice && (
+                {adbSerial && !adbDevice && (
                   <option value={adbSerial}>{t("multiLog.adbMissing", { serial: adbSerial })}</option>
                 )}
               </select>

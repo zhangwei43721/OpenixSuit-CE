@@ -1,3 +1,4 @@
+use crate::adb::resolve_device;
 use crate::log_capture::CaptureWriter;
 use crate::log_sessions::{notify_session, LogSession, LogSessionChangeKind, LogSessionSource};
 use crate::serial::sanitize_port_name;
@@ -79,11 +80,7 @@ struct LogEnded<'a> {
 }
 
 fn adb_device_available(serial: &str) -> bool {
-    crate::adb::adb_list_devices().is_ok_and(|devices| {
-        devices.iter().any(|device| {
-            device.serial == serial && matches!(device.state.as_str(), "Device" | "Recovery")
-        })
-    })
+    resolve_device(serial).is_ok_and(|device| device.is_online())
 }
 
 fn split_word(input: &str) -> (&str, &str) {
@@ -111,16 +108,14 @@ pub(crate) fn device_command(input: &str) -> Result<String, String> {
     Ok(command.to_string())
 }
 
-fn adb_log_command(serial: &str, command: &str) -> Command {
-    let mut adb = Command::new("adb");
+fn adb_log_command(adb: std::process::Command, command: &str) -> Command {
+    let mut adb = Command::from(adb);
     // ADB 根据设备协议选择无终端模式或旧设备所需的伪终端。
-    adb.args(["-s", serial, "shell", "--", command])
+    adb.args(["shell", "--", command])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
-    #[cfg(windows)]
-    adb.creation_flags(0x08000000);
     adb
 }
 
@@ -156,6 +151,11 @@ pub(crate) fn open_adb_log_session(
         return Err("Select an ADB device to collect logs".to_string());
     }
     let command = device_command(&command)?;
+    let device = resolve_device(serial)?;
+    if !device.is_online() {
+        return Err(format!("ADB device '{}' is {}", device.target(), device.state));
+    }
+    let serial = device.target();
     let sessions = Arc::clone(&state.adb_log_sessions);
     let mut active = sessions
         .lock()
@@ -190,7 +190,7 @@ pub(crate) fn open_adb_log_session(
     let path = state.log_capture.logs_directory()?.join(name);
     let log_path = path.to_string_lossy().into_owned();
     let writer = CaptureWriter::new(state.log_capture.clone(), path)?;
-    let child = adb_log_command(&serial, &command)
+    let child = adb_log_command(device.command(), &command)
         .spawn()
         .map_err(|error| format!("Failed to start adb: {error}"))?;
     let (stop, stopped) = watch::channel(None);

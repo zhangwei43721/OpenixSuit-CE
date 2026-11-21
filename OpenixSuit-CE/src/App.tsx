@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import { getFirstSidebarTab, Sidebar, TabKey } from "./components/Sidebar";
-import { AdbDevice, FelDevice, TopBar } from "./components/TopBar";
+import { AdbDevice, adbDeviceKey, adbDeviceOnline, adbSerialAmbiguous, resolveAdbDevice, FelDevice, TopBar } from "./components/TopBar";
 import { LogDrawer } from "./components/LogDrawer";
 import { AppSettings, loadSettings, saveSettings, ThemeMode } from "./store/settings";
 import { FlashHub } from "./pages/FlashHub";
@@ -109,9 +109,12 @@ export default function App() {
   const [aiSyncStatus, setAiSyncStatus] = useState<string | null>(null);
   const [felDevices, setFelDevices] = useState<FelDevice[]>([]);
   const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([]);
-  const [selectedAdbSerial, setSelectedAdbSerial] = useState(
+  const [preferredAdbTarget, setPreferredAdbTarget] = useState(
     () => localStorage.getItem(STORAGE_ADB_SERIAL_KEY) || ""
   );
+  const selectedAdbDevice = resolveAdbDevice(preferredAdbTarget, adbDevices);
+  const selectedAdbTarget = selectedAdbDevice ? adbDeviceKey(selectedAdbDevice) : "";
+  const selectedAdbSerial = adbDeviceOnline(selectedAdbDevice) ? selectedAdbTarget : "";
   const [logs, setLogs] = useState<string[]>([]);
   const [logOpen, setLogOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => ({
@@ -133,21 +136,23 @@ export default function App() {
     setVisitedTabs((prev) => (prev[tab] ? prev : { ...prev, [tab]: true }));
   };
 
+  const applyAdbDevices = useCallback((devices: AdbDevice[]) => {
+    setAdbDevices(devices);
+    const saved = localStorage.getItem(STORAGE_ADB_SERIAL_KEY) || "";
+    const device = saved ? resolveAdbDevice(saved, devices) : devices.length === 1 ? devices[0] : undefined;
+    // 旧配置遇到重复序列号后要求重新选择，避免拔掉一块板时误绑定剩下的板。
+    const preferred = adbSerialAmbiguous(saved, devices) ? `adb-ambiguous:${saved}` : device ? adbDeviceKey(device) : saved;
+    if (preferred !== saved) localStorage.setItem(STORAGE_ADB_SERIAL_KEY, preferred);
+    setPreferredAdbTarget(preferred);
+  }, []);
+
   const refreshAllDevices = async () => {
     const [felList, adbList] = await Promise.all([
       invoke<FelDevice[]>("scan_devices").catch(() => []),
       invoke<AdbDevice[]>("adb_list_devices").catch(() => []),
     ]);
     setFelDevices(felList);
-    setAdbDevices(adbList);
-    if (adbList.length > 0) {
-      const preferred = localStorage.getItem(STORAGE_ADB_SERIAL_KEY) || selectedAdbSerial;
-      const matched = adbList.find((d) => d.serial === preferred) || adbList[0];
-      setSelectedAdbSerial(matched.serial);
-      localStorage.setItem(STORAGE_ADB_SERIAL_KEY, matched.serial);
-    } else {
-      setSelectedAdbSerial("");
-    }
+    applyAdbDevices(adbList);
     return { felList, adbList };
   };
 
@@ -240,21 +245,8 @@ export default function App() {
 
     const adbTimer = setInterval(() => {
       invoke<AdbDevice[]>("adb_list_devices")
-        .then((adbList) => {
-          setAdbDevices(adbList);
-          if (adbList.length > 0) {
-            const preferred = localStorage.getItem(STORAGE_ADB_SERIAL_KEY) || "";
-            const matched = adbList.find((d) => d.serial === preferred) || adbList[0];
-            setSelectedAdbSerial((cur) => (cur === matched.serial ? cur : matched.serial));
-            localStorage.setItem(STORAGE_ADB_SERIAL_KEY, matched.serial);
-          } else {
-            setSelectedAdbSerial("");
-          }
-        })
-        .catch(() => {
-          setAdbDevices([]);
-          setSelectedAdbSerial("");
-        });
+        .then(applyAdbDevices)
+        .catch(() => applyAdbDevices([]));
     }, 3000);
 
     return () => {
@@ -265,7 +257,7 @@ export default function App() {
       unlistenAiSync.then((fn) => fn());
       unlistenFlashLog.then((fn) => fn());
     };
-  }, [i18n, refreshPlugins, refreshWorkspaces, appendLog]);
+  }, [i18n, refreshPlugins, refreshWorkspaces, appendLog, applyAdbDevices]);
 
   useEffect(() => {
     if (
@@ -277,8 +269,10 @@ export default function App() {
   }, [activeTab, extensionTabs]);
 
   const handleSelectAdbSerial = (next: string) => {
-    setSelectedAdbSerial(next);
-    localStorage.setItem(STORAGE_ADB_SERIAL_KEY, next);
+    const device = resolveAdbDevice(next, adbDevices);
+    const target = adbSerialAmbiguous(next, adbDevices) ? `adb-ambiguous:${next}` : device ? adbDeviceKey(device) : next;
+    setPreferredAdbTarget(target);
+    localStorage.setItem(STORAGE_ADB_SERIAL_KEY, target);
   };
 
   const handleAdbRoot = async () => {
@@ -374,7 +368,8 @@ export default function App() {
       <TopBar
         felDevices={felDevices}
         adbDevices={adbDevices}
-        selectedAdbSerial={selectedAdbSerial}
+        selectedAdbTarget={selectedAdbTarget}
+        unavailableAdbTarget={!!preferredAdbTarget && !selectedAdbDevice}
         aiSyncStatus={aiSyncStatus}
         switchingEfex={switchingEfex}
         onSelectAdbSerial={handleSelectAdbSerial}
@@ -428,6 +423,7 @@ export default function App() {
           {visitedTabs.adb && (
             <div className={activeTab === "adb" ? "h-full" : "hidden"}>
               <AdbExplorer
+                key={selectedAdbSerial}
                 serial={selectedAdbSerial}
                 theme={effectiveTheme}
                 jumpRequest={adbJumpRequest}
@@ -443,6 +439,7 @@ export default function App() {
           {visitedTabs.monitor && (
             <div className={activeTab === "monitor" ? "h-full" : "hidden"}>
               <DeviceMonitorPage
+                key={selectedAdbSerial}
                 serial={selectedAdbSerial}
                 onLog={appendLog}
                 onNavigateAdbPath={(remotePath) => {
@@ -454,12 +451,13 @@ export default function App() {
           )}
           {visitedTabs.screen && (
             <div className={activeTab === "screen" ? "h-full" : "hidden"}>
-              <AdbScreenPage serial={selectedAdbSerial} onLog={appendLog} />
+              <AdbScreenPage key={selectedAdbSerial} serial={selectedAdbSerial} onLog={appendLog} />
             </div>
           )}
           {visitedTabs.gpio && (
             <div className={activeTab === "gpio" ? "h-full" : "hidden"}>
               <GpioViewer
+                key={selectedAdbSerial}
                 serial={selectedAdbSerial}
                 felConnected={felDevices.length > 0}
                 onLog={appendLog}
