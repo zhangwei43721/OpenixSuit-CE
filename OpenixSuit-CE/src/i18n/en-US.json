@@ -12,6 +12,22 @@
     "switchingEfex": "Switching...",
     "aiSyncing": "AI Syncing: {{action}}"
   },
+  "fesExit": {
+    "title": "Exit FES",
+    "description": "Choose an FES device and action. After reboot, the device reconnects if its system supports ADB. Entering FEL requires bootloader support for the command.",
+    "device": "FES device",
+    "selectDevice": "Select an FES device",
+    "action": "Action",
+    "reboot": "Reboot system",
+    "fel": "Enter FEL",
+    "confirm": "Confirm",
+    "close": "Close",
+    "rebootSent": "Reboot request sent",
+    "felSent": "Request to enter FEL sent",
+    "failed": "Operation failed: {{error}}",
+    "busy": "The device is busy. Try again later.",
+    "deviceUnavailable": "The selected FES device is no longer available. Refresh the device list and try again."
+  },
   "nav": {
     "collapse": "Collapse",
     "flash": "Firmware Tools",

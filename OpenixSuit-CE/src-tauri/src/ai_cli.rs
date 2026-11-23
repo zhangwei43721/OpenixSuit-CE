@@ -50,6 +50,14 @@ enum Commands {
         #[arg(long, default_value = "")]
         serial: String,
     },
+    /// Exit a selected FES device by rebooting or requesting FEL
+    FesExit {
+        /// USB device ID from status, e.g. bus:1-port:3
+        #[arg(long)]
+        device_id: String,
+        #[arg(long, value_enum)]
+        action: crate::efex::FesExitAction,
+    },
     /// Restart adbd as root
     AdbRoot {
         #[arg(long, default_value = "")]
@@ -372,6 +380,11 @@ where
             "POST",
             "/api/adb/reboot-efex".to_string(),
             Some(json!({ "serial": serial })),
+        ),
+        Commands::FesExit { device_id, action } => (
+            "POST",
+            "/api/fes/exit".to_string(),
+            Some(json!({ "device_id": device_id, "action": action })),
         ),
         Commands::AdbRoot { serial } => (
             "POST",

@@ -54,7 +54,7 @@
    - 封装 `libefex`（Git 依赖）实现全志 FEL/FES USB 通信（`VID: 0x1f3a`，`PID: 0xefe8`）。
    - 支持 USB 后端切换：`auto`、`winusb`、`libusb`（`set_usb_backend`）。
    - FEL 命令：`fel_read_mem`、`fel_write_mem`、`fel_write_file`、`fel_exec`、`fel_init_dram`。
-   - FES 命令：`fes_query_storage`、`fes_tool_mode`、`fes_download_partition`。
+   - FES 命令：`fes_query_storage`、`fes_exit`、`fes_download_partition`。退出指令按设备 ID 确定目标，返回设备对请求的确认。
    - 完整/自定义/原始刷写：`flash_firmware_full`、`flash_custom_mbr_layout`、`raw_flash_image`、`cancel_flash`。
 2. **`hotplug/watcher.rs`**：
    - 优先使用 `rusb` 原生热插拔回调，不支持的平台自动降级为 200ms 轮询对比。

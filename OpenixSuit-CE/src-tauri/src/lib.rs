@@ -54,7 +54,7 @@ pub fn run() {
             efex::fel_exec,
             efex::fel_init_dram,
             efex::fes_query_storage,
-            efex::fes_tool_mode,
+            efex::fes_exit,
             efex::fes_download_partition,
             efex::flash_firmware_full,
             efex::flash_custom_mbr_layout,

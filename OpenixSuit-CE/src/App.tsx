@@ -315,6 +315,26 @@ export default function App() {
     }
   };
 
+  const handleExitFes = async (deviceId: string, action: "reboot" | "fel") => {
+    if (isFlashing || switchingEfex) {
+      throw new Error(i18n.t("fesExit.busy"));
+    }
+    const matchingDevices = felDevices.filter((device) => device.id === deviceId);
+    if (matchingDevices.length !== 1 || matchingDevices[0].mode !== "FES (U-Boot)") {
+      throw new Error(i18n.t("fesExit.deviceUnavailable"));
+    }
+
+    try {
+      await invoke<void>("fes_exit", { deviceId, action });
+      const message = i18n.t(action === "reboot" ? "fesExit.rebootSent" : "fesExit.felSent");
+      appendLog(`[${deviceId}] ${message}`);
+      await refreshAllDevices();
+    } catch (error) {
+      appendLog(`[${deviceId}] ${i18n.t("fesExit.failed", { error: String(error) })}`);
+      throw error;
+    }
+  };
+
   const updateSettings = async (patch: Partial<AppSettings>) => {
     const next = { ...settings, ...patch };
     setSettings(next);
@@ -372,11 +392,13 @@ export default function App() {
         unavailableAdbTarget={!!preferredAdbTarget && !selectedAdbDevice}
         aiSyncStatus={aiSyncStatus}
         switchingEfex={switchingEfex}
+        deviceActionBusy={isFlashing}
         onSelectAdbSerial={handleSelectAdbSerial}
         onRefreshDevices={refreshAllDevices}
         onAdbRoot={handleAdbRoot}
         onAdbReboot={handleAdbReboot}
         onSwitchEfex={handleSwitchEfex}
+        onExitFes={handleExitFes}
       />
 
       <div className="flex flex-1 overflow-hidden">

@@ -37,6 +37,10 @@ OpenixSuit-CE 是基于 OpenixCLI 修改而来的跨平台桌面工具。感谢�
   </tr>
 </table>
 
+设备处于 FES 时，顶部的「退出 FES」可请求重启系统或进入 FEL。重启后是否出现 ADB 取决于系统是否正常启动并启用 ADB，进入 FEL 取决于引导程序是否支持切换指令。
+
+客户端 CLI 可先用 `openixsuit-ai status` 查看 USB 设备 ID，再执行 `openixsuit-ai fes-exit --device-id bus:1-port:3 --action reboot`。使用 `--action fel` 请求进入 FEL。
+
 ### 设备联调
 
 <table>

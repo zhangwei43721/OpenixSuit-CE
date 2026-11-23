@@ -58,6 +58,12 @@ struct AdbSerialReq {
 }
 
 #[derive(Deserialize)]
+struct FesExitReq {
+    device_id: String,
+    action: efex::FesExitAction,
+}
+
+#[derive(Deserialize)]
 struct InspectReq {
     firmware_path: String,
 }
@@ -855,6 +861,24 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                         emit_ai_sync(app, "ai", "raw", "error", msg.clone());
                     }
                     (code, json!({ "ok": false, "error": msg }))
+                }
+            }
+        }
+
+        ("POST", "/api/fes/exit") => {
+            let body: FesExitReq = match parse_json(&req.body) {
+                Ok(body) => body,
+                Err((code, error)) => return (code, json!({ "ok": false, "error": error })),
+            };
+            match efex::request_fes_exit(&state, body.device_id.clone(), body.action).await {
+                Ok(()) => {
+                    let message = format!("FES exit request acknowledged by {}", body.device_id);
+                    emit_ai_sync(app, "ai", "fes-exit", "completed", &message);
+                    (200, json!({ "ok": true, "device_id": body.device_id, "action": body.action, "message": message }))
+                }
+                Err(error) => {
+                    emit_ai_sync(app, "ai", "fes-exit", "error", &error);
+                    (500, json!({ "ok": false, "error": error }))
                 }
             }
         }

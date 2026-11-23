@@ -12,6 +12,22 @@
     "switchingEfex": "正在切换...",
     "aiSyncing": "AI 同步执行中: {{action}}"
   },
+  "fesExit": {
+    "title": "退出 FES",
+    "description": "选择要操作的 FES 设备和动作。重启后，设备支持 ADB 时会重新连接；进入 FEL 需要引导程序实现对应命令。",
+    "device": "FES 设备",
+    "selectDevice": "选择 FES 设备",
+    "action": "退出方式",
+    "reboot": "重启系统",
+    "fel": "进入 FEL",
+    "confirm": "确认执行",
+    "close": "关闭",
+    "rebootSent": "已发送重启请求",
+    "felSent": "已发送进入 FEL 请求",
+    "failed": "操作失败：{{error}}",
+    "busy": "设备正忙，请稍后重试。",
+    "deviceUnavailable": "所选 FES 设备已不可用，请刷新设备列表后重试。"
+  },
   "nav": {
     "collapse": "收起侧边栏",
     "flash": "固件工具",

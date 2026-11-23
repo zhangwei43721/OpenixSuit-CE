@@ -1,5 +1,6 @@
+import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Loader2, RefreshCw, RotateCw, Shield, Zap } from "lucide-react";
+import { Loader2, Power, RefreshCw, RotateCw, Shield, Zap } from "lucide-react";
 
 export interface FelDevice {
   id: string;
@@ -40,11 +41,13 @@ interface TopBarProps {
   unavailableAdbTarget: boolean;
   aiSyncStatus?: string | null;
   switchingEfex?: boolean;
+  deviceActionBusy?: boolean;
   onSelectAdbSerial: (serial: string) => void;
   onRefreshDevices: () => void;
   onAdbRoot: () => void;
   onAdbReboot: () => void;
   onSwitchEfex: () => void;
+  onExitFes: (deviceId: string, action: "reboot" | "fel") => Promise<void>;
 }
 
 export function TopBar({
@@ -54,14 +57,50 @@ export function TopBar({
   unavailableAdbTarget,
   aiSyncStatus,
   switchingEfex = false,
+  deviceActionBusy = false,
   onSelectAdbSerial,
   onRefreshDevices,
   onAdbRoot,
   onAdbReboot,
   onSwitchEfex,
+  onExitFes,
 }: TopBarProps) {
   const { t } = useTranslation();
+  const [exitDialogOpen, setExitDialogOpen] = useState(false);
+  const [exitDeviceId, setExitDeviceId] = useState("");
+  const [exitAction, setExitAction] = useState<"reboot" | "fel">("reboot");
+  const [exitSubmitting, setExitSubmitting] = useState(false);
+  const [exitResult, setExitResult] = useState<"success" | string | null>(null);
+  const fesDevices = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const device of felDevices) counts.set(device.id, (counts.get(device.id) || 0) + 1);
+    return felDevices.filter((device) => device.mode === "FES (U-Boot)" && counts.get(device.id) === 1);
+  }, [felDevices]);
+  const actionsBlocked = deviceActionBusy || switchingEfex || exitSubmitting;
+  const exitTargetAvailable = fesDevices.some((device) => device.id === exitDeviceId);
+  const exitAcknowledged = exitResult === "success";
   const adbReady = adbDeviceOnline(resolveAdbDevice(selectedAdbTarget, adbDevices));
+
+  const openExitDialog = () => {
+    setExitDeviceId(fesDevices.length === 1 ? fesDevices[0].id : "");
+    setExitAction("reboot");
+    setExitResult(null);
+    setExitDialogOpen(true);
+  };
+
+  const submitExit = async () => {
+    if (actionsBlocked || exitAcknowledged || !exitTargetAvailable) return;
+    setExitSubmitting(true);
+    setExitResult(null);
+    try {
+      await onExitFes(exitDeviceId, exitAction);
+      setExitResult("success");
+    } catch (error) {
+      setExitResult(String(error));
+    } finally {
+      setExitSubmitting(false);
+    }
+  };
 
   const leftBadge =
     felDevices.length > 0
@@ -133,6 +172,17 @@ export function TopBar({
           {t("common.refresh")}
         </button>
 
+        {fesDevices.length > 0 && (
+          <button
+            onClick={openExitDialog}
+            disabled={actionsBlocked}
+            className="ui-btn-secondary"
+          >
+            <Power className="h-3.5 w-3.5" />
+            {t("fesExit.title")}
+          </button>
+        )}
+
         {adbDevices.length > 0 && (
           <>
             <button
@@ -169,6 +219,67 @@ export function TopBar({
           </button>
         )}
       </div>
+
+      {exitDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="presentation">
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="fes-exit-title"
+            className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-xl dark:border-slate-700 dark:bg-slate-900"
+          >
+            <h2 id="fes-exit-title" className="text-base font-semibold">{t("fesExit.title")}</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{t("fesExit.description")}</p>
+
+            <label className="mt-4 block text-xs font-medium text-slate-600 dark:text-slate-300">
+              {t("fesExit.device")}
+              <select
+                value={exitTargetAvailable ? exitDeviceId : ""}
+                onChange={(event) => { setExitDeviceId(event.target.value); setExitResult(null); }}
+                disabled={exitSubmitting || exitAcknowledged}
+                className="ui-select mt-1 w-full"
+              >
+                <option value="" disabled>{t("fesExit.selectDevice")}</option>
+                {fesDevices.map((device) => (
+                  <option key={device.id} value={device.id}>{device.chip} · {device.id}</option>
+                ))}
+              </select>
+            </label>
+
+            <fieldset className="mt-4 space-y-2" disabled={exitSubmitting || exitAcknowledged}>
+              <legend className="text-xs font-medium text-slate-600 dark:text-slate-300">{t("fesExit.action")}</legend>
+              <label className="flex items-start gap-2 text-sm">
+                <input type="radio" name="fes-exit-action" checked={exitAction === "reboot"} onChange={() => setExitAction("reboot")} className="mt-1" />
+                <span>{t("fesExit.reboot")}</span>
+              </label>
+              <label className="flex items-start gap-2 text-sm">
+                <input type="radio" name="fes-exit-action" checked={exitAction === "fel"} onChange={() => setExitAction("fel")} className="mt-1" />
+                <span>{t("fesExit.fel")}</span>
+              </label>
+            </fieldset>
+
+            {exitResult ? (
+              <p role="status" className={`mt-4 rounded-lg px-3 py-2 text-sm ${exitResult === "success" ? "ui-alert-ok" : "ui-alert-err"}`}>
+                {exitResult === "success" ? t(exitAction === "reboot" ? "fesExit.rebootSent" : "fesExit.felSent") : t("fesExit.failed", { error: exitResult })}
+              </p>
+            ) : exitDeviceId && !exitTargetAvailable && (
+              <p role="status" className="ui-alert-err mt-4 rounded-lg px-3 py-2 text-sm">{t("fesExit.deviceUnavailable")}</p>
+            )}
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button className="ui-btn-secondary" onClick={() => setExitDialogOpen(false)} disabled={exitSubmitting}>
+                {t(exitAcknowledged ? "fesExit.close" : "common.cancel")}
+              </button>
+              {!exitAcknowledged && (
+                <button className="ui-btn-primary" onClick={submitExit} disabled={actionsBlocked || !exitTargetAvailable}>
+                  {exitSubmitting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                  {t("fesExit.confirm")}
+                </button>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </header>
   );
 }

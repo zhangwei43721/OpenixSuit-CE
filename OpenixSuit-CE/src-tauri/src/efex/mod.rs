@@ -1,6 +1,6 @@
 use crate::hotplug::watcher::scan_sunxi_devices;
 use crate::state::{emit_ai_sync, AppState, UsbBackend};
-use libefex::{Context as EfexContext, DeviceMode, FesDataType, FesToolMode};
+use libefex::{Context as EfexContext, DeviceMode, FesDataType};
 use openixcli::firmware::OpenixPacker;
 use openixcli::flash::{
     DeviceSelector, FlashEvent, FlashEventSink, FlashLogLevel, FlashMode, FlashRequest, Flasher,
@@ -17,6 +17,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
+
+mod exit;
+pub(crate) use exit::{request_exit as request_fes_exit, FesExitAction};
 
 #[derive(Clone, Serialize)]
 pub struct DeviceInfo {
@@ -56,6 +59,10 @@ fn open_efex_session(bus: Option<u8>, port: Option<u8>) -> Result<EfexContext, S
     ctx.usb_init().map_err(|e| e.to_string())?;
     ctx.efex_init().map_err(|e| e.to_string())?;
     Ok(ctx)
+}
+
+fn efex_device_id(bus: u8, port: u8) -> String {
+    format!("bus:{bus}-port:{port}")
 }
 
 fn require_fel_mode(ctx: &EfexContext) -> Result<(), String> {
@@ -234,7 +241,7 @@ fn scan_devices_with_probe(backend: &UsbBackend, probe_details: bool) -> Vec<Dev
             return libefex_devs
                 .into_iter()
                 .map(|d| {
-                    let id = format!("bus:{}-port:{}", d.bus, d.port);
+                    let id = efex_device_id(d.bus, d.port);
                     if probe_details {
                         if let Ok(ctx) = open_efex_session(Some(d.bus), Some(d.port)) {
                             let chip_id = unsafe { (*ctx.as_ptr()).resp.id };
@@ -389,22 +396,12 @@ pub fn fes_query_storage(state: State<'_, AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub fn fes_tool_mode(state: State<'_, AppState>, action: String) -> Result<(), String> {
-    let _busy = state.try_acquire_busy("fes_tool_mode")?;
-    let ctx = open_efex_session(None, None)?;
-    if ctx.get_device_mode() == DeviceMode::Fel {
-        return Err(
-            "当前设备处于 BROM FEL 模式，无法通过 FES 指令重启切回 ADB，请按板卡复位键或重新上电启动系统。"
-                .into(),
-        );
-    }
-    let mode = match action.as_str() {
-        "reboot" => FesToolMode::Reboot,
-        "poweroff" | "shutdown" => FesToolMode::PowerOff,
-        _ => FesToolMode::Normal,
-    };
-    ctx.fes_tool_mode(mode, FesToolMode::Normal)
-        .map_err(|e| e.to_string())
+pub(crate) async fn fes_exit(
+    state: State<'_, AppState>,
+    device_id: String,
+    action: FesExitAction,
+) -> Result<(), String> {
+    request_fes_exit(&state, device_id, action).await
 }
 
 #[tauri::command]
