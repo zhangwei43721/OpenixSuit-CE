@@ -18,6 +18,12 @@ pub struct BootDownload<'a> {
     logger: &'a Logger,
 }
 
+pub(crate) struct PreparedBootImages {
+    preboot: Option<Vec<u8>>,
+    boot1: Option<Vec<u8>>,
+    boot0: Option<Vec<u8>>,
+}
+
 impl<'a> BootDownload<'a> {
     /// Create a new boot download handler
     pub fn new(logger: &'a Logger) -> Self {
@@ -34,140 +40,91 @@ impl<'a> BootDownload<'a> {
         secure: u32,
         storage_type: u32,
     ) -> FlashResult<()> {
-        self.logger.info("Downloading Preboot/Boot0/Boot1...");
+        let images = self.prepare_images(packer, secure, storage_type)?;
+        self.execute_prepared(ctx, images).await
+    }
 
-        self.download_preboot(ctx, packer, secure).await?;
-        self.download_boot1(ctx, packer, secure, storage_type)
-            .await?;
-        self.download_boot0(ctx, packer, secure, storage_type)
-            .await?;
+    /// Resolve and decode all selected boot items before any storage write.
+    pub(crate) fn prepare_images(
+        &self,
+        packer: &mut OpenixPacker,
+        secure: u32,
+        storage_type: u32,
+    ) -> FlashResult<PreparedBootImages> {
+        let preboot = self
+            .get_preboot_subtype(secure)
+            .filter(|subtype| packer.find_file_header_by_subtype(subtype).is_some())
+            .map(|subtype| packer.find_file_data_by_subtype(subtype))
+            .transpose()?;
+
+        let boot1 = self
+            .get_boot1_subtype(secure, storage_type)
+            .map(|(maintype, subtype)| {
+                packer
+                    .get_file_data_by_maintype_subtype(maintype, subtype)
+                    .map_err(|_| FlashError::Boot1NotFound)
+            })
+            .transpose()?;
+
+        let boot0 = self
+            .get_boot0_entry(secure, storage_type)
+            .map(|(maintype, subtype)| {
+                packer
+                    .get_file_data_by_maintype_subtype(maintype, subtype)
+                    .or_else(|_| {
+                        self.get_boot0_fallback_entry(secure)
+                            .filter(|fallback| *fallback != (maintype, subtype))
+                            .map_or_else(
+                                || Err(PackerError::FileNotFound(format!("{maintype}/{subtype}"))),
+                                |(fallback_maintype, fallback_subtype)| {
+                                    packer.get_file_data_by_maintype_subtype(
+                                        fallback_maintype,
+                                        fallback_subtype,
+                                    )
+                                },
+                            )
+                    })
+                    .map_err(|_| FlashError::Boot0NotFound)
+            })
+            .transpose()?;
+
+        Ok(PreparedBootImages {
+            preboot,
+            boot1,
+            boot0,
+        })
+    }
+
+    pub(crate) async fn execute_prepared<C: FesOps>(
+        &self,
+        ctx: &C,
+        images: PreparedBootImages,
+    ) -> FlashResult<()> {
+        self.logger.info("Downloading Preboot/Boot0/Boot1...");
+        if let Some(data) = images.preboot {
+            self.logger
+                .info(&format!("Downloading Preboot ({} bytes)", data.len()));
+            ctx.fes_down(&data, 0, FesDataType::Preboot)
+                .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
+            self.verify_boot(ctx, fes_data_type::PREBOOT, "Preboot")
+                .await?;
+        }
+        if let Some(data) = images.boot1 {
+            self.logger
+                .info(&format!("Downloading Boot1 ({} bytes)", data.len()));
+            ctx.fes_down(&data, 0, FesDataType::Boot1)
+                .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
+            self.verify_boot(ctx, fes_data_type::BOOT1, "Boot1").await?;
+        }
+        if let Some(data) = images.boot0 {
+            self.logger
+                .info(&format!("Downloading Boot0 ({} bytes)", data.len()));
+            ctx.fes_down(&data, 0, FesDataType::Boot0)
+                .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
+            self.verify_boot(ctx, fes_data_type::BOOT0, "Boot0").await?;
+        }
 
         self.logger.stage_complete("Preboot/Boot0/Boot1 downloaded");
-        Ok(())
-    }
-
-    /// Download the optional preboot image before Boot1.
-    async fn download_preboot<C: FesOps>(
-        &self,
-        ctx: &C,
-        packer: &mut OpenixPacker,
-        secure: u32,
-    ) -> FlashResult<()> {
-        let Some(subtype) = self.get_preboot_subtype(secure) else {
-            return Ok(());
-        };
-
-        self.logger
-            .debug(&format!("Looking for Preboot: {}", subtype));
-
-        if packer.find_file_header_by_subtype(subtype).is_none() {
-            self.logger
-                .debug(&format!("Preboot not found: {}, skipping", subtype));
-            return Ok(());
-        }
-
-        let preboot_data = packer.find_file_data_by_subtype(subtype)?;
-        self.logger.info(&format!(
-            "Downloading Preboot: {} ({} bytes)",
-            subtype,
-            preboot_data.len()
-        ));
-
-        ctx.fes_down(&preboot_data, 0, FesDataType::Preboot)
-            .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
-
-        self.verify_boot(ctx, fes_data_type::PREBOOT, "Preboot")
-            .await
-    }
-
-    /// Download Boot1 image
-    ///
-    /// Boot1 is the secondary boot loader
-    async fn download_boot1<C: FesOps>(
-        &self,
-        ctx: &C,
-        packer: &mut OpenixPacker,
-        secure: u32,
-        storage_type: u32,
-    ) -> FlashResult<()> {
-        if let Some((maintype, subtype)) = self.get_boot1_subtype(secure, storage_type) {
-            self.logger
-                .debug(&format!("Looking for Boot1: {}/{}", maintype, subtype));
-            match packer.get_file_data_by_maintype_subtype(maintype, subtype) {
-                Ok(boot1_data) => {
-                    self.logger.info(&format!(
-                        "Downloading Boot1: {}/{} ({} bytes)",
-                        maintype,
-                        subtype,
-                        boot1_data.len()
-                    ));
-
-                    ctx.fes_down(&boot1_data, 0, FesDataType::Boot1)
-                        .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
-
-                    self.verify_boot(ctx, fes_data_type::BOOT1, "Boot1").await?;
-                }
-                Err(e) => {
-                    self.logger.debug(&format!(
-                        "Boot1 not found: {}/{} - {}",
-                        maintype, subtype, e
-                    ));
-                    return Err(FlashError::Boot1NotFound);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Download Boot0 image
-    ///
-    /// Boot0 is the primary boot loader stored in storage
-    async fn download_boot0<C: FesOps>(
-        &self,
-        ctx: &C,
-        packer: &mut OpenixPacker,
-        secure: u32,
-        storage_type: u32,
-    ) -> FlashResult<()> {
-        if let Some((maintype, subtype)) = self.get_boot0_entry(secure, storage_type) {
-            self.logger
-                .debug(&format!("Looking for Boot0: {maintype}/{subtype}"));
-
-            let boot0_data = packer
-                .get_file_data_by_maintype_subtype(maintype, subtype)
-                .or_else(|_| {
-                    self.get_boot0_fallback_entry(secure)
-                        .filter(|fallback| *fallback != (maintype, subtype))
-                        .map_or_else(
-                            || Err(PackerError::FileNotFound(format!("{maintype}/{subtype}"))),
-                            |(fallback_maintype, fallback_subtype)| {
-                                packer.get_file_data_by_maintype_subtype(
-                                    fallback_maintype,
-                                    fallback_subtype,
-                                )
-                            },
-                        )
-                });
-
-            match boot0_data {
-                Ok(boot0_data) => {
-                    self.logger.info(&format!(
-                        "Downloading Boot0: {maintype}/{subtype} ({} bytes)",
-                        boot0_data.len()
-                    ));
-
-                    ctx.fes_down(&boot0_data, 0, FesDataType::Boot0)
-                        .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
-
-                    self.verify_boot(ctx, fes_data_type::BOOT0, "Boot0").await?;
-                }
-                Err(e) => {
-                    self.logger
-                        .debug(&format!("Boot0 not found: {maintype}/{subtype} - {e}"));
-                    return Err(FlashError::Boot0NotFound);
-                }
-            }
-        }
         Ok(())
     }
 
@@ -188,7 +145,7 @@ impl<'a> BootDownload<'a> {
     }
 
     /// Get Preboot subtype based on boot mode.
-    fn get_preboot_subtype(&self, secure: u32) -> Option<&'static str> {
+    pub(crate) fn get_preboot_subtype(&self, secure: u32) -> Option<&'static str> {
         match secure {
             BOOT_FILE_MODE_NORMAL | BOOT_FILE_MODE_PKG => Some("1234567890PREB_0"),
             BOOT_FILE_MODE_TOC => Some("TOC0_PREBOOT0000"),
@@ -197,7 +154,7 @@ impl<'a> BootDownload<'a> {
     }
 
     /// Get Boot1 subtype based on boot mode and storage type
-    fn get_boot1_subtype(
+    pub(crate) fn get_boot1_subtype(
         &self,
         secure: u32,
         storage_type: u32,
@@ -217,7 +174,7 @@ impl<'a> BootDownload<'a> {
     }
 
     /// Get the Boot0 entry based on boot mode and storage type.
-    fn get_boot0_entry(
+    pub(crate) fn get_boot0_entry(
         &self,
         secure: u32,
         storage_type: u32,
@@ -244,7 +201,10 @@ impl<'a> BootDownload<'a> {
         }
     }
 
-    fn get_boot0_fallback_entry(&self, secure: u32) -> Option<(&'static str, &'static str)> {
+    pub(crate) fn get_boot0_fallback_entry(
+        &self,
+        secure: u32,
+    ) -> Option<(&'static str, &'static str)> {
         match secure {
             BOOT_FILE_MODE_NORMAL | BOOT_FILE_MODE_PKG => Some(("12345678", "1234567890BOOT_0")),
             BOOT_FILE_MODE_TOC => Some(("12345678", "TOC0_00000000000")),

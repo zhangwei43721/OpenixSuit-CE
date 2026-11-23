@@ -51,42 +51,34 @@ impl<'a> UbifsConfig<'a> {
             return Ok(UbifsConfigResult::Skipped);
         }
 
-        for partition_info in download_list {
-            if !matches!(
-                partition_info.source,
-                super::types::PartitionSource::Firmware
-            ) {
-                continue;
-            }
-            let partition_name = &partition_info.partition_name;
+        let Some(partition_name) = self.find_partition(packer, download_list)? else {
+            self.logger.info("No UBIFS partitions found");
+            return Ok(UbifsConfigResult::NotFound);
+        };
+        let buffer = vec![0u8; UBIFS_CHECK_BUFFER_SIZE];
+        ctx.fes_down(&buffer, 0, FesDataType::Ext4Ubifs)
+            .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
+        self.logger
+            .info(&format!("UBIFS config set for partition {partition_name}"));
+        Ok(UbifsConfigResult::Configured {
+            partition_name: partition_name.into(),
+        })
+    }
 
-            if Self::should_skip_partition(partition_name) {
-                continue;
-            }
-
-            self.logger
-                .debug(&format!("Checking partition {} for UBIFS", partition_name));
-
-            if self.check_ubifs_magic(&mut *packer, &partition_info.download_subtype)? {
-                self.logger
-                    .info(&format!("Found UBIFS partition: {}", partition_name));
-
-                let buffer = vec![0u8; UBIFS_CHECK_BUFFER_SIZE];
-                ctx.fes_down(&buffer, 0, FesDataType::Ext4Ubifs)
-                    .map_err(|e| FlashError::UsbTransferError(e.to_string()))?;
-
-                self.logger.info(&format!(
-                    "UBIFS config set for partition {}",
-                    partition_name
-                ));
-                return Ok(UbifsConfigResult::Configured {
-                    partition_name: partition_name.clone(),
-                });
+    pub(crate) fn find_partition<'p>(
+        &self,
+        packer: &mut crate::firmware::OpenixPacker,
+        download_list: &'p [super::types::PartitionDownloadInfo],
+    ) -> FlashResult<Option<&'p str>> {
+        for item in download_list {
+            if matches!(item.source, super::types::PartitionSource::Firmware)
+                && !Self::should_skip_partition(&item.partition_name)
+                && self.check_ubifs_magic(packer, &item.download_subtype)?
+            {
+                return Ok(Some(&item.partition_name));
             }
         }
-
-        self.logger.info("No UBIFS partitions found");
-        Ok(UbifsConfigResult::NotFound)
+        Ok(None)
     }
 
     /// Check if partition should be skipped

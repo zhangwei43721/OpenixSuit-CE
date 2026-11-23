@@ -10,12 +10,17 @@ pub mod fel_handler;
 pub mod fes_handler;
 pub mod protocol;
 pub mod request;
+pub mod write_plan;
 
 pub use events::{FlashEvent, FlashEventSink, FlashLogLevel};
 pub use fel_handler::FelHandler;
 pub use fes_handler::FesHandler;
 pub use request::{
     CustomFlashLayout, DeviceSelector, ExternalPartition, FlashMode, FlashRequest, PostAction,
+};
+pub use write_plan::{
+    preview_write_plan, validate_boot_payloads_for_device, BootComponentPlan, ConditionalWritePlan,
+    ErasePlan, FlashWritePlan, MbrPartitionPlan, MbrPlan, PayloadPlan, RamStagingPlan,
 };
 
 use crate::firmware::OpenixPacker;
@@ -94,6 +99,10 @@ impl Default for ReconnectPolicy {
     }
 }
 
+pub struct FlashCompletion {
+    pub post_action: FlashResult<()>,
+}
+
 /// Main flash controller
 ///
 /// Coordinates the flashing process including FEL initialization,
@@ -160,23 +169,28 @@ impl<B: DeviceBackend> Flasher<B> {
         }
     }
 
-    /// Execute the flash process
-    ///
-    /// This is the main entry point for the flashing process.
-    /// It handles both FEL and FES mode devices.
+    /// Execute the flash process and the requested post-flash action.
     pub async fn execute(&mut self) -> FlashResult<()> {
+        self.execute_with_outcome().await?.post_action
+    }
+
+    /// Return the post-flash action separately once all firmware writes have succeeded.
+    pub async fn execute_with_outcome(&mut self) -> FlashResult<FlashCompletion> {
         let result = self.execute_inner().await;
-        if result.is_err() {
+        if result
+            .as_ref()
+            .map_or(true, |outcome| outcome.post_action.is_err())
+        {
             self.logger.finish_progress();
         }
         result
     }
 
-    async fn execute_inner(&mut self) -> FlashResult<()> {
+    async fn execute_inner(&mut self) -> FlashResult<FlashCompletion> {
         self.check_cancelled()?;
         let fes_data = self.packer.get_fes().map_err(|_| FlashError::FesNotFound)?;
 
-        let mut ctx = self.open_device()?;
+        let (mut ctx, location) = self.open_device()?;
 
         let mode = self.backend.device_mode(&ctx);
         self.logger.info(&format!("Device mode: {:?}", mode));
@@ -198,17 +212,17 @@ impl<B: DeviceBackend> Flasher<B> {
         self.logger.complete_stage();
 
         if has_fel {
-            ctx = self.prepare_fel_mode(ctx, &fes_data).await?;
+            ctx = self.prepare_fel_mode(ctx, &fes_data, location).await?;
         }
 
         self.run_fes_mode(&ctx).await?;
-        self.apply_post_action(&ctx).await?;
-
-        Ok(())
+        Ok(FlashCompletion {
+            post_action: self.apply_post_action(&ctx).await,
+        })
     }
 
     /// Open the selected device, or the first detected device when no full selector is provided.
-    fn open_device(&self) -> FlashResult<B::Context> {
+    fn open_device(&self) -> FlashResult<(B::Context, DeviceLocation)> {
         let location = if let Some((bus, port)) = self.request.device.selected_pair() {
             DeviceLocation { bus, port }
         } else {
@@ -222,6 +236,7 @@ impl<B: DeviceBackend> Flasher<B> {
 
         self.backend
             .open_device(location)
+            .map(|context| (context, location))
             .map_err(FlashError::DeviceOpenFailed)
     }
 
@@ -229,6 +244,7 @@ impl<B: DeviceBackend> Flasher<B> {
         &mut self,
         mut ctx: B::Context,
         fes_data: &[u8],
+        location: DeviceLocation,
     ) -> FlashResult<B::Context> {
         self.logger.begin_stage(StageType::FelDram);
         let fel_handler = FelHandler::new(&self.logger);
@@ -266,7 +282,7 @@ impl<B: DeviceBackend> Flasher<B> {
         self.logger.complete_stage();
 
         self.logger.begin_stage(StageType::FelReconnect);
-        let ctx = self.reconnect_device().await?;
+        let ctx = self.reconnect_device(location).await?;
         self.logger.complete_stage();
 
         Ok(ctx)
@@ -295,7 +311,7 @@ impl<B: DeviceBackend> Flasher<B> {
     }
 
     /// Reconnect to device after FEL mode operations
-    async fn reconnect_device(&self) -> FlashResult<B::Context> {
+    async fn reconnect_device(&self, location: DeviceLocation) -> FlashResult<B::Context> {
         let timeout = self.reconnect_policy.startup_timeout;
         let deadline = tokio::time::Instant::now() + timeout;
         let timeout_seconds = timeout.as_secs();
@@ -331,25 +347,23 @@ impl<B: DeviceBackend> Flasher<B> {
                 }
             };
 
-            let found_devices = !devices.is_empty();
-            for dev in devices {
-                let Ok(new_ctx) = self.backend.open_device(dev) else {
-                    continue;
-                };
-
-                if self.backend.device_mode(&new_ctx) == libefex::DeviceMode::Srv {
-                    self.logger.debug(&format!(
-                        "Device found at bus {}, port {}",
-                        dev.bus, dev.port
-                    ));
-                    return Ok(new_ctx);
+            let matches = devices.iter().filter(|device| **device == location).count();
+            if matches == 1 {
+                if let Ok(new_ctx) = self.backend.open_device(location) {
+                    if self.backend.device_mode(&new_ctx) == libefex::DeviceMode::Srv {
+                        self.logger.debug(&format!(
+                            "Device found at bus {}, port {}",
+                            location.bus, location.port
+                        ));
+                        return Ok(new_ctx);
+                    }
                 }
             }
-
-            if found_devices {
-                self.logger.debug(&format!(
-                    "Reconnect attempt {attempts} (FES device not ready)"
-                ));
+            if matches > 1 {
+                return Err(FlashError::DeviceOpenFailed(format!(
+                    "Multiple devices share bus {}, port {}",
+                    location.bus, location.port
+                )));
             }
 
             if tokio::time::Instant::now() >= deadline {
@@ -588,6 +602,10 @@ mod tests {
             Err("scan".into()),
             Ok(vec![DeviceLocation { bus: 1, port: 2 }]),
             Ok(vec![DeviceLocation { bus: 3, port: 4 }]),
+            Ok(vec![
+                DeviceLocation { bus: 3, port: 4 },
+                DeviceLocation { bus: 1, port: 2 },
+            ]),
         ]);
         backend
             .opens
@@ -600,8 +618,14 @@ mod tests {
             logger.clone(),
             backend,
         );
-        flasher.reconnect_device().await.unwrap();
-        assert_eq!(flasher.backend.open_calls.borrow().len(), 2);
+        flasher
+            .reconnect_device(DeviceLocation { bus: 1, port: 2 })
+            .await
+            .unwrap();
+        assert_eq!(
+            *flasher.backend.open_calls.borrow(),
+            [DeviceLocation { bus: 1, port: 2 }; 2]
+        );
 
         let backend = MockDeviceBackend::default();
         backend
@@ -616,7 +640,9 @@ mod tests {
             backend,
         );
         assert!(matches!(
-            flasher.reconnect_device().await,
+            flasher
+                .reconnect_device(DeviceLocation { bus: 1, port: 2 })
+                .await,
             Err(FlashError::UbootStartupTimeout { .. })
         ));
     }
@@ -832,7 +858,10 @@ mod tests {
             .borrow()
             .iter()
             .any(|download| download.data_type == FesDataType::Preboot));
-        assert_eq!(flasher.backend.open_calls.borrow().len(), 2);
+        assert_eq!(
+            *flasher.backend.open_calls.borrow(),
+            [DeviceLocation { bus: 1, port: 2 }; 2]
+        );
         crate::process::global_progress::set_tui_mode(false);
     }
 

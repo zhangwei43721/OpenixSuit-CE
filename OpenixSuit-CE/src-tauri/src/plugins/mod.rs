@@ -83,10 +83,6 @@ pub enum U64OrVar {
     Expr(String),
 }
 
-fn default_flash_mode() -> String {
-    "full_erase".to_string()
-}
-
 fn default_post_action() -> String {
     "reboot".to_string()
 }
@@ -141,7 +137,6 @@ pub enum StepAction {
     #[serde(rename = "efex.flash")]
     EfexFlash {
         firmware_path: String,
-        #[serde(default = "default_flash_mode")]
         mode: String,
         #[serde(default)]
         partitions: StringListOrVar,
@@ -1147,17 +1142,21 @@ pub async fn execute_plugin_with_handle(
                             step_tag, fw_path, mode_val, post_val
                         ),
                     );
-                    efex::run_flash_firmware_full_unlocked(
+                    efex::standard_flash::run_plugin_flash(
                         app,
                         state,
                         source,
-                        fw_path,
-                        mode_val,
-                        parts,
-                        verify_val,
-                        post_val,
-                        None,
-                        None,
+                        efex::standard_flash::StandardFlashOptions {
+                            firmware_path: fw_path,
+                            mode: mode_val,
+                            partitions: parts,
+                            verify: verify_val,
+                            post_action: post_val,
+                            bus: None,
+                            port: None,
+                            confirm_plan: None,
+                            boot_check: None,
+                        },
                     )
                     .await?;
                 }
@@ -1319,7 +1318,7 @@ mod tests {
                 { "action": "adb.pull", "remote_path": "/tmp/a", "local_path": "./a" },
                 { "action": "adb.reboot" },
                 { "action": "adb.reboot_efex" },
-                { "action": "efex.flash", "firmware_path": "{{fw}}", "verify": "{{flag}}" },
+                { "action": "efex.flash", "firmware_path": "{{fw}}", "mode": "keep_data", "verify": "{{flag}}" },
                 { "action": "efex.raw", "boot_firmware": "{{fw}}", "raw_image": "disk.img", "logic_offset": "0x1000" }
             ]
         }"#;

@@ -7,7 +7,7 @@
 use crate::config::boot_header::UBootHeader;
 use crate::firmware::types::*;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 /// Suffix appended to partition download file names
@@ -128,6 +128,13 @@ impl OpenixPacker {
         self.image_loaded = true;
 
         Ok(())
+    }
+
+    /// Copy the image from the same open file used to read its payloads.
+    pub fn copy_image_to(&mut self, mut writer: impl Write) -> Result<u64, PackerError> {
+        let file = self.file.as_mut().ok_or(PackerError::ImageNotLoaded)?;
+        file.seek(SeekFrom::Start(0))?;
+        Ok(std::io::copy(file, &mut writer)?)
     }
 
     /// Check if image is loaded
@@ -313,6 +320,15 @@ impl OpenixPacker {
             file_header.offset(header_version),
             file_header.original_length(header_version),
         ))
+    }
+
+    /// Check that the given payload range lies inside the open image.
+    pub fn contains_image_range(&self, offset: u64, length: u64) -> bool {
+        self.file
+            .as_ref()
+            .and_then(|file| file.metadata().ok())
+            .zip(offset.checked_add(length))
+            .is_some_and(|(metadata, end)| end <= metadata.len() && usize::try_from(length).is_ok())
     }
 
     /// Read data at specified offset

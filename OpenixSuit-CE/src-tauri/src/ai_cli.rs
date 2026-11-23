@@ -89,8 +89,25 @@ enum Commands {
     /// Flash an IMAGEWTY firmware to a FEL/FES device
     Flash {
         firmware_path: String,
-        #[arg(long, default_value = "full_erase")]
+        #[arg(long, value_parser = ["partition", "keep_data", "partition_erase", "full_erase"])]
         mode: String,
+        /// Show the write plan without opening the flash device
+        #[arg(long, conflicts_with = "confirm_plan", required_unless_present = "confirm_plan")]
+        dry_run: bool,
+        /// Plan ID returned by --dry-run for this firmware and selection
+        #[arg(long)]
+        confirm_plan: Option<String>,
+        /// Exact ADB target to wait for after reboot
+        #[arg(long)]
+        adb_target: Option<String>,
+        #[arg(long, requires = "adb_target")]
+        expected_slot: Option<String>,
+        #[arg(long, requires_all = ["adb_target", "expected_sha256"])]
+        executable_path: Option<String>,
+        #[arg(long, requires = "executable_path")]
+        expected_sha256: Option<String>,
+        #[arg(long, requires = "adb_target")]
+        boot_timeout_ms: Option<u64>,
         #[arg(long = "partition")]
         partitions: Vec<String>,
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
@@ -279,7 +296,8 @@ fn read_json_object(path: &Path) -> Result<Map<String, Value>, String> {
 fn send_http(addr: &str, method: &str, path: &str, body: Option<Value>) -> Result<(u16, Value), String> {
     let mut stream = TcpStream::connect(addr)
         .map_err(|e| format!("Failed to connect to OpenixSuit-CE IPC ({}): {}", addr, e))?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(600)));
+    let read_timeout_secs = if path == "/api/flash/execute" { 720 } else { 600 };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(read_timeout_secs)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
 
     let body_bytes = match body {
@@ -431,6 +449,13 @@ where
         Commands::Flash {
             firmware_path,
             mode,
+            dry_run,
+            confirm_plan,
+            adb_target,
+            expected_slot,
+            executable_path,
+            expected_sha256,
+            boot_timeout_ms,
             partitions,
             verify,
             post_action,
@@ -438,8 +463,18 @@ where
             port,
         } => (
             "POST",
-            "/api/flash".to_string(),
+            if dry_run { "/api/flash/plan" } else { "/api/flash/execute" }.to_string(),
             Some(json!({
+                "confirm_plan": confirm_plan,
+                "boot_check": adb_target.map(|target| json!({
+                    "adbTarget": target,
+                    "expectedSlot": expected_slot,
+                    "programCheck": executable_path.map(|path| json!({
+                        "executablePath": path,
+                        "expectedSha256": expected_sha256,
+                    })),
+                    "timeoutMs": boot_timeout_ms,
+                })),
                 "firmware_path": firmware_path,
                 "mode": mode,
                 "partitions": partitions,
@@ -689,4 +724,22 @@ where
 
 pub fn run() -> ExitCode {
     run_from_args(std::env::args_os())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::{error::ErrorKind, Parser};
+
+    #[test]
+    fn standard_flash_requires_mode_and_one_confirmation_route() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["openixsuit-ai", "flash", "firmware.img"].into_iter().chain(args.iter().copied()));
+        let missing = parse(&["--dry-run"]).err().unwrap();
+        assert_eq!(missing.kind(), ErrorKind::MissingRequiredArgument);
+        assert!(missing.to_string().contains("--mode"));
+        assert!(parse(&["--mode", "full_erase"]).is_err());
+        assert!(parse(&["--mode", "full_erase", "--dry-run"]).is_ok());
+        assert!(parse(&["--mode", "full_erase", "--confirm-plan", "plan"]).is_ok());
+        assert!(parse(&["--mode", "full_erase", "--dry-run", "--confirm-plan", "plan"]).is_err());
+    }
 }

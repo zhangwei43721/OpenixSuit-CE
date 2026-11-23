@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { FlashPlanDialog, type FlashPlan } from "./FlashPlanDialog";
+import type { FelDevice } from "../components/TopBar";
 import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult } from "./FlashHub";
 import { SectorFlash } from "./SectorFlash";
@@ -8,6 +10,7 @@ import { SectorFlash } from "./SectorFlash";
 interface FirmwareFlashProps {
   active?: boolean;
   firmwarePath: string;
+  felDevices: FelDevice[];
   inspectInfo: SharedImageInspectResult | null;
   isFlashing: boolean;
   onFlashingChange: (flashing: boolean) => void;
@@ -59,9 +62,44 @@ export function FirmwareFlash(props: FirmwareFlashProps) {
   );
 }
 
+type FlashMode = "full_erase" | "keep_data" | "partition_erase" | "partition";
+
+interface FlashOptions {
+  firmware_path: string;
+  mode: FlashMode;
+  partitions: string[];
+  verify: boolean;
+  post_action: "reboot" | "poweroff";
+  bus: number | null;
+  port: number | null;
+  boot_check: {
+    adbTarget: string;
+    expectedSlot: string | null;
+    programCheck: { executablePath: string; expectedSha256: string } | null;
+  } | null;
+}
+
+interface BootCheck {
+  status: "passed" | "failed" | "timed_out" | "skipped";
+  expected?: string;
+  observed?: string;
+  message?: string;
+}
+
+interface FlashResult {
+  flash: { status: "completed" | "failed"; error?: string };
+  boot: {
+    status: BootCheck["status"];
+    adbReconnect: BootCheck;
+    bootSlot: BootCheck;
+    program: BootCheck;
+  };
+}
+
 function StandardFlash({
   active = true,
   firmwarePath,
+  felDevices,
   inspectInfo,
   isFlashing,
   onFlashingChange,
@@ -70,18 +108,26 @@ function StandardFlash({
 }: FirmwareFlashProps) {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<string[]>([]);
-  const [mode, setMode] = useState<"full_erase" | "keep_data" | "partition_erase" | "partition">(
-    () =>
-      (localStorage.getItem("flash_mode") as
-        | "full_erase"
-        | "keep_data"
-        | "partition_erase"
-        | "partition") || "full_erase"
-  );
+  const [mode, setMode] = useState<FlashMode | "">(() => {
+    const saved = localStorage.getItem("flash_mode");
+    return saved === "keep_data" || saved === "partition_erase" || saved === "partition" ? saved : "";
+  });
   const partitionOnly = mode === "partition";
-  const canStart = !isFlashing && Boolean(firmwarePath) && (!partitionOnly || selected.length > 0);
+  const [felTarget, setFelTarget] = useState("");
+  const deviceId = felDevices.length === 1 ? felDevices[0].id : felTarget;
+  const devicePair = /^bus:(\d+)-port:(\d+)$/.exec(deviceId);
+  const targetSelected = felDevices.length <= 1 || felDevices.some((device) => device.id === deviceId);
+  const canStart = !isFlashing && firmwarePath && mode && targetSelected && (!partitionOnly || selected.length > 0);
   const [verify, setVerify] = useState(true);
   const [postAction, setPostAction] = useState<"reboot" | "poweroff">("reboot");
+  const [adbTarget, setAdbTarget] = useState("");
+  const [expectedSlot, setExpectedSlot] = useState("");
+  const [executablePath, setExecutablePath] = useState("");
+  const [expectedSha256, setExpectedSha256] = useState("");
+  const [result, setResult] = useState<FlashResult | null>(null);
+  const [writing, setWriting] = useState(false);
+  const [verifyingBoot, setVerifyingBoot] = useState(false);
+  const [pending, setPending] = useState<{ plan: FlashPlan; options: FlashOptions; deviceId: string } | null>(null);
   const [progress, setProgress] = useState<{
     partition: string;
     written: number;
@@ -103,7 +149,8 @@ function StandardFlash({
 
   useEffect(() => {
     setProgress(null);
-    setSelected(inspectInfo ? inspectInfo.partitions.map((p) => p.name) : []);
+    setSelected([]);
+    setResult(null);
   }, [inspectInfo]);
 
   useEffect(() => {
@@ -129,7 +176,14 @@ function StandardFlash({
         appendFlashLine(`[${e.payload.stage || "FLASH"}] ${warnTag}${e.payload.message}`);
       }
     );
+    const unlistenResult = listen<FlashResult>("standard-flash-result", (e) => {
+      setResult(e.payload);
+      setVerifyingBoot(false);
+    });
+    const unlistenVerifying = listen("standard-flash-verifying", () => setVerifyingBoot(true));
     return () => {
+      unlistenVerifying.then((fn) => fn());
+      unlistenResult.then((fn) => fn());
       unlistenProgress.then((fn) => fn());
       unlistenLog.then((fn) => fn());
     };
@@ -145,26 +199,56 @@ function StandardFlash({
     if (!canStart) return;
     onFlashingChange(true);
     setErrorMsg(null);
-    pushLog(`Flash started: ${mode}`);
+    setResult(null);
+    const options: FlashOptions = {
+      firmware_path: firmwarePath,
+      mode,
+      partitions: partitionOnly ? selected : [],
+      verify,
+      post_action: postAction,
+      bus: devicePair ? Number(devicePair[1]) : null,
+      port: devicePair ? Number(devicePair[2]) : null,
+      boot_check: postAction === "reboot" && adbTarget.trim() ? {
+        adbTarget: adbTarget.trim(),
+        expectedSlot: expectedSlot || null,
+        programCheck: executablePath.trim() || expectedSha256.trim() ? {
+          executablePath: executablePath.trim(),
+          expectedSha256: expectedSha256.trim(),
+        } : null,
+      } : null,
+    };
     try {
-      const res = await invoke<string | void>("flash_firmware_full", {
-        firmwarePath,
-        mode,
-        partitions: partitionOnly ? selected : [],
-        verify,
-        postAction,
-        bus: null,
-        port: null,
+      const plan = await invoke<FlashPlan>("flash_firmware_plan", { options });
+      setPending({ plan, options, deviceId });
+    } catch (err) {
+      setErrorMsg(String(err));
+      onFlashingChange(false);
+    }
+  };
+
+  const confirmFlash = async () => {
+    if (!pending) return;
+    const { plan, options } = pending;
+    setPending(null);
+    setWriting(true);
+    pushLog(`Flash started: ${options.mode}`);
+    try {
+      const report = await invoke<FlashResult>("flash_firmware_full", {
+        options: { ...options, confirm_plan: plan.id },
       });
-      if (typeof res === "string" && res) pushLog(res);
-      pushLog("Flash completed");
-      onFlashComplete?.("completed", mode, "Flash completed");
+      setResult(report);
+      const completed = report.flash.status === "completed";
+      const bootOk = report.boot.status === "passed" || report.boot.status === "skipped";
+      const msg = report.flash.error || `${t(`flash.result.flash_${report.flash.status}`)} · ${t("flash.result.boot")} ${t(`flash.result.${report.boot.status}`)}`;
+      pushLog(msg);
+      onFlashComplete?.(completed && bootOk ? "completed" : "error", options.mode, msg);
     } catch (err) {
       const msg = String(err);
       setErrorMsg(msg);
       pushLog(msg);
-      onFlashComplete?.("error", mode, msg);
     } finally {
+      setWriting(false);
+      setVerifyingBoot(false);
       onFlashingChange(false);
     }
   };
@@ -180,6 +264,33 @@ function StandardFlash({
   return (
     <div className="flex h-full flex-col gap-3">
       {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
+      {pending && (
+        <FlashPlanDialog
+          plan={pending.plan}
+          deviceId={pending.deviceId}
+          onCancel={() => { setPending(null); onFlashingChange(false); }}
+          onConfirm={confirmFlash}
+        />
+      )}
+      {result && (
+        <section className="ui-card px-4 py-2.5 text-xs" aria-live="polite">
+          <div className="font-semibold">{t(`flash.result.flash_${result.flash.status}`)}</div>
+          {result.flash.error && <p className="break-words text-red-600 dark:text-red-300">{result.flash.error}</p>}
+          {([
+            ["adb", result.boot.adbReconnect],
+            ["slot", result.boot.bootSlot],
+            ["program", result.boot.program],
+          ] as const).map(([name, check]) => (
+            <div key={name} className="mt-1 break-all">
+              <span className="font-medium">{t(`flash.result.${name}`)}</span>{" · "}
+              {t(`flash.result.${check.status}`)}
+              {check.observed && ` · ${check.observed}`}
+              {check.expected && check.expected !== check.observed && ` · ${t("flash.result.expected", { value: check.expected })}`}
+              {check.message && ` · ${check.message}`}
+            </div>
+          ))}
+        </section>
+      )}
 
       <div className="grid grid-cols-2 gap-3">
         <div className="ui-card flex flex-col overflow-hidden text-xs">
@@ -194,19 +305,20 @@ function StandardFlash({
                 disabled={isFlashing}
                 value={mode}
                 onChange={(e) => {
-                  const next = e.target.value as "full_erase" | "keep_data" | "partition_erase" | "partition";
+                  const next = e.target.value as FlashMode;
                   setMode(next);
                   localStorage.setItem("flash_mode", next);
                 }}
                 className="ui-select w-full"
               >
+                <option value="" disabled>{t("flash.selectMode")}</option>
                 <option value="full_erase">{t("flash.fullErase")}</option>
                 <option value="keep_data">{t("flash.keepData")}</option>
                 <option value="partition_erase">{t("flash.partitionErase")}</option>
                 <option value="partition">{t("flash.partitionOnly")}</option>
               </select>
               <p id="flash-mode-description" className="leading-relaxed text-slate-600 dark:text-slate-300">
-                {t(`flash.modeDescription.${mode}`)}
+                {mode && t(`flash.modeDescription.${mode}`)}
               </p>
             </div>
             <label className="flex cursor-pointer items-center gap-2 text-slate-700 dark:text-slate-200">
@@ -231,6 +343,44 @@ function StandardFlash({
                 <option value="poweroff">{t("flash.poweroff")}</option>
               </select>
             </div>
+            {felDevices.length > 1 && (
+              <label className="space-y-1">
+                <span>{t("flash.felTarget")}</span>
+                <select className="ui-select w-full" value={felTarget} disabled={isFlashing} onChange={(e) => setFelTarget(e.target.value)}>
+                  <option value="">{t("flash.selectDevice")}</option>
+                  {felDevices.map((device) => <option key={device.id} value={device.id}>{device.id} · {device.chip}</option>)}
+                </select>
+              </label>
+            )}
+            {postAction === "reboot" && (
+              <details className="space-y-2">
+                <summary className="cursor-pointer font-medium">{t("flash.result.boot")}</summary>
+                <label className="block space-y-1">
+                  <span>{t("flash.adbTarget")}</span>
+                  <input className="ui-input w-full" disabled={isFlashing} value={adbTarget} onChange={(e) => setAdbTarget(e.target.value)} placeholder="adb-usb:usb:1-3#20080411" />
+                </label>
+                {adbTarget.trim() && (
+                  <div className="space-y-2">
+                    <label className="flex items-center justify-between gap-2">
+                      <span>{t("flash.expectedSlot")}</span>
+                      <select className="ui-select" disabled={isFlashing} value={expectedSlot} onChange={(e) => setExpectedSlot(e.target.value)}>
+                        <option value="">{t("flash.observeSlot")}</option>
+                        <option value="a">A</option>
+                        <option value="b">B</option>
+                      </select>
+                    </label>
+                    <label className="block space-y-1">
+                      <span>{t("flash.executablePath")}</span>
+                      <input className="ui-input w-full" disabled={isFlashing} value={executablePath} onChange={(e) => setExecutablePath(e.target.value)} placeholder="/usr/bin/app" />
+                    </label>
+                    <label className="block space-y-1">
+                      <span>{t("flash.expectedSha256")}</span>
+                      <input className="ui-input w-full" disabled={isFlashing} value={expectedSha256} onChange={(e) => setExpectedSha256(e.target.value)} />
+                    </label>
+                  </div>
+                )}
+              </details>
+            )}
           </div>
         </div>
         <div className="ui-card flex flex-col overflow-hidden text-xs">
@@ -265,9 +415,9 @@ function StandardFlash({
                 onClick={startFlash}
                 className="ui-btn-primary flex-1 py-2"
               >
-                {isFlashing ? t("flash.flashing") : t("flash.start")}
+                {verifyingBoot ? t("flash.verifyingBoot") : isFlashing ? t("flash.flashing") : t("flash.previewPlan")}
               </button>
-              {isFlashing && (
+              {writing && !verifyingBoot && (
                 <button
                   onClick={cancelFlash}
                   className="ui-btn-danger py-2"

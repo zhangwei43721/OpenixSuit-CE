@@ -420,6 +420,7 @@ export default function App() {
           {visitedTabs.firmware && (
             <div className={activeTab === "firmware" ? "h-full" : "hidden"}>
               <FlashHub
+                felDevices={felDevices}
                 isFlashing={isFlashing}
                 onFlashingChange={setIsFlashing}
                 onLog={appendLog}

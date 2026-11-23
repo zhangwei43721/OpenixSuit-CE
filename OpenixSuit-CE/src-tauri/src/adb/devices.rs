@@ -43,7 +43,7 @@ impl AdbDevice {
     }
 }
 
-fn adb_command() -> Command {
+pub(crate) fn adb_command() -> Command {
     let command = Command::new("adb");
     #[cfg(windows)]
     let command = {
@@ -55,7 +55,7 @@ fn adb_command() -> Command {
     command
 }
 
-fn parse_devices(output: &str) -> Vec<AdbDevice> {
+pub(crate) fn parse_devices(output: &str) -> Vec<AdbDevice> {
     output
         .lines()
         .skip_while(|line| !line.starts_with("List of devices attached"))
@@ -123,7 +123,7 @@ pub(super) fn list_devices() -> Result<Vec<AdbDevice>, String> {
     }
 }
 
-fn select_device(devices: Vec<AdbDevice>, selector: &str) -> Result<AdbDevice, String> {
+pub(crate) fn select_device(devices: Vec<AdbDevice>, selector: &str) -> Result<AdbDevice, String> {
     let mut matches = devices.into_iter().filter(|device| {
         selector.is_empty() || device.target() == selector || device.serial == selector
     });

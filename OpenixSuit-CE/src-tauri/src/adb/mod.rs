@@ -17,7 +17,7 @@ use std::os::unix::process::CommandExt;
 mod devices;
 pub use devices::AdbDevice;
 use devices::get_server_device;
-pub(crate) use devices::resolve_device;
+pub(crate) use devices::{adb_command, parse_devices, resolve_device, select_device};
 
 #[derive(Serialize)]
 pub struct AdbFileEntry {

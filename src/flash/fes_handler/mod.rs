@@ -9,7 +9,7 @@ mod erase_flag;
 mod mbr_download;
 mod partition;
 mod partition_planner;
-mod types;
+pub(crate) mod types;
 mod ubifs_config;
 
 pub use boot_download::BootDownload;
@@ -20,9 +20,10 @@ pub use partition_planner::PartitionPlanner;
 pub use ubifs_config::UbifsConfig;
 
 use crate::config::boot_header::get_sunxi_boot_file_mode_string;
-use crate::config::mbr_parser::{MbrInfo, SunxiMbr};
+use crate::config::mbr_parser::MbrInfo;
 use crate::firmware::{OpenixPacker, StorageType};
 use crate::flash::protocol::FesOps;
+use crate::flash::write_plan::resolve_write_inputs;
 use crate::flash::{CustomFlashLayout, FlashMode, FlashRequest};
 use crate::process::StageType;
 use crate::utils::{FlashError, FlashResult, Logger};
@@ -107,6 +108,15 @@ impl<'a> FesHandler<'a> {
         self.logger.complete_stage();
 
         self.check_cancelled()?;
+        let resolved = resolve_write_inputs(packer, request)?;
+        let mbr_data = resolved.mbr_data;
+        let mbr_info = resolved.mbr_info;
+        let download_list = resolved.downloads;
+        let prepared_boot =
+            BootDownload::new(&*self.logger).prepare_images(packer, secure, storage_type)?;
+
+        self.logger
+            .info(&format!("Found {} partitions in MBR", mbr_info.part_count));
 
         if request.mode != FlashMode::Partition {
             self.logger.begin_stage(StageType::FesErase);
@@ -115,29 +125,7 @@ impl<'a> FesHandler<'a> {
             self.logger.complete_stage();
         }
 
-        self.check_cancelled()?;
         self.logger.begin_stage(StageType::FesMbr);
-
-        let mbr_data = if let Some(layout) = &request.custom_layout {
-            layout.mbr_data.clone()
-        } else if let Some(mbr) = &request.mbr_override {
-            mbr.clone()
-        } else {
-            packer.get_mbr().map_err(|_| FlashError::MbrNotFound)?
-        };
-        let mbr = SunxiMbr::parse(&mbr_data)
-            .map_err(|e| FlashError::InvalidFirmwareFormat(e.to_string()))?;
-        let mbr_info = mbr.to_mbr_info();
-
-        self.logger
-            .info(&format!("Found {} partitions in MBR", mbr_info.part_count));
-
-        let download_list = if let Some(layout) = &request.custom_layout {
-            prepare_custom_downloads(layout, &mbr_info)?
-        } else {
-            let partition_planner = PartitionPlanner::new(&*self.logger);
-            partition_planner.prepare(packer, &mbr_info, request)?
-        };
 
         let ubifs_config = UbifsConfig::new(&*self.logger);
         ubifs_config.execute(
@@ -159,8 +147,8 @@ impl<'a> FesHandler<'a> {
             self.logger.set_partition_stage_weight(total_bytes);
 
             {
-                let mut partition_download =
-                    PartitionDownload::new(&mut *self.logger).with_cancel_flag(self.cancel_flag.clone());
+                let mut partition_download = PartitionDownload::new(&mut *self.logger)
+                    .with_cancel_flag(self.cancel_flag.clone());
                 partition_download
                     .execute(ctx, packer, &download_list, request.verify)
                     .await?;
@@ -172,16 +160,14 @@ impl<'a> FesHandler<'a> {
         self.check_cancelled()?;
         self.logger.begin_stage(StageType::FesBoot);
         let boot_download = BootDownload::new(&*self.logger);
-        boot_download
-            .execute(ctx, packer, secure, storage_type)
-            .await?;
+        boot_download.execute_prepared(ctx, prepared_boot).await?;
         self.logger.complete_stage();
 
         Ok(())
     }
 }
 
-fn prepare_custom_downloads(
+pub(crate) fn prepare_custom_downloads_for_plan(
     layout: &CustomFlashLayout,
     mbr_info: &MbrInfo,
 ) -> FlashResult<Vec<types::PartitionDownloadInfo>> {
@@ -465,5 +451,42 @@ mod tests {
                 .await,
             Err(FlashError::MbrNotFound)
         ));
+    }
+
+    #[tokio::test]
+    async fn invalid_write_inputs_and_missing_boot_payloads_fail_before_erase() {
+        let mbr = mbr_bytes(&[("system", 0x20, 3, false)]);
+        let firmware = test_firmware(&[FirmwareEntry {
+            filename: "sunxi_mbr.fex",
+            maintype: "12345678",
+            subtype: "1234567890___MBR",
+            data: &mbr,
+        }]);
+        let mut packer = OpenixPacker::new();
+        packer.load(firmware.path()).unwrap();
+        let mut logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
+        let ctx = MockProtocol::default();
+        let invalid_selection = FlashRequest::new(
+            DeviceSelector::default(),
+            false,
+            FlashMode::Partition,
+            Some(vec!["ghost".into()]),
+            PostAction::Reboot,
+        );
+        assert!(FesHandler::new(&mut logger)
+            .handle(&ctx, &mut packer, &invalid_selection)
+            .await
+            .is_err());
+        assert!(ctx.downloads.borrow().is_empty());
+
+        let mut logger = Logger::for_events(false, crate::flash::FlashEventSink::none());
+        let ctx = MockProtocol::default();
+        assert!(matches!(
+            FesHandler::new(&mut logger)
+                .handle(&ctx, &mut packer, &request(FlashMode::FullErase))
+                .await,
+            Err(FlashError::Boot1NotFound)
+        ));
+        assert!(ctx.downloads.borrow().is_empty());
     }
 }

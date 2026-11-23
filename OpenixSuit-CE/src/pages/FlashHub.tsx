@@ -13,6 +13,7 @@ import {
   SerialDataPayload,
   SerialPortInfo,
 } from "../types/workbench";
+import type { FelDevice } from "../components/TopBar";
 import { AnsiText } from "../utils/ansi";
 
 export interface SharedPartitionEntry {
@@ -54,10 +55,12 @@ export interface SharedImageInspectResult {
 type FirmwareSubTab = "standard" | "generic" | "converter" | "inspector";
 
 export function FlashHub({
+  felDevices,
   isFlashing,
   onFlashingChange,
   onLog,
 }: {
+  felDevices: FelDevice[];
   isFlashing: boolean;
   onFlashingChange: (v: boolean) => void;
   onLog: (msg: string) => void;
@@ -330,6 +333,7 @@ export function FlashHub({
             <FirmwareFlash
               active={subTab === "standard"}
               firmwarePath={firmwarePath}
+              felDevices={felDevices}
               inspectInfo={inspectInfo}
               isFlashing={isFlashing}
               onFlashingChange={onFlashingChange}

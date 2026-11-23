@@ -1,5 +1,6 @@
 use crate::adb;
 use crate::efex;
+use crate::efex::standard_flash::{self, StandardFlashOptions};
 use crate::log_capture;
 use crate::log_profiles;
 use crate::log_sessions;
@@ -98,33 +99,6 @@ fn default_nor_size() -> u64 {
 }
 fn default_storage_size() -> String {
     "auto".to_string()
-}
-
-#[derive(Deserialize)]
-struct FlashReq {
-    firmware_path: String,
-    #[serde(default = "default_flash_mode")]
-    mode: String,
-    #[serde(default)]
-    partitions: Vec<String>,
-    #[serde(default = "default_true")]
-    verify: bool,
-    #[serde(default = "default_post_action")]
-    post_action: String,
-    #[serde(default)]
-    bus: Option<u8>,
-    #[serde(default)]
-    port: Option<u8>,
-}
-
-fn default_flash_mode() -> String {
-    "full_erase".to_string()
-}
-fn default_true() -> bool {
-    true
-}
-fn default_post_action() -> String {
-    "reboot".to_string()
 }
 
 #[derive(Deserialize)]
@@ -805,32 +779,25 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
             }
         }
 
-        ("POST", "/api/flash") => {
-            let body: FlashReq = match parse_json(&req.body) {
+        ("POST", "/api/flash/plan" | "/api/flash" | "/api/flash/execute") => {
+            let body: StandardFlashOptions = match parse_json(&req.body) {
                 Ok(v) => v,
                 Err((c, e)) => return (c, json!({ "ok": false, "error": e })),
             };
-            match efex::run_flash_firmware_full(
-                app,
-                &state,
-                "ai",
-                body.firmware_path,
-                body.mode,
-                body.partitions,
-                body.verify,
-                body.post_action,
-                body.bus,
-                body.port,
-            )
-            .await
-            {
-                Ok(()) => (200, json!({ "ok": true })),
+            if req.path == "/api/flash/plan" {
+                return match standard_flash::preview(body).await {
+                    Ok(plan) => (200, json!({ "ok": true, "dry_run": true, "plan": plan })),
+                    Err(error) => (400, json!({ "ok": false, "error": error })),
+                };
+            }
+            if body.confirm_plan.as_deref().is_none_or(str::is_empty) {
+                return (400, json!({ "ok": false, "error": "Run flash --dry-run and pass the plan ID using --confirm-plan" }));
+            }
+            match standard_flash::run(app, &state, "ai", body).await {
+                Ok(result) => (200, json!({ "ok": result.ok(), "flash": result.flash, "boot": result.boot })),
                 Err(e) => {
-                    let (code, msg) = map_op_error(e);
-                    if code == 409 {
-                        emit_ai_sync(app, "ai", "flash", "error", msg.clone());
-                    }
-                    (code, json!({ "ok": false, "error": msg }))
+                    let (code, error) = map_op_error(e);
+                    (code, json!({ "ok": false, "error": error }))
                 }
             }
         }

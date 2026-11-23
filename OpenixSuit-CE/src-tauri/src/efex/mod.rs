@@ -3,7 +3,7 @@ use crate::state::{emit_ai_sync, AppState, UsbBackend};
 use libefex::{Context as EfexContext, DeviceMode, FesDataType};
 use openixcli::firmware::OpenixPacker;
 use openixcli::flash::{
-    DeviceSelector, FlashEvent, FlashEventSink, FlashLogLevel, FlashMode, FlashRequest, Flasher,
+    DeviceSelector, FlashCompletion, FlashEvent, FlashEventSink, FlashLogLevel, FlashMode, FlashRequest, Flasher,
     PostAction,
 };
 use openixcli::process::global_progress::set_tui_mode;
@@ -18,7 +18,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 
+mod boot_check;
 mod exit;
+pub(crate) mod standard_flash;
 pub(crate) use exit::{request_exit as request_fes_exit, FesExitAction};
 
 #[derive(Clone, Serialize)]
@@ -207,18 +209,28 @@ fn execute_openix_flash_sync(
     cancel_flag: &Arc<AtomicBool>,
 ) -> Result<(), String> {
     cancel_flag.store(false, Ordering::SeqCst);
+    execute_openix_flash_with_outcome(app, packer, request, cancel_flag)?
+        .post_action.map_err(|error| error.to_string())
+}
+
+fn execute_openix_flash_with_outcome(
+    app: &AppHandle,
+    packer: OpenixPacker,
+    request: FlashRequest,
+    cancel_flag: &Arc<AtomicBool>,
+) -> Result<FlashCompletion, String> {
     set_tui_mode(true);
     let logger = build_flash_logger(app);
     let mut flasher =
         Flasher::new(packer, request, logger).with_cancel_flag(Arc::clone(cancel_flag));
     let res = if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.block_on(flasher.execute())
+        handle.block_on(flasher.execute_with_outcome())
     } else {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
             .map_err(|e| format!("创建异步运行时失败: {}", e))?;
-        rt.block_on(flasher.execute())
+        rt.block_on(flasher.execute_with_outcome())
     };
     res.map_err(|e| e.to_string())
 }
@@ -472,123 +484,6 @@ pub async fn fes_download_partition(
     })
     .await
     .map_err(|e| format!("刷写任务异常: {}", e))?
-}
-
-pub(crate) async fn run_flash_firmware_full_unlocked(
-    app: &AppHandle,
-    state: &AppState,
-    source: &str,
-    firmware_path: String,
-    mode: String,
-    partitions: Vec<String>,
-    verify: bool,
-    post_action: String,
-    bus: Option<u8>,
-    port: Option<u8>,
-) -> Result<(), String> {
-    let flash_mode: FlashMode = mode.parse()?;
-    let action: PostAction = post_action.parse()?;
-    let selected_partitions = if partitions.is_empty() {
-        None
-    } else {
-        Some(partitions)
-    };
-    let request = FlashRequest::new(
-        DeviceSelector::new(bus, port),
-        verify,
-        flash_mode,
-        selected_partitions,
-        action,
-    );
-
-    emit_ai_sync(
-        app,
-        source,
-        "flash",
-        "started",
-        format!("Flashing {} (mode={})", firmware_path, mode),
-    );
-
-    let app_clone = app.clone();
-    let cancel_flag = state.cancel_flash_flag.clone();
-    let fw_path = PathBuf::from(&firmware_path);
-
-    let result = tokio::task::spawn_blocking(move || {
-        let mut packer = OpenixPacker::new();
-        packer
-            .load(&fw_path)
-            .map_err(|e| format!("加载固件失败: {}", e))?;
-        execute_openix_flash_sync(&app_clone, packer, request, &cancel_flag)
-    })
-    .await
-    .map_err(|e| format!("刷写任务异常: {}", e))?;
-
-    match &result {
-        Ok(()) => emit_ai_sync(
-            app,
-            source,
-            "flash",
-            "completed",
-            format!("Flash completed: {}", firmware_path),
-        ),
-        Err(err) => emit_ai_sync(app, source, "flash", "error", err.clone()),
-    }
-    result
-}
-
-pub async fn run_flash_firmware_full(
-    app: &AppHandle,
-    state: &AppState,
-    source: &str,
-    firmware_path: String,
-    mode: String,
-    partitions: Vec<String>,
-    verify: bool,
-    post_action: String,
-    bus: Option<u8>,
-    port: Option<u8>,
-) -> Result<(), String> {
-    let _busy = state.try_acquire_busy("flash")?;
-    run_flash_firmware_full_unlocked(
-        app,
-        state,
-        source,
-        firmware_path,
-        mode,
-        partitions,
-        verify,
-        post_action,
-        bus,
-        port,
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn flash_firmware_full(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    firmware_path: String,
-    mode: String,
-    partitions: Vec<String>,
-    verify: bool,
-    post_action: String,
-    bus: Option<u8>,
-    port: Option<u8>,
-) -> Result<(), String> {
-    run_flash_firmware_full(
-        &app,
-        &state,
-        "gui",
-        firmware_path,
-        mode,
-        partitions,
-        verify,
-        post_action,
-        bus,
-        port,
-    )
-    .await
 }
 
 #[tauri::command]
