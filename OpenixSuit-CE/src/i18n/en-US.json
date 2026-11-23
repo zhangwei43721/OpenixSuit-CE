@@ -45,6 +45,18 @@
     "driver": "Driver & Setup",
     "settings": "Settings"
   },
+  "monitorChart": {
+    "total": "Total CPU",
+    "user": "User",
+    "system": "System",
+    "io": "I/O wait",
+    "used": "Used memory",
+    "cacheAndBuffers": "Cache and buffers",
+    "receive": "Receive rate",
+    "send": "Send rate",
+    "read": "Read rate",
+    "write": "Write rate"
+  },
   "multiLog": {
     "receiveFormat": "Receive format",
     "sendFormat": "Send format",

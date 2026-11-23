@@ -45,6 +45,18 @@
     "driver": "驱动与环境助手",
     "settings": "系统设置"
   },
+  "monitorChart": {
+    "total": "CPU 总占用",
+    "user": "用户态",
+    "system": "系统态",
+    "io": "I/O 等待",
+    "used": "已用内存",
+    "cacheAndBuffers": "缓存和缓冲",
+    "receive": "接收速率",
+    "send": "发送速率",
+    "read": "读取速率",
+    "write": "写入速率"
+  },
   "multiLog": {
     "receiveFormat": "接收格式",
     "sendFormat": "发送格式",

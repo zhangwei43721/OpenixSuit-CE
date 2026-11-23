@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Activity,
@@ -20,6 +20,7 @@ import {
   Timer,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { MonitorLineChart } from "../components/MonitorLineChart";
 import { BatteryInfo, CpuSnapshot, DeviceMetrics, StorageUsage } from "../types/workbench";
 
 interface DeviceMonitorPageProps {
@@ -137,135 +138,12 @@ function storageSize(kb: number): string {
   return `${kb} KB`;
 }
 
-// 统一图表：按容器实际像素宽度 1:1 渲染（viewBox = 实际宽高），
-// 卡片缩放时折线重新排布，字号/线宽保持固定，不再整体机械缩放。
-function LineChart({
-  id,
-  series,
-  max,
-  labelFor,
-  height = 84,
-}: {
-  id: string;
-  series: {
-    values: number[];
-    color: string;
-    strokeWidth?: number;
-    dashed?: boolean;
-    area?: boolean;
-  }[];
-  max: number;
-  labelFor: (value: number) => string;
-  height?: number;
-}) {
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const [w, setW] = useState(0);
-
-  useLayoutEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const measure = () =>
-      setW((prev) => (Math.abs(prev - el.clientWidth) > 1 ? el.clientWidth : prev));
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const padX = 8;
-  const padY = 10;
-  const svgW = Math.max(w, 1);
-  const svgH = height;
-  const safeMax = max > 0 ? max : 1;
-  const areaColor = series.find((s) => s.area)?.color ?? series[0]?.color ?? "#0ea5e9";
-
-  const yOf = (v: number) => {
-    const t = Math.min(100, Math.max(0, (v / safeMax) * 100));
-    return padY + (svgH - padY * 2) * (1 - t / 100);
-  };
-  const pointsOf = (values: number[]) =>
-    values
-      .map((v, i) => {
-        const x =
-          values.length === 1
-            ? padX
-            : padX + (i / (values.length - 1)) * (svgW - padX * 2);
-        return `${x.toFixed(1)},${yOf(v).toFixed(1)}`;
-      })
-      .join(" ");
-  const areaOf = (values: number[]) => {
-    if (values.length === 0) return "";
-    const baseY = svgH - padY;
-    return `M ${padX},${baseY} L ${pointsOf(values).replace(/ /g, " L ")} L ${svgW - padX},${baseY} Z`;
-  };
-
-  return (
-    <div ref={wrapRef} className="w-full">
-      {w > 0 && (
-        <svg
-          width={svgW}
-          height={svgH}
-          viewBox={`0 0 ${svgW} ${svgH}`}
-          className="block overflow-visible"
-        >
-          <defs>
-            <linearGradient id={`${id}Grad`} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={areaColor} stopOpacity="0.35" />
-              <stop offset="100%" stopColor={areaColor} stopOpacity="0.02" />
-            </linearGradient>
-          </defs>
-          {[0, 25, 50, 75, 100].map((pct) => {
-            const y = padY + (svgH - padY * 2) * (1 - pct / 100);
-            return (
-              <g key={pct}>
-                <line
-                  x1={padX}
-                  y1={y}
-                  x2={svgW - padX}
-                  y2={y}
-                  stroke="currentColor"
-                  className="text-slate-200 dark:text-slate-800"
-                  strokeDasharray="3 3"
-                />
-                <text
-                  x={padX + 2}
-                  y={y - 3}
-                  fontSize="9"
-                  className="fill-slate-400 dark:fill-slate-600 font-mono"
-                >
-                  {labelFor((max * pct) / 100)}
-                </text>
-              </g>
-            );
-          })}
-          {series.map((s, i) =>
-            s.values.length === 0 ? null : (
-              <g key={i}>
-                {s.area && <path d={areaOf(s.values)} fill={`url(#${id}Grad)`} />}
-                <polyline
-                  fill="none"
-                  stroke={s.color}
-                  strokeWidth={s.strokeWidth ?? 1.4}
-                  strokeDasharray={s.dashed ? "4 2" : undefined}
-                  strokeOpacity={s.area ? 1 : 0.85}
-                  strokeLinejoin="round"
-                  points={pointsOf(s.values)}
-                />
-              </g>
-            )
-          )}
-        </svg>
-      )}
-    </div>
-  );
-}
-
 export function DeviceMonitorPage({
   serial,
   onLog,
   onNavigateAdbPath,
 }: DeviceMonitorPageProps) {
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const isEn = i18n.language.startsWith("en");
 
   const [samples, setSamples] = useState<DeviceMetrics[]>([]);
@@ -428,6 +306,7 @@ export function DeviceMonitorPage({
 
   // 无窗口切换：始终展示全部保留采样
   const activeWindow = samples;
+  const sampleTimes = useMemo(() => activeWindow.map((sample) => sample.timestamp_ms), [activeWindow]);
 
   const latest = samples[samples.length - 1] ?? null;
 
@@ -830,15 +709,18 @@ export function DeviceMonitorPage({
           </div>
 
           <div className="ui-subcard w-full px-1.5 py-1">
-            <LineChart
+            <MonitorLineChart
               id="cpuChart"
+              sampleTimes={sampleTimes}
+              locale={i18n.language}
+              formatValue={(v) => `${v.toFixed(1)}%`}
               max={100}
               labelFor={(v) => `${Math.round(v)}%`}
               series={[
-                { values: cpuTotalSeries, color: "#0ea5e9", strokeWidth: 2.2, area: true },
-                { values: cpuUserSeries, color: "#10b981" },
-                { values: cpuSysSeries, color: "#f59e0b" },
-                { values: cpuIoSeries, color: "#f43f5e", strokeWidth: 1.3, dashed: true },
+                { label: t("monitorChart.total"), values: cpuTotalSeries, color: "#0ea5e9", strokeWidth: 2.2, area: true },
+                { label: t("monitorChart.user"), values: cpuUserSeries, color: "#10b981" },
+                { label: t("monitorChart.system"), values: cpuSysSeries, color: "#f59e0b" },
+                { label: t("monitorChart.io"), values: cpuIoSeries, color: "#f43f5e", strokeWidth: 1.3, dashed: true },
               ]}
             />
           </div>
@@ -913,13 +795,16 @@ export function DeviceMonitorPage({
           </div>
 
           <div className="ui-subcard w-full px-1.5 py-1">
-            <LineChart
+            <MonitorLineChart
               id="memChart"
+              sampleTimes={sampleTimes}
+              locale={i18n.language}
+              formatValue={(v) => `${v.toFixed(1)}%`}
               max={100}
               labelFor={(v) => `${Math.round(v)}%`}
               series={[
-                { values: memPctSeries, color: "#8b5cf6", strokeWidth: 2.2, area: true },
-                { values: memCachedSeries, color: "#06b6d4", dashed: true },
+                { label: t("monitorChart.used"), values: memPctSeries, color: "#8b5cf6", strokeWidth: 2.2, area: true },
+                { label: t("monitorChart.cacheAndBuffers"), values: memCachedSeries, color: "#06b6d4", dashed: true },
               ]}
             />
           </div>
@@ -1009,15 +894,18 @@ export function DeviceMonitorPage({
           </div>
 
           <div className="ui-subcard w-full px-1.5 py-1">
-            <LineChart
+            <MonitorLineChart
               id="netChart"
+              sampleTimes={sampleTimes}
+              locale={i18n.language}
+              formatValue={formatRate}
               max={Math.max(...netRxSeries, ...netTxSeries, 0)}
               labelFor={(v) =>
                 Math.max(...netRxSeries, ...netTxSeries, 0) > 0 ? formatRate(v) : "0"
               }
               series={[
-                { values: netRxSeries, color: "#06b6d4", strokeWidth: 2.2, area: true },
-                { values: netTxSeries, color: "#10b981", dashed: true },
+                { label: t("monitorChart.receive"), values: netRxSeries, color: "#06b6d4", strokeWidth: 2.2, area: true },
+                { label: t("monitorChart.send"), values: netTxSeries, color: "#10b981", dashed: true },
               ]}
             />
           </div>
@@ -1083,15 +971,18 @@ export function DeviceMonitorPage({
           </div>
 
           <div className="ui-subcard w-full px-1.5 py-1">
-            <LineChart
+            <MonitorLineChart
               id="diskChart"
+              sampleTimes={sampleTimes}
+              locale={i18n.language}
+              formatValue={formatRate}
               max={Math.max(...diskReadSeries, ...diskWriteSeries, 0)}
               labelFor={(v) =>
                 Math.max(...diskReadSeries, ...diskWriteSeries, 0) > 0 ? formatRate(v) : "0"
               }
               series={[
-                { values: diskReadSeries, color: "#f59e0b", strokeWidth: 2.2, area: true },
-                { values: diskWriteSeries, color: "#f43f5e", dashed: true },
+                { label: t("monitorChart.read"), values: diskReadSeries, color: "#f59e0b", strokeWidth: 2.2, area: true },
+                { label: t("monitorChart.write"), values: diskWriteSeries, color: "#f43f5e", dashed: true },
               ]}
             />
           </div>
