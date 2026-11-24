@@ -86,6 +86,8 @@ pub fn run() {
             adb::adb_list_dir_detailed,
             adb::adb_push_file,
             adb::adb_pull_file,
+            adb::file_download::adb_download_file,
+            adb::file_download::adb_download_directory,
             adb::adb_exec_shell,
             adb::adb_root,
             adb::adb_reboot,

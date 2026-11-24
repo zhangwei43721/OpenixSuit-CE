@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open, save } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import Editor from "@monaco-editor/react";
 import {
-  ArrowLeft,
+  ArrowDown,
+  ArrowUp,
   Check,
   Download,
   Edit3,
@@ -23,8 +24,12 @@ import { useTranslation } from "react-i18next";
 import { AdbDetailedFileEntry } from "../types/workbench";
 import Selecto from "react-selecto";
 import { AnsiText } from "../utils/ansi";
+import { AdbFileDownloadStatus, useAdbFileDownloads } from "./AdbFileDownloads";
+import { AdbFileToolbar } from "./AdbFileToolbar";
+import { formatFileSize, matchesFilename, sortFiles, type FileSort } from "./adbFileBrowser";
 
 const STORAGE_PATHS_KEY = "adb_paths_by_serial";
+const VIEW_MODE_KEY = "adb_file_view_mode";
 
 const TEXT_EXTS = new Set([
   "txt", "conf", "cfg", "ini", "json", "xml", "yaml", "yml", "sh", "bash", "zsh",
@@ -97,24 +102,28 @@ export function AdbExplorer({
   jumpRequest?: { path: string; seq: number } | null;
   onLog: (msg: string) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [currentPath, setCurrentPath] = useState(() =>
     serial ? getSavedPathForSerial(serial) : "/"
   );
   const [entries, setEntries] = useState<AdbDetailedFileEntry[]>([]);
   const [selectedNames, setSelectedNames] = useState<string[]>([]);
-  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
+  const [viewMode, setViewMode] = useState<"grid" | "list">(() => localStorage.getItem(VIEW_MODE_KEY) === "list" ? "list" : "grid");
+  const [search, setSearch] = useState("");
+  const [copiedPath, setCopiedPath] = useState("");
+  const [sort, setSort] = useState<{ field: FileSort; descending: boolean }>({ field: "name", descending: false });
+  const visibleEntries = useMemo(() => sortFiles(
+    entries.filter((entry) => matchesFilename(entry.name, search)), sort.field, sort.descending, i18n.language,
+  ), [entries, search, sort, i18n.language]);
+  const downloads = useAdbFileDownloads();
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [cmd, setCmd] = useState(() => localStorage.getItem("adb_last_cmd") || "uname -a");
-  const [shellOutput, setShellOutput] = useState("");
   const [editingFile, setEditingFile] = useState<{ path: string; content: string } | null>(null);
   const [fileViewTab, setFileViewTab] = useState<"editor" | "ansi">("editor");
   const [modal, setModal] = useState<PromptModal>(null);
   const [renamingName, setRenamingName] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [lastClickedName, setLastClickedName] = useState<string | null>(null);
-  const lastClickRef = useRef<{ name: string | null; ts: number }>({ name: null, ts: 0 });
   const renameBusyRef = useRef(false);
   const listWrapRef = useRef<HTMLDivElement | null>(null);
   const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
@@ -135,12 +144,14 @@ export function AdbExplorer({
     setErrorMsg(null);
     setEntries([]);
     setSelectedNames([]);
+    setLastClickedName(null);
     try {
       const list = await invoke<AdbDetailedFileEntry[]>("adb_list_dir_detailed", {
         serial: targetSerial,
         remotePath: path,
       });
       if (reqId !== reqIdRef.current) return;
+      if (currentPathRef.current !== path) setSearch("");
       setCurrentPath(path);
       savePathForSerial(targetSerial, path);
       setEntries(list);
@@ -181,35 +192,51 @@ export function AdbExplorer({
   }, []);
 
   useEffect(() => {
-    setShellOutput("");
+    setSearch("");
     if (serial) {
       const savedPath = getSavedPathForSerial(serial);
       setCurrentPath(savedPath);
       loadDir(serial, savedPath, true);
     } else {
+      reqIdRef.current += 1;
+      setLoading(false);
       setEntries([]);
       setSelectedNames([]);
     }
   }, [serial]);
 
-  useEffect(() => {
-    if (!serial || !jumpRequest?.path) return;
-    const raw = jumpRequest.path.trim();
-    if (!raw.startsWith("/")) return;
-    const normalized = raw.length > 1 ? raw.replace(/\/+$/, "") : "/";
-    if (normalized === "/") {
-      loadDir(serial, "/", false);
-      return;
+  const jumpToPath = async (input: string, fallbackToRoot = false) => {
+    if (!serial) return false;
+    const raw = input.trim();
+    if (!raw.startsWith("/") || /[\x00-\x1f\x7f]/.test(raw)) {
+      setErrorMsg(t("adb.absolutePathRequired"));
+      return false;
     }
-    const lastSlash = normalized.lastIndexOf("/");
-    const parentDir = lastSlash <= 0 ? "/" : normalized.slice(0, lastSlash);
-    const baseName = normalized.slice(lastSlash + 1);
-    loadDir(serial, parentDir, true, baseName).then((list) => {
-      const match = list?.find((item) => item.name === baseName);
-      if (match?.is_dir) {
-        loadDir(serial, normalized, false);
-      }
+    const path = raw.replace(/\/{2,}/g, "/").replace(/\/$/, "") || "/";
+    setSearch("");
+    if (path === "/") return Boolean(await loadDir(serial, "/"));
+    const lastSlash = path.lastIndexOf("/");
+    const parent = path.slice(0, lastSlash) || "/";
+    const name = path.slice(lastSlash + 1);
+    const list = await loadDir(serial, parent, fallbackToRoot, name);
+    if (!list || serialRef.current !== serial) return false;
+    const match = list.find((item) => item.name === name);
+    if (!match) {
+      if (!fallbackToRoot) setErrorMsg(t("adb.pathNotFound", { path }));
+      return false;
+    }
+    if (match.is_dir) return Boolean(await loadDir(serial, path));
+    requestAnimationFrame(() => {
+      const items = listWrapRef.current?.querySelectorAll<HTMLElement>("[data-item-name]");
+      Array.from(items ?? []).find((item) => item.dataset.itemName === name)?.scrollIntoView({ block: "nearest" });
     });
+    return true;
+  };
+
+  const jumpToPathRef = useRef(jumpToPath);
+  jumpToPathRef.current = jumpToPath;
+  useEffect(() => {
+    if (serial && jumpRequest?.path) void jumpToPathRef.current(jumpRequest.path, true);
   }, [serial, jumpRequest]);
 
   const joinPath = (name: string) => (currentPath === "/" ? `/${name}` : `${currentPath}/${name}`);
@@ -273,50 +300,54 @@ export function AdbExplorer({
     }
   };
 
-  const itemMouseDown = (e: ReactMouseEvent, name: string) => {
+  const selectItem = (e: ReactMouseEvent, name: string) => {
     if (e.button !== 0) return;
-    if (renamingName && renamingName !== name) {
-      void commitRename();
-    }
+    e.stopPropagation();
+    if (renamingName === name) return;
     if (e.ctrlKey || e.metaKey) {
-      // Ctrl+click toggles the item without starting a rubber band.
-      e.stopPropagation();
       setSelectedNames((prev) =>
         prev.includes(name) ? prev.filter((x) => x !== name) : [...prev, name]
       );
       setLastClickedName(name);
-      lastClickRef.current = { name: null, ts: 0 };
       return;
     }
     if (e.shiftKey && lastClickedName) {
-      e.stopPropagation();
-      const names = entries.map((entry) => entry.name);
+      const names = visibleEntries.map((entry) => entry.name);
       const from = names.indexOf(lastClickedName);
       const to = names.indexOf(name);
       if (from >= 0 && to >= 0) {
         const [lo, hi] = from < to ? [from, to] : [to, from];
         setSelectedNames(names.slice(lo, hi + 1));
+        return;
       }
-      lastClickRef.current = { name: null, ts: 0 };
-      return;
     }
-    e.stopPropagation();
-    if (!selectedNames.includes(name)) {
-      setSelectedNames([name]);
-    }
+    setSelectedNames([name]);
     setLastClickedName(name);
   };
 
-  const itemClick = (name: string) => {
-    const now = Date.now();
-    const prev = lastClickRef.current;
-    if (prev.name === name && now - prev.ts > 400 && renamingName !== name) {
-      // Two clicks on the same name spaced wider than a double-click: inline rename.
-      lastClickRef.current = { name: null, ts: 0 };
-      beginRename(name);
-      return;
+  const openItem = (item: AdbDetailedFileEntry) => {
+    if (renamingName === item.name) return;
+    if (item.is_dir) void loadDir(serial, joinPath(item.name));
+    else void handleOpenFile(item.name);
+  };
+
+  const openOnDoubleClick = (event: ReactMouseEvent, item: AdbDetailedFileEntry) => {
+    if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+      openItem(item);
     }
-    lastClickRef.current = { name, ts: now };
+  };
+
+  const handleItemKeyDown = (event: ReactKeyboardEvent, item: AdbDetailedFileEntry) => {
+    if (event.target !== event.currentTarget || renamingName || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      openItem(item);
+    } else if (event.key === " " || event.key === "F2") {
+      event.preventDefault();
+      setSelectedNames([item.name]);
+      setLastClickedName(item.name);
+      if (event.key === "F2") beginRename(item.name);
+    }
   };
 
   const containerMouseDown = (e: ReactMouseEvent<HTMLDivElement>) => {
@@ -327,7 +358,6 @@ export function AdbExplorer({
       // Blank area: plain press clears the selection.
       setSelectedNames([]);
       setLastClickedName(null);
-      lastClickRef.current = { name: null, ts: 0 };
     }
   };
 
@@ -382,13 +412,6 @@ export function AdbExplorer({
 
 
 
-  const goParent = () => {
-    if (!serial || currentPath === "/") return;
-    const parts = currentPath.split("/").filter(Boolean);
-    parts.pop();
-    loadDir(serial, "/" + parts.join("/"));
-  };
-
   const submitModal = async () => {
     if (!modal || !serial) return;
     try {
@@ -407,26 +430,18 @@ export function AdbExplorer({
     }
   };
 
-  const handleBatchDownload = async () => {
-    if (!serial || selectedNames.length === 0) return;
+  async function downloadItems(items: AdbDetailedFileEntry[]) {
     try {
-      const dir = await open({ directory: true });
-      if (typeof dir !== "string") return;
-      for (const name of selectedNames) {
-        const entry = entries.find((e) => e.name === name);
-        if (entry && !entry.is_dir) {
-          await invoke("adb_pull_file", {
-            serial,
-            remotePath: joinPath(name),
-            localPath: `${dir}/${name}`,
-          });
-        }
+      const result = await downloads.download(serial, items, joinPath);
+      if (result) {
+        onLog(`${t("adb.downloadResult", {
+          completed: result.completed, failed: result.failed.length,
+        })} → ${result.path}`);
       }
-      onLog(`批量下载完成 (${selectedNames.length} 项) -> ${dir}`);
-    } catch (err) {
-      setErrorMsg(String(err));
+    } catch (error) {
+      setErrorMsg(String(error));
     }
-  };
+  }
 
   const handleOpenFile = async (name: string) => {
     if (!serial) return;
@@ -472,32 +487,59 @@ export function AdbExplorer({
     }
   };
 
-  const handleDownload = async (name: string) => {
-    if (!serial) return;
-    try {
-      const localPath = await save({ defaultPath: name });
-      if (!localPath) return;
-      await invoke("adb_pull_file", { serial, remotePath: joinPath(name), localPath });
-      onLog(`Downloaded -> ${localPath}`);
-    } catch (err) {
-      setErrorMsg(String(err));
-    }
-  };
-
-  const runShell = async () => {
-    localStorage.setItem("adb_last_cmd", cmd);
-    if (!serial) return;
-    try {
-      const out = await invoke<string>("adb_exec_shell", { serial, command: cmd });
-      setShellOutput(out || "(OK)");
-    } catch (err) {
-      setShellOutput(String(err));
-    }
-  };
-
   const folderCount = entries.filter((e) => e.is_dir).length;
   const fileCount = entries.length - folderCount;
-  const crumbs = currentPath.split("/").filter(Boolean);
+  const selection = new Set(selectedNames);
+  const selectedEntries = visibleEntries.filter((entry) => selection.has(entry.name));
+  const allVisibleSelected = visibleEntries.length > 0 && selectedEntries.length === visibleEntries.length;
+  const selectedPath = selectedEntries.length === 1 ? joinPath(selectedEntries[0].name) : "";
+
+  function changeSearch(value: string) {
+    setSearch(value);
+    setSelectedNames((previous) => previous.filter((name) => matchesFilename(name, value)));
+    setLastClickedName(null);
+  }
+
+  function changeView(mode: "grid" | "list") {
+    setViewMode(mode);
+    localStorage.setItem(VIEW_MODE_KEY, mode);
+  }
+
+  async function copyPath(path: string) {
+    try {
+      await navigator.clipboard.writeText(path);
+      setCopiedPath(path);
+    } catch (error) {
+      setErrorMsg(String(error));
+    }
+  }
+
+  useEffect(() => {
+    if (!copiedPath) return;
+    const timer = window.setTimeout(() => setCopiedPath(""), 1500);
+    return () => window.clearTimeout(timer);
+  }, [copiedPath]);
+
+  function sizeLabel(item: AdbDetailedFileEntry) {
+    return item.is_dir ? "—" : (
+      <span title={`${item.size.toLocaleString(i18n.language)} B`}>{formatFileSize(item.size, i18n.language)}</span>
+    );
+  }
+
+  function sortHeader(field: FileSort, label: string) {
+    const active = sort.field === field;
+    const Icon = sort.descending ? ArrowDown : ArrowUp;
+    return (
+      <th className="px-3 py-2" aria-sort={active ? (sort.descending ? "descending" : "ascending") : undefined}>
+        <button type="button" className="inline-flex items-center gap-1 hover:text-blue-600" onClick={() => setSort({
+          field, descending: active ? !sort.descending : field !== "name",
+        })}>
+          {label}
+          {active && <Icon className="size-3" aria-hidden="true" />}
+        </button>
+      </th>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 text-xs">
@@ -508,26 +550,39 @@ export function AdbExplorer({
             <span>{t("nav.adb")}</span>
           </div>
           <span className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-[11px] tabular-nums text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
-            {folderCount} folders · {fileCount} files
+            {t("adb.itemCount", { folders: folderCount, files: fileCount })}
           </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {selectedNames.length > 0 && (
+          {selectedEntries.length > 0 && (
             <>
               <button
-                onClick={handleBatchDownload}
+                type="button"
+                disabled={downloads.busy}
+                onClick={() => void downloadItems(selectedEntries)}
                 className="ui-btn-success"
               >
                 <Download className="h-3.5 w-3.5" />
-                {t("common.download")} ({selectedNames.length})
+                {t("common.download")} ({selectedEntries.length})
               </button>
+              {selectedPath && (
+                <>
+                  <button type="button" className="ui-btn-secondary" title={`${t("adb.rename")} (F2)`}
+                    onClick={() => beginRename(selectedEntries[0].name)}>
+                    {t("adb.rename")}
+                  </button>
+                  <button type="button" className="ui-btn-secondary" onClick={() => void copyPath(selectedPath)}>
+                    {t(copiedPath === selectedPath ? "adb.pathCopied" : "adb.copyItemPath")}
+                  </button>
+                </>
+              )}
               <button
-                onClick={() => setModal({ type: "delete", names: selectedNames })}
+                onClick={() => setModal({ type: "delete", names: selectedEntries.map((entry) => entry.name) })}
                 className="ui-btn-danger"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                {t("common.delete")} ({selectedNames.length})
+                {t("common.delete")} ({selectedEntries.length})
               </button>
               <div className="mx-0.5 hidden h-4 w-px bg-slate-200 dark:bg-slate-700 sm:block" />
             </>
@@ -552,8 +607,10 @@ export function AdbExplorer({
           <div className="ui-segmented">
             <button
               type="button"
-              onClick={() => setViewMode("grid")}
-              title="Grid"
+              onClick={() => changeView("grid")}
+              aria-label={t("adb.gridView")}
+              aria-pressed={viewMode === "grid"}
+              title={t("adb.gridView")}
               className={`ui-segmented-btn !px-2 ${
                 viewMode === "grid"
                   ? "bg-blue-600 text-white shadow-sm"
@@ -564,8 +621,10 @@ export function AdbExplorer({
             </button>
             <button
               type="button"
-              onClick={() => setViewMode("list")}
-              title="List"
+              onClick={() => changeView("list")}
+              aria-label={t("adb.listView")}
+              aria-pressed={viewMode === "list"}
+              title={t("adb.listView")}
               className={`ui-segmented-btn !px-2 ${
                 viewMode === "list"
                   ? "bg-blue-600 text-white shadow-sm"
@@ -578,68 +637,26 @@ export function AdbExplorer({
         </div>
       </div>
 
-      <div className="ui-card flex items-center justify-between gap-2 px-4 py-2">
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-          <button
-            disabled={!serial || currentPath === "/"}
-            onClick={goParent}
-            className="rounded-md p-1 text-slate-600 transition hover:bg-slate-100 disabled:opacity-40 dark:text-slate-300 dark:hover:bg-slate-800"
-          >
-            <ArrowLeft className="h-3.5 w-3.5" />
-          </button>
-          <button
-            disabled={!serial}
-            onClick={() => loadDir(serial, "/")}
-            className={`rounded-md px-1.5 py-0.5 font-mono transition hover:bg-slate-100 dark:hover:bg-slate-800 ${
-              crumbs.length === 0
-                ? "font-semibold text-slate-900 dark:text-slate-100"
-                : "text-slate-600 dark:text-slate-300"
-            }`}
-          >
-            /
-          </button>
-          {crumbs.map((seg, i) => {
-            const target = "/" + crumbs.slice(0, i + 1).join("/");
-            const isLast = i === crumbs.length - 1;
-            return (
-              <span key={target} className="flex items-center gap-1">
-                <span className="text-slate-400">&gt;</span>
-                <button
-                  onClick={() => loadDir(serial, target)}
-                  className={`rounded-md px-1.5 py-0.5 font-mono transition hover:bg-slate-100 dark:hover:bg-slate-800 ${
-                    isLast
-                      ? "font-semibold text-slate-900 dark:text-slate-100"
-                      : "text-slate-600 dark:text-slate-300"
-                  }`}
-                >
-                  {seg}
-                </button>
-              </span>
-            );
-          })}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {entries.length > 0 && (
-            <button
-              onClick={() =>
-                setSelectedNames(
-                  selectedNames.length === entries.length ? [] : entries.map((e) => e.name)
-                )
-              }
-              className="ui-btn-secondary !px-2.5 !py-1 text-[11px]"
-            >
-              {selectedNames.length === entries.length ? "取消全选" : "全选"}
-            </button>
-          )}
-          <button
-            disabled={!serial}
-            onClick={() => loadDir(serial, currentPath)}
-            className="ui-btn-secondary !p-1.5"
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-          </button>
-        </div>
-      </div>
+      <AdbFileToolbar
+        key={serial}
+        connected={Boolean(serial)}
+        loading={loading}
+        currentPath={currentPath}
+        copiedPath={copiedPath}
+        search={search}
+        sort={sort.field}
+        descending={sort.descending}
+        canSelectAll={visibleEntries.length > 0}
+        allSelected={allVisibleSelected}
+        onOpenDirectory={(path) => void loadDir(serial, path)}
+        onJump={jumpToPath}
+        onCopyPath={(path) => void copyPath(path)}
+        onSearch={changeSearch}
+        onSort={(field) => setSort({ field, descending: field !== "name" })}
+        onReverse={() => setSort((previous) => ({ ...previous, descending: !previous.descending }))}
+        onSelectAll={() => setSelectedNames(allVisibleSelected ? [] : visibleEntries.map((entry) => entry.name))}
+      />
+      <AdbFileDownloadStatus transfer={downloads.transfer} result={downloads.result} onDismiss={downloads.clear} />
 
       {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
@@ -686,29 +703,24 @@ export function AdbExplorer({
             <RefreshCw className="h-6 w-6 animate-spin text-slate-400" />
             <span>{t("common.loading")}</span>
           </div>
-        ) : entries.length === 0 ? (
+        ) : visibleEntries.length === 0 ? (
           <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-2 py-12 text-center text-slate-500 dark:text-slate-400">
             <Folder className="h-8 w-8 text-slate-300 dark:text-slate-700" />
-            <span>{serial ? t("adb.emptyDir") : t("adb.waitConnect")}</span>
+            <span>{serial ? t(search.trim() ? "adb.noSearchMatches" : "adb.emptyDir") : t("adb.waitConnect")}</span>
           </div>
         ) : viewMode === "grid" ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
-            {entries.map((item) => {
+            {visibleEntries.map((item) => {
               const editable = !item.is_dir && isEditableTextFile(item.name);
-              const checked = selectedNames.includes(item.name);
+              const checked = selection.has(item.name);
               return (
                 <div
                   key={item.name}
                   data-item-name={item.name}
-                  onMouseDown={(e) => itemMouseDown(e, item.name)}
-                  onClick={() => itemClick(item.name)}
-                  onDoubleClick={() => {
-                    if (renamingName === item.name) {
-                      cancelRename();
-                      return;
-                    }
-                    item.is_dir ? loadDir(serial, joinPath(item.name)) : handleOpenFile(item.name);
-                  }}
+                  tabIndex={0}
+                  onClick={(event) => selectItem(event, item.name)}
+                  onDoubleClick={(event) => openOnDoubleClick(event, item)}
+                  onKeyDown={(event) => handleItemKeyDown(event, item)}
                   className={`group relative flex cursor-pointer flex-col items-center rounded-lg border p-2.5 text-center transition ${
                     checked
                       ? "border-blue-500 bg-blue-500/10"
@@ -717,7 +729,6 @@ export function AdbExplorer({
                 >
                   {item.is_dir ? (
                     <Folder
-                      onClick={() => loadDir(serial, joinPath(item.name))}
                       className="h-10 w-10 fill-amber-400 text-amber-500"
                     />
                   ) : (
@@ -726,29 +737,22 @@ export function AdbExplorer({
                   <div title={item.name} className="mt-1.5 w-full truncate font-medium text-slate-800 dark:text-slate-100">
                     {renderItemName(item, item.name)}
                   </div>
-                  {!item.is_dir && renamingName !== item.name && (
-                    <div className="mt-0.5 font-mono text-[10px] tabular-nums text-slate-400">{item.size} B</div>
+                  {renamingName !== item.name && (
+                    <div className="mt-0.5 font-mono text-[10px] tabular-nums text-slate-400">{sizeLabel(item)}</div>
                   )}
-                  <div className="mt-1.5 hidden gap-1 group-hover:flex">
-                    {!item.is_dir && (
-                      <button
-                        onClick={() => handleDownload(item.name)}
-                        title={t("common.download")}
-                        className="rounded-md border border-slate-200 bg-white p-1 text-slate-600 shadow-sm hover:text-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                      >
-                        <Download className="h-3 w-3" />
-                      </button>
-                    )}
-                    {editable && (
-                      <button
-                        onClick={() => handleOpenFile(item.name)}
-                        title={t("common.edit")}
-                        className="rounded-md border border-slate-200 bg-white p-1 text-slate-600 shadow-sm hover:text-blue-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                      >
-                        <Edit3 className="h-3 w-3" />
-                      </button>
-                    )}
-                  </div>
+                  {editable && (
+                    <button
+                      type="button"
+                      aria-label={t("common.edit")}
+                      title={t("common.edit")}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onClick={(event) => { event.stopPropagation(); void handleOpenFile(item.name); }}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      className="pointer-events-none absolute right-1 top-1 rounded-md border border-slate-200 bg-white p-1 text-slate-600 opacity-0 shadow-sm transition-opacity hover:text-blue-600 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                    >
+                      <Edit3 className="h-3 w-3" />
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -757,60 +761,34 @@ export function AdbExplorer({
           <table className="w-full text-left">
             <thead className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-400">
               <tr>
-                <th className="px-3 py-2">{t("sector.name")}</th>
-                <th className="px-3 py-2">Size</th>
-                <th className="px-3 py-2">{t("adb.modifiedTime")}</th>
+                {sortHeader("name", t("sector.name"))}
+                {sortHeader("size", t("adb.size"))}
+                {sortHeader("time", t("adb.modifiedTime"))}
                 <th className="px-3 py-2">{t("adb.permissions")}</th>
                 <th className="px-3 py-2 text-right">{t("sector.actions")}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {entries.map((item) => {
+              {visibleEntries.map((item) => {
                 const editable = !item.is_dir && isEditableTextFile(item.name);
-                const checked = selectedNames.includes(item.name);
+                const checked = selection.has(item.name);
                 return (
                   <tr
                     key={item.name}
                     data-item-name={item.name}
-                    onMouseDown={(e) => itemMouseDown(e, item.name)}
-                    onClick={() => itemClick(item.name)}
-                    onDoubleClick={() => {
-                      if (renamingName === item.name) {
-                        cancelRename();
-                        return;
-                      }
-                      item.is_dir ? loadDir(serial, joinPath(item.name)) : handleOpenFile(item.name);
-                    }}
-                    className={checked ? "bg-blue-500/10 hover:bg-blue-500/15" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}
+                    tabIndex={0}
+                    onClick={(event) => selectItem(event, item.name)}
+                    onDoubleClick={(event) => openOnDoubleClick(event, item)}
+                    onKeyDown={(event) => handleItemKeyDown(event, item)}
+                    className={`cursor-pointer ${checked ? "bg-blue-500/10 hover:bg-blue-500/15" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}`}
                   >
                     <td className="px-3 py-1.5 font-medium text-slate-800 dark:text-slate-100">
-                      {item.is_dir ? (
-                        <span
-                          onDoubleClick={(e) => {
-                            e.stopPropagation();
-                            if (renamingName === item.name) {
-                              cancelRename();
-                              return;
-                            }
-                            loadDir(serial, joinPath(item.name));
-                          }}
-                          className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
-                        >
-                          {renderItemName(item, <>{item.name}/</>)}
-                        </span>
-                      ) : (
-                        renderItemName(item, item.name)
-                      )}
+                      {renderItemName(item, item.is_dir ? `${item.name}/` : item.name)}
                     </td>
-                    <td className="px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.is_dir ? "-" : `${item.size} B`}</td>
+                    <td className="whitespace-nowrap px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{sizeLabel(item)}</td>
                     <td className="px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.modified_time || "-"}</td>
                     <td className="px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.permissions || "-"}</td>
-                    <td className="space-x-2 whitespace-nowrap px-3 py-1.5 text-right">
-                      {!item.is_dir && (
-                        <button onClick={() => handleDownload(item.name)} className="text-blue-600 hover:underline dark:text-blue-400">
-                          {t("common.download")}
-                        </button>
-                      )}
+                    <td className="space-x-2 whitespace-nowrap px-3 py-1.5 text-right" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
                       {editable && (
                         <button onClick={() => handleOpenFile(item.name)} className="text-blue-600 hover:underline dark:text-blue-400">
                           {t("common.edit")}
@@ -824,24 +802,6 @@ export function AdbExplorer({
           </table>
         )}
       </div>
-
-      <div className="ui-card flex items-center gap-2 px-4 py-2.5">
-        <input
-          value={cmd}
-          onChange={(e) => setCmd(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && runShell()}
-          placeholder={t("adb.shellPlaceholder")}
-          className="ui-input flex-1 font-mono"
-        />
-        <button onClick={runShell} className="ui-btn-primary">
-          {t("adb.runShell")}
-        </button>
-      </div>
-      {shellOutput && (
-        <div className="ui-terminal max-h-28 overflow-auto p-3">
-          <AnsiText text={shellOutput} showTimestamps={false} />
-        </div>
-      )}
 
       {modal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6 backdrop-blur-[1px]">

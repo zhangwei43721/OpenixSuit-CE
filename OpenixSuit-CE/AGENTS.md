@@ -35,6 +35,11 @@
   - `LogDrawer`（`src/components/LogDrawer.tsx`）：底部可折叠日志抽屉，汇总前后端日志与 AI 同步事件。
 
 ### 样式与主题系统
+- 设计和修改界面时，遵守四项基本原则。
+  - **亲密性**：把相关信息和操作放在一起，避免为同一操作设置重复入口。
+  - **对齐**：让标签、输入框、列表和操作沿清晰的基线排列。
+  - **重复**：同类组件和操作统一使用相同的样式、间距和交互方式。
+  - **对比**：用清楚的层次区分主要操作、次要操作、状态和警告，并保证浅色和深色主题下都易读。
 - 使用 Tailwind CSS 的 `darkMode: "class"`（`html.dark`），在 `src/index.css` 中定义了统一组件类（`.ui-toolbar`、`.ui-card`、`.ui-subcard`、`.ui-card-header`、`.ui-title`、`.ui-input`、`.ui-select`、`.ui-btn-primary/secondary/success/danger`、`.ui-segmented`、`.ui-terminal`、`.ui-alert-warn/err/ok`）。
 - 主题模式支持 `"system" | "dark" | "light"`（`src/store/settings.ts`），通过 `document.documentElement.classList.toggle("dark", ...)` 动态切换并同步至 `localStorage`（`theme_mode`）。
 
