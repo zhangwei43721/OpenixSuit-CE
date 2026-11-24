@@ -411,7 +411,7 @@ export function FlashHub({
             </div>
             <div className="ui-terminal min-h-0 flex-1 overflow-auto rounded-none border-0 p-3 text-[11px]">
               {monText ? (
-                <AnsiText text={monText} showTimestamps={false} />
+                <AnsiText text={monText} levelFormat="serial" />
               ) : (
                 <span className="text-slate-500">选择串口点击连接，烧录时在此同步查看板子输出...</span>
               )}

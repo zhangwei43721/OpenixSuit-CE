@@ -1,5 +1,5 @@
 use crate::log_capture::{CaptureWriter, LogCapturePolicy};
-use crate::log_sessions::{notify_session, LogSession, LogSessionChangeKind};
+use crate::log_sessions::{notify_session, LogDisplayOptions, LogSession, LogSessionChangeKind};
 use crate::state::{epoch_ms, epoch_secs, format_compact_utc, format_utc_timestamp, AppState};
 use base64::engine::general_purpose::STANDARD as B64_ENGINE;
 use base64::Engine as _;
@@ -161,6 +161,7 @@ pub struct SerialSessionHandle {
     pub baud_rate: u32,
     pub(crate) line_coding: SerialLineCoding,
     pub(crate) serial_options: Option<SerialOptions>,
+    pub(crate) display_options: Option<LogDisplayOptions>,
     pub log_path: String,
     writer: Mutex<Option<Box<dyn serialport::SerialPort>>>,
     pub stop_flag: Arc<AtomicBool>,
@@ -420,6 +421,7 @@ pub fn serial_open(
             serial_options,
         },
         None,
+        None,
     )
     .map(|(handle, _)| handle.info())
 }
@@ -485,6 +487,7 @@ pub(crate) fn open_serial_session(
     baud_rate: u32,
     options: SerialOpenOptions,
     label: Option<String>,
+    display_options: Option<LogDisplayOptions>,
 ) -> Result<(Arc<SerialSessionHandle>, bool), String> {
     let sid = if session_id.trim().is_empty() {
         format!("serial-{}", epoch_ms())
@@ -558,6 +561,7 @@ pub(crate) fn open_serial_session(
         baud_rate: baud,
         line_coding: coding,
         serial_options: options.serial_options,
+        display_options,
         log_path: log_path_str.clone(),
         writer: Mutex::new(Some(port)),
         stop_flag: Arc::clone(&stop_flag),

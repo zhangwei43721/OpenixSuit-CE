@@ -1,317 +1,264 @@
-import React, { useMemo } from "react";
+import { createAnsiSequenceParser, createColorPalette, type Color, type ColorName, type ParseToken } from "ansi-sequence-parser";
+import React, { memo, useMemo, type CSSProperties } from "react";
+import { useLogColorRules, useLogColorSettings } from "../store/logColors";
+import {
+  createLogHighlighter,
+  findLogLevel,
+  HIGHLIGHT_CLASSES,
+  LEVEL_CLASSES,
+  type LogHighlightRule,
+  type LogLevelFormat,
+} from "./logHighlight";
 
-export interface AnsiStyle {
-  fg?: string;
-  bg?: string;
-  bold?: boolean;
-  dim?: boolean;
-  italic?: boolean;
-  underline?: boolean;
-  inverse?: boolean;
-}
-
-export interface AnsiSegment {
-  text: string;
-  style: AnsiStyle;
-}
-
-export interface AnsiLine {
-  segments: AnsiSegment[];
+interface AnsiLine {
+  segments: ParseToken[];
   plain: string;
 }
 
-const FG_COLOR_CLASSES: Record<number, string> = {
-  30: "text-slate-800 dark:text-slate-400",
-  31: "text-red-600 dark:text-red-400",
-  32: "text-emerald-600 dark:text-emerald-400",
-  33: "text-amber-600 dark:text-amber-400",
-  34: "text-blue-600 dark:text-blue-400",
-  35: "text-purple-600 dark:text-purple-400",
-  36: "text-cyan-600 dark:text-cyan-400",
-  37: "text-slate-600 dark:text-slate-200",
-  90: "text-slate-500 dark:text-slate-500",
-  91: "text-rose-500 dark:text-rose-300",
-  92: "text-green-500 dark:text-green-300",
-  93: "text-yellow-500 dark:text-yellow-300",
-  94: "text-sky-500 dark:text-sky-300",
-  95: "text-fuchsia-500 dark:text-fuchsia-300",
-  96: "text-teal-500 dark:text-teal-300",
-  97: "text-slate-900 dark:text-white",
+const FG_COLOR_CLASSES: Record<ColorName, string> = {
+  black: "text-slate-800 dark:text-slate-400",
+  red: "text-red-600 dark:text-red-400",
+  green: "text-emerald-600 dark:text-emerald-400",
+  yellow: "text-amber-600 dark:text-amber-400",
+  blue: "text-blue-600 dark:text-blue-400",
+  magenta: "text-purple-600 dark:text-purple-400",
+  cyan: "text-cyan-600 dark:text-cyan-400",
+  white: "text-slate-600 dark:text-slate-200",
+  brightBlack: "text-slate-500",
+  brightRed: "text-rose-500 dark:text-rose-300",
+  brightGreen: "text-green-500 dark:text-green-300",
+  brightYellow: "text-yellow-500 dark:text-yellow-300",
+  brightBlue: "text-sky-500 dark:text-sky-300",
+  brightMagenta: "text-fuchsia-500 dark:text-fuchsia-300",
+  brightCyan: "text-teal-500 dark:text-teal-300",
+  brightWhite: "text-slate-900 dark:text-white",
 };
 
-const BG_COLOR_CLASSES: Record<number, string> = {
-  40: "bg-slate-900 text-slate-100",
-  41: "bg-red-500/20",
-  42: "bg-emerald-500/20",
-  43: "bg-amber-500/20",
-  44: "bg-blue-500/20",
-  45: "bg-purple-500/20",
-  46: "bg-cyan-500/20",
-  47: "bg-slate-200/80 dark:bg-slate-700/80",
-  100: "bg-slate-700/40",
-  101: "bg-rose-500/30",
-  102: "bg-green-500/30",
-  103: "bg-yellow-500/30",
-  104: "bg-sky-500/30",
-  105: "bg-fuchsia-500/30",
-  106: "bg-teal-500/30",
-  107: "bg-white/90 text-slate-900",
+const BG_COLOR_CLASSES: Record<ColorName, string> = {
+  black: "bg-slate-900 text-slate-100",
+  red: "bg-red-500/20",
+  green: "bg-emerald-500/20",
+  yellow: "bg-amber-500/20",
+  blue: "bg-blue-500/20",
+  magenta: "bg-purple-500/20",
+  cyan: "bg-cyan-500/20",
+  white: "bg-slate-200/80 dark:bg-slate-700/80",
+  brightBlack: "bg-slate-700/40",
+  brightRed: "bg-rose-500/30",
+  brightGreen: "bg-green-500/30",
+  brightYellow: "bg-yellow-500/30",
+  brightBlue: "bg-sky-500/30",
+  brightMagenta: "bg-fuchsia-500/30",
+  brightCyan: "bg-teal-500/30",
+  brightWhite: "bg-white/90 text-slate-900",
 };
 
-// Matches OSC, CSI (SGR or other), and stray 2-byte ESC sequences
-const ANSI_TOKEN_RE =
-  // eslint-disable-next-line no-control-regex
-  /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[([0-9;?]*)([A-Za-z])|\x1b[@-Z\\-_]/g;
+const DECORATION_CLASSES = {
+  bold: "font-semibold",
+  dim: "opacity-65",
+  italic: "italic",
+  underline: "underline",
+  strikethrough: "line-through",
+  overline: "overline",
+  hidden: "",
+  reverse: "",
+};
 
-/**
- * Strip all ANSI/VT control sequences from a string.
- */
+// 只把 SGR 颜色与文字样式交给解析器，其余控制序列从日志显示中移除。
+const ANSI_TOKEN_RE = /\x1b\][^\x07\x1b\n]*(?:\x07|\x1b\\|$)|\x1b[P^_X][^\x1b\n]*(?:\x1b\\|$)|\x1b\[([0-?]*)([ -/]*)([@-~])|\x1b\[[0-?]*[ -/]*$|\x1b[ -/]+[0-~]|\x1b[0-~]|\x1b/gm;
+const TIMESTAMP_PREFIX_RE = /^(\[\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?\]|\[\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:?\d{2})?\])\s*/;
+const palette = createColorPalette();
+const EMPTY_RULES: readonly LogHighlightRule[] = [];
+const NO_DECORATIONS: ParseToken["decorations"] = new Set();
+
 export function stripAnsi(text: string): string {
   return text.replace(ANSI_TOKEN_RE, "").replace(/\r/g, "");
 }
 
-function applySgrCodes(current: AnsiStyle, rawCodes: string): AnsiStyle {
-  if (!rawCodes) {
-    return {};
-  }
-  const codes = rawCodes.split(";").map((c) => (c === "" ? 0 : parseInt(c, 10)));
-  let next: AnsiStyle = { ...current };
+function normalizeSgr(parameters: string): string {
+  if (!/^[\d;]*$/.test(parameters)) return "";
+  if (!parameters.includes(";")) return `\x1b[${parameters || "0"}m`;
 
-  for (let i = 0; i < codes.length; i++) {
-    const code = codes[i];
-    if (Number.isNaN(code)) continue;
-
-    if (code === 0) {
-      next = {};
-    } else if (code === 1) {
-      next.bold = true;
-    } else if (code === 2) {
-      next.dim = true;
-    } else if (code === 3) {
-      next.italic = true;
-    } else if (code === 4) {
-      next.underline = true;
-    } else if (code === 7) {
-      next.inverse = true;
-    } else if (code === 22) {
-      next.bold = false;
-      next.dim = false;
-    } else if (code === 23) {
-      next.italic = false;
-    } else if (code === 24) {
-      next.underline = false;
-    } else if (code === 27) {
-      next.inverse = false;
-    } else if (code === 39) {
-      delete next.fg;
-    } else if (code === 49) {
-      delete next.bg;
-    } else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) {
-      next.fg = FG_COLOR_CLASSES[code];
-    } else if ((code >= 40 && code <= 47) || (code >= 100 && code <= 107)) {
-      next.bg = BG_COLOR_CLASSES[code];
-    } else if (code === 38 || code === 48) {
-      // Skip extended 256-color (5;n) or truecolor (2;r;g;b) arguments cleanly
-      const mode = codes[i + 1];
-      if (mode === 5) {
-        i += 2;
-      } else if (mode === 2) {
-        i += 4;
+  // 解析库会先处理重置指令。拆开参数以保留终端的执行顺序，颜色参数作为一组。
+  const codes = parameters.split(";");
+  const sequences: string[] = [];
+  for (let index = 0; index < codes.length;) {
+    const code = codes[index] || "0";
+    if (code === "38" || code === "48") {
+      const mode = codes[index + 1];
+      const length = mode === "5" ? 3 : mode === "2" ? 5 : 1;
+      if (length > 1 && index + length <= codes.length) {
+        sequences.push(`\x1b[${codes.slice(index, index + length).join(";")}m`);
       }
+      index += length;
+    } else {
+      sequences.push(`\x1b[${code}m`);
+      index++;
     }
   }
-
-  return next;
+  return sequences.join("");
 }
 
-/**
- * Parse text containing ANSI escape codes into structured lines and styled segments.
- * Unknown CSI / OSC sequences are stripped so raw escapes never pollute the UI.
- */
-export function parseAnsiLines(text: string): AnsiLine[] {
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  const rawLines = normalized.split("\n");
-  let activeStyle: AnsiStyle = {};
+function plainSegment(value: string): ParseToken {
+  return { value, foreground: null, background: null, decorations: NO_DECORATIONS };
+}
 
-  return rawLines.map((rawLine) => {
-    const segments: AnsiSegment[] = [];
-    let plain = "";
-    let lastIndex = 0;
-
-    ANSI_TOKEN_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = ANSI_TOKEN_RE.exec(rawLine)) !== null) {
-      if (match.index > lastIndex) {
-        const chunk = rawLine.slice(lastIndex, match.index);
-        segments.push({ text: chunk, style: { ...activeStyle } });
-        plain += chunk;
-      }
-      const csiParams = match[1];
-      const csiFinal = match[2];
-      if (csiFinal === "m" && csiParams !== undefined && !csiParams.includes("?")) {
-        activeStyle = applySgrCodes(activeStyle, csiParams);
-      }
-      lastIndex = ANSI_TOKEN_RE.lastIndex;
+export function parseAnsiLines(text: string, ansiEnabled = true): AnsiLine[] {
+  const parser = ansiEnabled && text.includes("\x1b") ? createAnsiSequenceParser() : null;
+  return text.replace(/\r\n?/g, "\n").split("\n").map((line) => {
+    if (!parser) {
+      const plain = ansiEnabled ? line : stripAnsi(line);
+      return { plain, segments: [plainSegment(plain)] };
     }
-
-    if (lastIndex < rawLine.length) {
-      const tail = rawLine.slice(lastIndex);
-      segments.push({ text: tail, style: { ...activeStyle } });
-      plain += tail;
-    }
-
-    if (segments.length === 0) {
-      segments.push({ text: "", style: {} });
-    }
-
-    return { segments, plain };
+    const cleaned = line.replace(ANSI_TOKEN_RE, (_match, params, intermediate, final) =>
+      final === "m" && !intermediate ? normalizeSgr(params) : "");
+    const segments = parser.parse(cleaned);
+    return { segments, plain: segments.map((token) => token.value).join("") };
   });
 }
 
-function styleToClassName(style: AnsiStyle): string {
-  const cls: string[] = [];
-  if (style.fg) cls.push(style.fg);
-  if (style.bg) cls.push(style.bg);
-  if (style.bold) cls.push("font-semibold");
-  if (style.dim) cls.push("opacity-65");
-  if (style.italic) cls.push("italic");
-  if (style.underline) cls.push("underline");
-  if (style.inverse) cls.push("bg-slate-800 text-slate-100 dark:bg-slate-200 dark:text-slate-900 px-0.5 rounded-sm");
-  return cls.join(" ");
+function colorValue(color: Color | null): string | undefined {
+  return color && color.type !== "named" ? palette.value(color) : undefined;
 }
 
-function renderHighlightedText(
-  text: string,
-  searchQuery: string,
-  caseSensitive: boolean,
-  keyPrefix: string
-): React.ReactNode {
-  if (!searchQuery) return text;
-  const needle = caseSensitive ? searchQuery : searchQuery.toLowerCase();
-  if (!needle) return text;
+function segmentStyle(segment: ParseToken) {
+  const reverse = segment.decorations.has("reverse");
+  const foreground = reverse ? segment.background : segment.foreground;
+  const background = reverse ? segment.foreground : segment.background;
+  const classes = Array.from(segment.decorations, (key) => DECORATION_CLASSES[key]);
+  if (foreground?.type === "named") classes.push(FG_COLOR_CLASSES[foreground.name]);
+  if (background?.type === "named") classes.push(BG_COLOR_CLASSES[background.name]);
+  const style: CSSProperties = {
+    color: colorValue(foreground) ?? (reverse && !foreground ? "var(--ansi-viewer-bg)" : undefined),
+    backgroundColor: colorValue(background) ?? (reverse && !background ? "var(--ansi-viewer-fg)" : undefined),
+  };
+  return { className: classes.filter(Boolean).join(" "), style };
+}
 
-  const haystack = caseSensitive ? text : text.toLowerCase();
+type HighlightLine = ReturnType<typeof createLogHighlighter>;
+
+function renderLine(
+  line: AnsiLine,
+  showTimestamp: boolean,
+  highlightLine: HighlightLine,
+  levelFormat: LogLevelFormat | undefined,
+) {
+  if (!line.plain) return "\u00a0";
+  const timestamp = showTimestamp ? TIMESTAMP_PREFIX_RE.exec(line.plain) : null;
+  const bodyStart = timestamp?.[0].length ?? 0;
+  const body = line.plain.slice(bodyStart);
+  const ranges = highlightLine(body);
+  const level = levelFormat && findLogLevel(body, levelFormat);
+  if (!timestamp && ranges.length === 0 && !level && line.segments.length === 1) {
+    const segment = line.segments[0];
+    if (!segment.foreground && !segment.background && !segment.decorations.size) return body;
+  }
+  let offset = -bodyStart;
+  let rangeIndex = 0;
   const nodes: React.ReactNode[] = [];
-  let start = 0;
-  let idx = haystack.indexOf(needle, start);
-  let partIdx = 0;
+  if (timestamp) {
+    nodes.push(<span key="timestamp" className="mr-1.5 select-none text-slate-400 dark:text-slate-500">{timestamp[1]}</span>);
+  }
 
-  while (idx !== -1) {
-    if (idx > start) {
-      nodes.push(text.slice(start, idx));
+  for (const segment of line.segments) {
+    const end = offset + segment.value.length;
+    let cursor = Math.max(0, offset);
+    if (cursor < end) {
+      const parts: React.ReactNode[] = [];
+      while (cursor < end) {
+        while (ranges[rangeIndex]?.end <= cursor) rangeIndex++;
+        const range = ranges[rangeIndex];
+        const highlighted = range && range.start <= cursor;
+        const atLevel = level && level.start <= cursor && cursor < level.end;
+        const rangeBoundary = range ? (highlighted ? range.end : range.start) : end;
+        const levelBoundary = level && cursor < level.end ? (atLevel ? level.end : level.start) : end;
+        const stop = Math.min(end, rangeBoundary, levelBoundary);
+        let content: React.ReactNode = segment.value.slice(cursor - offset, stop - offset);
+        if (highlighted) {
+          content = <mark className={HIGHLIGHT_CLASSES[range.kind]} data-highlight={range.kind}>{content}</mark>;
+        }
+        if (atLevel) {
+          content = <span className={`font-semibold ${LEVEL_CLASSES[level.level]}`} data-log-level={level.level}>{content}</span>;
+        }
+        parts.push(<React.Fragment key={cursor}>{content}</React.Fragment>);
+        cursor = stop;
+      }
+      const { className, style } = segmentStyle(segment);
+      nodes.push(<span key={offset} className={className || undefined} style={style}>{parts}</span>);
     }
-    const matched = text.slice(idx, idx + needle.length);
-    nodes.push(
-      <mark
-        key={`${keyPrefix}-m-${partIdx++}`}
-        className="bg-amber-300/90 text-slate-950 dark:bg-amber-400/90 dark:text-slate-950 rounded-sm px-0.5"
-      >
-        {matched}
-      </mark>
-    );
-    start = idx + needle.length;
-    idx = haystack.indexOf(needle, start);
+    offset = end;
   }
-
-  if (start < text.length) {
-    nodes.push(text.slice(start));
-  }
-
-  return nodes.length > 0 ? nodes : text;
+  return nodes;
 }
+
+// 保留日志原有排版，只给命中文本加底色。
+export const LogMarkedText = memo(function LogMarkedText({ text }: { text: string }) {
+  const { highlight } = useLogColorSettings();
+  const ranges = highlight(text);
+  if (ranges.length === 0) return <>{text}</>;
+
+  let offset = 0;
+  return (
+    <>
+      {ranges.map(({ start, end, kind }) => {
+        const before = text.slice(offset, start);
+        offset = end;
+        return (
+          <React.Fragment key={start}>
+            {before}
+            <mark className={HIGHLIGHT_CLASSES[kind]} data-highlight={kind}>{text.slice(start, end)}</mark>
+          </React.Fragment>
+        );
+      })}
+      {text.slice(offset)}
+    </>
+  );
+});
 
 export interface AnsiTextProps {
   text: string;
   showTimestamps?: boolean;
   ansiEnabled?: boolean;
   searchQuery?: string;
+  filterOnly?: boolean;
   caseSensitive?: boolean;
+  highlightRules?: readonly LogHighlightRule[];
+  levelFormat?: LogLevelFormat;
   className?: string;
 }
 
-const TIMESTAMP_PREFIX_RE = /^(\[\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?\]|\[\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?\])\s*/;
-
-export const AnsiText: React.FC<AnsiTextProps> = ({
+export const AnsiText = memo(function AnsiText({
   text,
   showTimestamps = false,
   ansiEnabled = true,
   searchQuery = "",
+  filterOnly = false,
   caseSensitive = false,
+  highlightRules = EMPTY_RULES,
+  levelFormat,
   className = "",
-}) => {
-  const lines = useMemo(() => parseAnsiLines(text), [text]);
+}: AnsiTextProps) {
+  const lines = useMemo(() => parseAnsiLines(text, ansiEnabled), [text, ansiEnabled]);
+  const sharedRules = useLogColorRules();
+  const highlightLine = useMemo(
+    () => createLogHighlighter([...highlightRules, ...sharedRules], searchQuery, caseSensitive),
+    [highlightRules, sharedRules, searchQuery, caseSensitive],
+  );
+  const needle = caseSensitive ? searchQuery : searchQuery.toLowerCase();
 
   return (
-    <div className={`font-mono text-xs leading-5 whitespace-pre-wrap break-all ${className}`}>
-      {lines.map((line, lineIdx) => {
-        if (!ansiEnabled) {
-          const plain = line.plain;
-          const tsMatch = showTimestamps ? plain.match(TIMESTAMP_PREFIX_RE) : null;
-          if (tsMatch) {
-            const ts = tsMatch[1];
-            const rest = plain.slice(tsMatch[0].length);
-            return (
-              <div key={lineIdx} className="min-h-[1.25rem]">
-                <span className="text-slate-400 dark:text-slate-500 select-none mr-1.5">{ts}</span>
-                <span>{renderHighlightedText(rest, searchQuery, caseSensitive, `${lineIdx}-p`)}</span>
-              </div>
-            );
-          }
-          return (
-            <div key={lineIdx} className="min-h-[1.25rem]">
-              {plain ? renderHighlightedText(plain, searchQuery, caseSensitive, `${lineIdx}-p`) : "\u00A0"}
-            </div>
-          );
+    <div className={`break-all whitespace-pre-wrap font-mono text-xs leading-5 [--ansi-viewer-bg:#fff] [--ansi-viewer-fg:#0f172a] dark:[--ansi-viewer-bg:#0f172a] dark:[--ansi-viewer-fg:#e2e8f0] ${className}`}>
+      {lines.map((line, index) => {
+        if (filterOnly && needle) {
+          const body = showTimestamps ? line.plain.replace(TIMESTAMP_PREFIX_RE, "") : line.plain;
+          if (!(caseSensitive ? body : body.toLowerCase()).includes(needle)) return null;
         }
-
-        // ANSI enabled
-        const firstSeg = line.segments[0];
-        const tsMatch =
-          showTimestamps && firstSeg ? firstSeg.text.match(TIMESTAMP_PREFIX_RE) : null;
-
         return (
-          <div key={lineIdx} className="min-h-[1.25rem]">
-            {line.segments.length === 1 && line.segments[0].text === "" ? (
-              "\u00A0"
-            ) : (
-              line.segments.map((seg, segIdx) => {
-                if (segIdx === 0 && tsMatch) {
-                  const ts = tsMatch[1];
-                  const rest = seg.text.slice(tsMatch[0].length);
-                  const cls = styleToClassName(seg.style);
-                  return (
-                    <React.Fragment key={segIdx}>
-                      <span className="text-slate-400 dark:text-slate-500 select-none mr-1.5">
-                        {ts}
-                      </span>
-                      {rest && (
-                        <span className={cls}>
-                          {renderHighlightedText(rest, searchQuery, caseSensitive, `${lineIdx}-${segIdx}`)}
-                        </span>
-                      )}
-                    </React.Fragment>
-                  );
-                }
-
-                const cls = styleToClassName(seg.style);
-                const content = renderHighlightedText(
-                  seg.text,
-                  searchQuery,
-                  caseSensitive,
-                  `${lineIdx}-${segIdx}`
-                );
-                return cls ? (
-                  <span key={segIdx} className={cls}>
-                    {content}
-                  </span>
-                ) : (
-                  <React.Fragment key={segIdx}>{content}</React.Fragment>
-                );
-              })
-            )}
+          <div key={index} className="min-h-[1.25rem]">
+            {renderLine(line, showTimestamps, highlightLine, levelFormat)}
           </div>
         );
       })}
     </div>
   );
-};
+});

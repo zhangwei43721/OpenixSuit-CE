@@ -1,3 +1,4 @@
+import { AnsiText, LogMarkedText } from "../utils/ansi";
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
 import { createPortal, flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -244,7 +245,11 @@ const BridgeLogRecord = memo(function BridgeLogRecord({
         <span className="max-w-full break-all">{row.to}</span>
         <span>{t("multiLog.bridge.byteCount", { count: row.bytes.length })}</span>
       </div>
-      {content && <pre className="mt-0.5 whitespace-pre-wrap break-all">{content}</pre>}
+      {content && (
+        format === "hex"
+          ? <pre className="mt-0.5 whitespace-pre-wrap break-all"><LogMarkedText text={content} /></pre>
+          : <AnsiText text={content.replace(/\r?\n$/, "")} levelFormat="serial" className="mt-0.5" />
+      )}
     </div>
   );
 });

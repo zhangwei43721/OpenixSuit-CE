@@ -7,6 +7,7 @@ import { AppSettings, ThemeMode, UsbBackend } from "../store/settings";
 import { PluginManifest } from "../types/plugin";
 import { ExtensionIcon } from "../components/ExtensionIcon";
 import { DriverGuide } from "./DriverGuide";
+import { LogColorSettings } from "./LogColorSettings";
 import { DesktopUpdateSettings } from "./DesktopUpdateSettings";
 
 interface SettingsPageProps {
@@ -163,7 +164,10 @@ export function SettingsPage({
         <DesktopUpdateSettings />
       </div>
 
+      <LogColorSettings />
+
       {/* 项目拓展插件管理 */}
+
       <div className="ui-card overflow-hidden text-sm">
         <div className="ui-card-header">
           <div className="space-y-0.5">

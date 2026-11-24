@@ -414,6 +414,7 @@ mod tests {
             baud_rate: 115200,
             line_coding: Default::default(),
             serial_options: None,
+            display_options: None,
             log_path: String::new(),
             writer: Mutex::new(Some(Box::new(port))),
             stop_flag: Arc::new(AtomicBool::new(false)),

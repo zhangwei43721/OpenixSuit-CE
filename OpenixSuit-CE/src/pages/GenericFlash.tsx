@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
+import { LogMarkedText } from "../utils/ansi";
 
 interface PartitionEntry {
   index: number;
@@ -333,7 +334,7 @@ export function GenericFlash({
             ref={logBoxRef}
             className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3 text-slate-300"
           >
-            {logs.join("\n") || "LOG"}
+            {logs.length > 0 ? <LogMarkedText text={logs.join("\n")} /> : "LOG"}
           </pre>
         </div>
       </div>

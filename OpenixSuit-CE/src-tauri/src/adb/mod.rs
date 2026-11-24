@@ -1,5 +1,7 @@
 use crate::state::AppState;
 use adb_client::{ADBDeviceExt, ADBListItemType};
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::File;
@@ -371,16 +373,41 @@ pub fn adb_list_dir_detailed(
 #[derive(Clone, Serialize)]
 pub struct AdbTermDataPayload {
     pub session_id: String,
-    pub data: String,
+    pub data_base64: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct AdbTermEndedPayload {
+    pub session_id: String,
 }
 
 pub struct AdbTermHandle {
     pub stop_flag: Arc<AtomicBool>,
+    #[cfg(unix)]
     pub child: Arc<Mutex<Child>>,
+    #[cfg(windows)]
+    killer: Mutex<Box<dyn portable_pty::ChildKiller + Send + Sync>>,
     #[cfg(unix)]
     pub writer: Arc<Mutex<File>>,
-    #[cfg(not(unix))]
-    pub writer: Arc<Mutex<std::process::ChildStdin>>,
+    #[cfg(windows)]
+    pub writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    #[cfg(windows)]
+    pty: Mutex<Option<Box<dyn portable_pty::MasterPty + Send>>>,
+}
+
+impl AdbTermHandle {
+    fn stop(&self) {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        #[cfg(unix)]
+        if let Ok(mut child) = self.child.lock() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        #[cfg(windows)]
+        if let Ok(mut killer) = self.killer.lock() {
+            let _ = killer.kill();
+        }
+    }
 }
 
 #[tauri::command]
@@ -389,6 +416,8 @@ pub fn adb_term_open(
     state: State<'_, AppState>,
     session_id: String,
     serial: String,
+    cols: Option<u16>,
+    rows: Option<u16>,
 ) -> Result<(), String> {
     let sid = session_id.trim().to_string();
     if sid.is_empty() {
@@ -402,11 +431,7 @@ pub fn adb_term_open(
             .lock()
             .map_err(|_| "ADB terminal lock poisoned".to_string())?;
         if let Some(old) = guard.remove(&sid) {
-            old.stop_flag.store(true, Ordering::Relaxed);
-            if let Ok(mut ch) = old.child.lock() {
-                let _ = ch.kill();
-                let _ = ch.wait();
-            }
+            old.stop();
         }
     }
 
@@ -418,8 +443,8 @@ pub fn adb_term_open(
         let mut master_fd: libc::c_int = -1;
         let mut slave_fd: libc::c_int = -1;
         let mut ws = libc::winsize {
-            ws_row: 24,
-            ws_col: 80,
+            ws_row: rows.unwrap_or(24).max(1),
+            ws_col: cols.unwrap_or(80).max(1),
             ws_xpixel: 0,
             ws_ypixel: 0,
         };
@@ -501,12 +526,11 @@ pub fn adb_term_open(
                 match reader_file.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let data = String::from_utf8_lossy(&buf[..n]).to_string();
                         let _ = app.emit(
                             "adb-term-data",
                             AdbTermDataPayload {
                                 session_id: sid_thread.clone(),
-                                data,
+                                data_base64: STANDARD.encode(&buf[..n]),
                             },
                         );
                     }
@@ -515,7 +539,10 @@ pub fn adb_term_open(
                 }
             }
             if let Ok(mut ch) = handle.child.lock() {
-                let _ = ch.try_wait();
+                if ch.try_wait().ok().flatten().is_none() {
+                    let _ = ch.kill();
+                    let _ = ch.wait();
+                }
             }
             if let Ok(mut guard) = sessions_map.lock() {
                 if let Some(current) = guard.get(&sid_thread) {
@@ -524,32 +551,61 @@ pub fn adb_term_open(
                     }
                 }
             }
+            let _ = app.emit(
+                "adb-term-ended",
+                AdbTermEndedPayload {
+                    session_id: sid_thread,
+                },
+            );
         });
 
         Ok(())
     }
 
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        cmd.arg("shell");
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Failed to spawn adb shell: {}", e))?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Failed to open adb shell stdin".to_string())?;
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        cmd.arg("shell");
+        cmd.env("TERM", "xterm-256color");
+        let mut pty_command = CommandBuilder::new(cmd.get_program());
+        pty_command.args(cmd.get_args());
+        for (key, value) in cmd.get_envs() {
+            if let Some(value) = value {
+                pty_command.env(key, value);
+            } else {
+                pty_command.env_remove(key);
+            }
+        }
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                rows: rows.unwrap_or(24).max(1),
+                cols: cols.unwrap_or(80).max(1),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to allocate Windows PTY: {e}"))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("Failed to open Windows PTY reader: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to open Windows PTY writer: {e}"))?;
+        let mut child = pair
+            .slave
+            .spawn_command(pty_command)
+            .map_err(|e| format!("Failed to spawn adb shell in PTY: {e}"))?;
+        drop(pair.slave);
+        let pty = pair.master;
 
         let handle = Arc::new(AdbTermHandle {
             stop_flag: Arc::clone(&stop_flag),
-            child: Arc::new(Mutex::new(child)),
-            writer: Arc::new(Mutex::new(stdin)),
+            killer: Mutex::new(child.clone_killer()),
+            writer: Arc::new(Mutex::new(writer)),
+            pty: Mutex::new(Some(pty)),
         });
 
         {
@@ -560,64 +616,43 @@ pub fn adb_term_open(
             guard.insert(sid.clone(), Arc::clone(&handle));
         }
 
-        if let Some(mut out) = stdout {
-            let app_out = app.clone();
-            let sid_out = sid.clone();
-            let stop_out = Arc::clone(&stop_flag);
-            let sessions_out = Arc::clone(&sessions_map);
-            let handle_out = Arc::clone(&handle);
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                while !stop_out.load(Ordering::Relaxed) {
-                    match out.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                            let _ = app_out.emit(
-                                "adb-term-data",
-                                AdbTermDataPayload {
-                                    session_id: sid_out.clone(),
-                                    data,
-                                },
-                            );
-                        }
-                        Err(_) => break,
-                    }
-                }
-                if let Ok(mut guard) = sessions_out.lock() {
-                    if let Some(current) = guard.get(&sid_out) {
-                        if Arc::ptr_eq(current, &handle_out) {
-                            guard.remove(&sid_out);
-                        }
-                    }
-                }
-            });
-        }
+        let process_handle = Arc::clone(&handle);
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            // adb 退出后关闭 ConPTY，输出线程继续读到 EOF 再发送结束事件。
+            let master = process_handle.pty.lock().ok().and_then(|mut pty| pty.take());
+            drop(master);
+        });
 
-        if let Some(mut err_stream) = stderr {
-            let app_err = app;
-            let sid_err = sid;
-            let stop_err = stop_flag;
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 4096];
-                while !stop_err.load(Ordering::Relaxed) {
-                    match err_stream.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                            let _ = app_err.emit(
-                                "adb-term-data",
-                                AdbTermDataPayload {
-                                    session_id: sid_err.clone(),
-                                    data,
-                                },
-                            );
-                        }
-                        Err(_) => break,
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) if !stop_flag.load(Ordering::Relaxed) => {
+                        let _ = app.emit(
+                            "adb-term-data",
+                            AdbTermDataPayload {
+                                session_id: sid.clone(),
+                                data_base64: STANDARD.encode(&buf[..n]),
+                            },
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            handle.stop();
+            if let Ok(mut guard) = sessions_map.lock() {
+                if let Some(current) = guard.get(&sid) {
+                    if Arc::ptr_eq(current, &handle) {
+                        guard.remove(&sid);
                     }
                 }
-            });
-        }
+            }
+            let _ = app.emit("adb-term-ended", AdbTermEndedPayload { session_id: sid });
+        });
 
         Ok(())
     }
@@ -690,9 +725,17 @@ pub fn adb_term_resize(
             ));
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (handle, cols, rows);
+        let pty = handle.pty.lock().map_err(|_| "ADB terminal PTY lock poisoned".to_string())?;
+        pty.as_ref().ok_or("ADB terminal has exited")?
+            .resize(portable_pty::PtySize {
+                rows: rows.max(1),
+                cols: cols.max(1),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to resize ADB PTY: {e}"))?;
     }
 
     Ok(())
@@ -710,11 +753,7 @@ pub fn adb_term_close(state: State<'_, AppState>, session_id: String) -> Result<
             .ok_or_else(|| format!("ADB terminal session not found: {}", session_id))?
     };
 
-    handle.stop_flag.store(true, Ordering::Relaxed);
-    if let Ok(mut child) = handle.child.lock() {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
+    handle.stop();
     Ok(())
 }
 

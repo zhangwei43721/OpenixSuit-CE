@@ -33,6 +33,7 @@ import {
   TriggerCondition,
   TriggerRule,
 } from "../types/workbench";
+import { LogMarkedText } from "../utils/ansi";
 
 interface AutomationPageProps {
   onLog: (msg: string) => void;
@@ -1079,11 +1080,11 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                         <div className="ui-subcard mt-2 space-y-2 p-3">
                           {inc.action_results.length > 0 && (
                             <div className="font-mono text-[11px] text-emerald-600 dark:text-emerald-400">
-                              {inc.action_results.join(" | ")}
+                              <LogMarkedText text={inc.action_results.join(" | ")} />
                             </div>
                           )}
                           <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[11px] text-slate-700 dark:text-slate-300">
-                            {inc.log_tail.join("\n") || "(empty log tail)"}
+                            {inc.log_tail.length > 0 ? <LogMarkedText text={inc.log_tail.join("\n")} /> : "(empty log tail)"}
                           </pre>
                         </div>
                       )}

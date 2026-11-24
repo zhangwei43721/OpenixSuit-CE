@@ -1,4 +1,5 @@
 use crate::adb_log::device_command;
+use crate::log_sessions::LogHighlightRule;
 use crate::serial::{SerialLineCoding, SerialOptions};
 use crate::state::{app_data_dir, load_json_or_default};
 use serde::{Deserialize, Serialize};
@@ -35,12 +36,28 @@ pub(crate) enum LogSource {
         line_coding: Option<SerialLineCoding>,
         #[serde(skip_serializing_if = "Option::is_none")]
         serial_options: Option<SerialOptions>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        highlight_rules: Vec<LogHighlightRule>,
+        #[serde(default = "default_level_colors", skip_serializing_if = "is_true")]
+        level_colors: bool,
     },
     Adb {
         label: String,
         serial: String,
         command: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        highlight_rules: Vec<LogHighlightRule>,
+        #[serde(default = "default_level_colors", skip_serializing_if = "is_true")]
+        level_colors: bool,
     },
+}
+
+fn default_level_colors() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -101,19 +118,22 @@ impl LogProfile {
                     port_name,
                     baud_rate,
                     line_coding,
+                    highlight_rules,
                     ..
                 } => {
                     check_serial(port_name, *baud_rate)?;
                     if let Some(coding) = line_coding {
                         coding.validate()?;
                     }
+                    validate_highlight_rules(highlight_rules)?;
                     if !serial_ports.insert(port_name) {
                         return Err(format!("Repeated serial port '{port_name}'"));
                     }
                 }
                 LogSource::Adb {
-                    serial, command, ..
+                    serial, command, highlight_rules, ..
                 } => {
+                    validate_highlight_rules(highlight_rules)?;
                     require_value("ADB serial", serial)?;
                     require_value("ADB command", command)?;
                     if serial.contains(char::is_whitespace) {
@@ -139,6 +159,21 @@ impl LogProfile {
         }
         Ok(())
     }
+}
+
+fn validate_highlight_rules(rules: &[LogHighlightRule]) -> Result<(), String> {
+    if rules.len() > 32 {
+        return Err("A source may have at most 32 highlight rules".into());
+    }
+    for rule in rules {
+        if rule.keyword.trim().is_empty()
+            || rule.keyword.chars().count() > 128
+            || rule.keyword.contains('\0')
+        {
+            return Err("Highlight keywords must contain 1 to 128 characters and no NUL bytes".into());
+        }
+    }
+    Ok(())
 }
 
 fn check_serial(port_name: &str, baud_rate: u32) -> Result<(), String> {
@@ -234,8 +269,10 @@ mod tests {
             "name": "Bench logs",
             "notes": "离线日志",
             "sources": [
-                {"type": "serial", "label": "USB", "port_name": "/dev/ttyACM3", "baud_rate": 1000000},
-                {"type": "adb", "label": "Kernel", "serial": "test-device", "command": "  adb shell cat /dev/kmsg  "}
+                {"type": "serial", "label": "USB", "port_name": "/dev/ttyACM3", "baud_rate": 1000000,
+                    "highlight_rules": [{"keyword": "ready", "color": "green"}]},
+                {"type": "adb", "label": "Kernel", "serial": "test-device", "command": "  adb shell cat /dev/kmsg  ",
+                    "highlight_rules": [{"keyword": "panic", "color": "red"}], "level_colors": false}
             ]
         }))
         .unwrap();
@@ -252,6 +289,10 @@ mod tests {
             load_json_or_default::<Vec<LogProfile>>(&path).unwrap(),
             vec![edited, second]
         );
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved[0]["sources"][0]["highlight_rules"][0]["keyword"], "ready");
+        assert_eq!(saved[0]["sources"][1]["highlight_rules"][0]["color"], "red");
+        assert_eq!(saved[0]["sources"][1]["level_colors"], false);
         assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
         fs::remove_dir_all(root).unwrap();
     }

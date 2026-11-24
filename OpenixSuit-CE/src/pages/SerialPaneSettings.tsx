@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { adbDeviceKey, resolveAdbDevice, type AdbDevice } from "../components/TopBar";
 import type { SerialCharset, SerialFormat, SerialLineEnding, SerialPortInfo } from "../types/workbench";
+import { LogColorRuleList } from "./LogColorSettings";
 import type { SerialPaneState } from "./SerialPage";
 
 export const BAUD_RATES = [
@@ -299,6 +300,18 @@ export function SerialPaneSettings({
             {t("multiLog.autoScroll")}
           </label>
         </div>
+        <section className="space-y-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+          <LogColorRuleList
+            title={t("multiLog.highlight.title")}
+            rules={pane.highlightRules}
+            onChange={(highlightRules) => onChange({ highlightRules })}
+          >
+            <label className={CHECKBOX}>
+              <input type="checkbox" checked={pane.levelColors} onChange={(event) => onChange({ levelColors: event.target.checked })} />
+              {t("multiLog.highlight.levelColors")}
+            </label>
+          </LogColorRuleList>
+        </section>
       </section>
     </div>
   );

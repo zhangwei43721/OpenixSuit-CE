@@ -15,6 +15,7 @@ pub(crate) enum LogUiAction {
     PaneSet,
     LayoutSet,
     BridgeSet,
+    HighlightSet,
 }
 
 #[derive(Deserialize)]

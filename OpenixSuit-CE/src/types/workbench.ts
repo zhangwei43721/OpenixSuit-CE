@@ -213,8 +213,8 @@ export interface SerialViewOptions {
 type SerialProfileEndpoint = WorkspaceSerialSlot & { line_coding?: SerialLineCoding };
 
 export type LogProfileSource =
-  | ({ type: "serial"; serial_options?: SerialViewOptions } & SerialProfileEndpoint)
-  | { type: "adb"; label: string; serial: string; command: string };
+  | ({ type: "serial"; serial_options?: SerialViewOptions; highlight_rules?: import("../utils/logHighlight").LogHighlightRule[]; level_colors?: boolean } & SerialProfileEndpoint)
+  | { type: "adb"; label: string; serial: string; command: string; highlight_rules?: import("../utils/logHighlight").LogHighlightRule[]; level_colors?: boolean };
 
 export interface LogProfile {
   id: string;
@@ -234,8 +234,9 @@ export type LogSession = { id: string; label?: string | null; log_path: string }
       baud_rate: number;
       line_coding?: SerialLineCoding;
       serial_options?: SerialViewOptions;
+      display_options?: { highlight_rules: import("../utils/logHighlight").LogHighlightRule[]; level_colors: boolean };
     }
-  | { type: "adb"; serial: string; command: string }
+  | { type: "adb"; serial: string; command: string; display_options?: { highlight_rules: import("../utils/logHighlight").LogHighlightRule[]; level_colors: boolean } }
 );
 
 export interface LogSessionChange {

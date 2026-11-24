@@ -195,7 +195,7 @@ enum Commands {
     LogProfileSave { json_file: PathBuf },
     /// Read or change the live log workspace in the running desktop
     LogUi {
-        #[arg(value_parser = ["get", "pane-set", "layout-set", "bridge-set"])]
+        #[arg(value_parser = ["get", "pane-set", "layout-set", "bridge-set", "highlight-set"])]
         action: String,
         /// Settings patch in a JSON file, or '-' for stdin (required for setters)
         json_file: Option<PathBuf>,

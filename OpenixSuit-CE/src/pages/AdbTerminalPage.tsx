@@ -1,9 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useState } from "react";
 import {
-  BookmarkPlus,
-  CornerDownLeft,
   Eraser,
   ListChecks,
   Pencil,
@@ -14,21 +10,15 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  Send,
   Terminal as TerminalIcon,
   Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { AnsiText } from "../utils/ansi";
+import { useAdbTerminal } from "./useAdbTerminal";
 
 interface AdbTerminalPageProps {
   serial: string;
   onLog: (msg: string) => void;
-}
-
-interface AdbTermDataPayload {
-  session_id: string;
-  data: string;
 }
 
 interface QuickCommandItem {
@@ -37,7 +27,6 @@ interface QuickCommandItem {
   cmd: string;
 }
 
-const MAX_TERMINAL_CHARS = 200_000;
 const STORAGE_QUICK_CMDS_KEY = "adb_terminal_quick_commands";
 const DEFAULT_QUICK_COMMANDS: QuickCommandItem[] = [
   { id: "def-1", label: "dmesg | tail -n 50", cmd: "dmesg | tail -n 50" },
@@ -63,18 +52,14 @@ function loadSavedQuickCommands(): QuickCommandItem[] {
 }
 
 export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isEn = i18n.language.startsWith("en");
-
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
-  const [buffer, setBuffer] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [focused, setFocused] = useState(false);
-  const [imeInput, setImeInput] = useState("");
-  const [termSize, setTermSize] = useState({ cols: 100, rows: 28 });
+  const {
+    hostRef, ready, sessionId, connecting, hasScreen, termSize, error,
+    openSession, closeSession, sendRawData, clearTerminal, focusTerminal,
+  } = useAdbTerminal(serial, onLog);
   const [quickCommands, setQuickCommands] = useState<QuickCommandItem[]>(loadSavedQuickCommands);
-  const [showShortcutDrawer, setShowShortcutDrawer] = useState(true);
+  const [showShortcutDrawer, setShowShortcutDrawer] = useState(false);
   const [shortcutQuery, setShortcutQuery] = useState("");
   const [shortcutEditorOpen, setShortcutEditorOpen] = useState(false);
   const [editingShortcutId, setEditingShortcutId] = useState<string | null>(null);
@@ -89,10 +74,10 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
     }
   }, [quickCommands]);
 
-  const openShortcutCreator = (prefillCmd = "") => {
+  const openShortcutCreator = () => {
     setShowShortcutDrawer(true);
     setEditingShortcutId(null);
-    setShortcutCmd(prefillCmd);
+    setShortcutCmd("");
     setShortcutLabel("");
     setShortcutEditorOpen(true);
   };
@@ -127,7 +112,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
     setShortcutLabel("");
     setShortcutCmd("");
     setShortcutEditorOpen(false);
-    onLogRef.current(
+    onLog(
       isEn ? `Saved shortcut: ${labelText}` : `已保存 ADB 快捷指令: ${labelText}`
     );
   };
@@ -148,234 +133,9 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
     );
   });
 
-  const termContainerRef = useRef<HTMLDivElement | null>(null);
-  const sessionIdRef = useRef<string | null>(null);
-  sessionIdRef.current = sessionId;
-  const onLogRef = useRef(onLog);
-  onLogRef.current = onLog;
-
-  const computeTermSize = useCallback(() => {
-    const el = termContainerRef.current;
-    if (!el) return { cols: 100, rows: 28 };
-    const cols = Math.max(40, Math.floor((el.clientWidth - 24) / 7.4));
-    const rows = Math.max(12, Math.floor((el.clientHeight - 24) / 20));
-    return { cols, rows };
-  }, []);
-
-  const closeSession = useCallback(
-    async (targetId?: string | null) => {
-      const sid = targetId ?? sessionIdRef.current;
-      if (!sid) return;
-      try {
-        await invoke("adb_term_close", { sessionId: sid });
-      } catch {
-        // ignore already closed
-      }
-      if (sid === sessionIdRef.current) {
-        setSessionId(null);
-      }
-    },
-    []
-  );
-
-  const openSession = useCallback(async () => {
-    if (!serial) {
-      setError(isEn ? "No ADB device selected" : "未选择 ADB 设备");
-      return;
-    }
-    setConnecting(true);
-    setError(null);
-    if (sessionIdRef.current) {
-      await closeSession(sessionIdRef.current);
-    }
-
-    const dims = computeTermSize();
-    setTermSize(dims);
-    const newId = `adb-term-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-    sessionIdRef.current = newId;
-    try {
-      await invoke("adb_term_open", {
-        sessionId: newId,
-        serial,
-      });
-      setSessionId(newId);
-      invoke("adb_term_resize", {
-        sessionId: newId,
-        cols: dims.cols,
-        rows: dims.rows,
-      }).catch(() => {});
-      onLogRef.current(
-        isEn
-          ? `ADB PTY opened for ${serial} (${dims.cols}x${dims.rows})`
-          : `ADB 交互终端已连接: ${serial} (${dims.cols}x${dims.rows})`
-      );
-      setTimeout(() => {
-        termContainerRef.current?.focus();
-      }, 50);
-    } catch (err) {
-      sessionIdRef.current = null;
-      const msg = String(err);
-      setError(msg);
-      onLogRef.current(`adb_term_open error: ${msg}`);
-    } finally {
-      setConnecting(false);
-    }
-  }, [serial, closeSession, computeTermSize, isEn]);
-
-  // Listen to adb-term-data events
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<AdbTermDataPayload>("adb-term-data", (event) => {
-      const payload = event.payload;
-      if (!payload || payload.session_id !== sessionIdRef.current) return;
-      setBuffer((prev) => {
-        const combined = prev + payload.data;
-        if (combined.length > MAX_TERMINAL_CHARS) {
-          return combined.slice(combined.length - MAX_TERMINAL_CHARS);
-        }
-        return combined;
-      });
-    }).then((fn) => {
-      unlisten = fn;
-    });
-
-    return () => {
-      if (unlisten) unlisten();
-    };
-  }, []);
-
-  // Auto scroll terminal on output
-  useEffect(() => {
-    const el = termContainerRef.current;
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [buffer]);
-
-  // ResizeObserver for PTY resize
-  useEffect(() => {
-    const el = termContainerRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver(() => {
-      const dims = computeTermSize();
-      setTermSize(dims);
-      if (sessionIdRef.current) {
-        invoke("adb_term_resize", {
-          sessionId: sessionIdRef.current,
-          cols: dims.cols,
-          rows: dims.rows,
-        }).catch(() => {});
-      }
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [computeTermSize]);
-
-  // Cleanup PTY on unmount or serial change
-  useEffect(() => {
-    return () => {
-      if (sessionIdRef.current) {
-        invoke("adb_term_close", { sessionId: sessionIdRef.current }).catch(() => {});
-      }
-    };
-  }, [serial]);
-
-  const sendRawData = useCallback(async (data: string) => {
-    const sid = sessionIdRef.current;
-    if (!sid || !data) return;
-    try {
-      await invoke("adb_term_write", { sessionId: sid, data });
-    } catch (err) {
-      const msg = String(err);
-      setError(msg);
-      onLogRef.current(`adb_term_write error: ${msg}`);
-    }
-  }, []);
-
-  const handleTerminalKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (!sessionId) return;
-
-    // Allow browser copy shortcut Ctrl+C when user actually highlighted text
-    const selection = window.getSelection()?.toString();
-    if (e.ctrlKey && e.key.toLowerCase() === "c" && selection) {
-      return;
-    }
-
-    let seq: string | null = null;
-
-    if (e.ctrlKey && !e.metaKey && !e.altKey) {
-      const lower = e.key.toLowerCase();
-      if (lower === "c") seq = "\x03";
-      else if (lower === "d") seq = "\x04";
-      else if (lower === "l") seq = "\x0c";
-      else if (lower === "z") seq = "\x1a";
-      else if (lower === "a") seq = "\x01";
-      else if (lower === "e") seq = "\x05";
-      else if (lower === "u") seq = "\x15";
-      else if (lower === "w") seq = "\x17";
-    } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-      switch (e.key) {
-        case "Enter":
-          seq = "\r";
-          break;
-        case "Backspace":
-          seq = "\x7f";
-          break;
-        case "Tab":
-          seq = "\t";
-          break;
-        case "Escape":
-          seq = "\x1b";
-          break;
-        case "ArrowUp":
-          seq = "\x1b[A";
-          break;
-        case "ArrowDown":
-          seq = "\x1b[B";
-          break;
-        case "ArrowRight":
-          seq = "\x1b[C";
-          break;
-        case "ArrowLeft":
-          seq = "\x1b[D";
-          break;
-        case "Home":
-          seq = "\x1b[H";
-          break;
-        case "End":
-          seq = "\x1b[F";
-          break;
-        case "Delete":
-          seq = "\x1b[3~";
-          break;
-        default:
-          if (e.key.length === 1) {
-            seq = e.key;
-          }
-          break;
-      }
-    }
-
-    if (seq !== null) {
-      e.preventDefault();
-      e.stopPropagation();
-      sendRawData(seq);
-    }
-  };
-
-  const handleTerminalPaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
-    if (!sessionId) return;
-    const text = e.clipboardData.getData("text");
-    if (text) {
-      e.preventDefault();
-      sendRawData(text);
-    }
-  };
-
-  const handleSendImeBar = () => {
-    if (!sessionId) return;
-    sendRawData(`${imeInput}\r`);
-    setImeInput("");
+  const sendCommand = (command: string) => {
+    sendRawData(`${command}\r`);
+    focusTerminal();
   };
 
   return (
@@ -427,7 +187,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
           ) : (
             <button
               onClick={openSession}
-              disabled={!serial || connecting}
+              disabled={!serial || !ready || connecting}
               className="ui-btn-success"
             >
               <Plug className="h-3.5 w-3.5" />
@@ -459,11 +219,11 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
             Ctrl+D
           </button>
           <button
-            onClick={() => setBuffer("")}
+            onClick={clearTerminal}
             className="ui-btn-secondary"
           >
             <Eraser className="h-3.5 w-3.5" />
-            Clear
+            {t("adbTerminal.clearScrollback")}
           </button>
 
           <div className="mx-1 hidden h-4 w-px bg-slate-200 dark:bg-slate-700 sm:block" />
@@ -487,86 +247,24 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
 
       {/* Main Split: Terminal + Quick Commands List */}
       <div className="flex min-h-0 flex-1 gap-3">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
-          {/* Interactive Terminal Viewport */}
-          <div
-            ref={termContainerRef}
-            tabIndex={0}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            onKeyDown={handleTerminalKeyDown}
-            onPaste={handleTerminalPaste}
-            onClick={() => termContainerRef.current?.focus()}
-            className={`ui-terminal min-h-[260px] flex-1 cursor-text overflow-auto rounded-xl p-4 text-slate-100 outline-none transition ${
-              focused
-                ? "border-blue-500 ring-2 ring-blue-500/20"
-                : ""
-            }`}
-          >
-            {buffer ? (
-              <AnsiText text={buffer} ansiEnabled={true} className="text-slate-100" />
-            ) : (
-              <div className="select-none text-slate-400">
-                {sessionId
-                  ? isEn
-                    ? "Terminal ready. Click here and start typing..."
-                    : "终端已就绪，点击此处即可直接输入指令..."
-                  : isEn
-                  ? "Click 'Connect Shell' above to open an interactive ADB PTY session."
-                  : "点击上方「连接终端」即可开启 ADB 交互式 PTY 会话。"}
-              </div>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 p-2 focus-within:border-blue-500">
+            <div
+              ref={hostRef}
+              onClick={focusTerminal}
+              className="h-full min-h-0 w-full cursor-text"
+            />
+            {!hasScreen && (
+              <p className="pointer-events-none absolute left-4 top-4 m-0 select-none text-xs text-slate-400">
+                {t("adbTerminal.connectHint")}
+              </p>
             )}
           </div>
 
-          {/* Bottom Paste / IME Command Bar */}
-          <div className="ui-card flex items-center gap-2 px-4 py-2.5">
-            <span className="shrink-0 text-xs font-medium text-slate-500 dark:text-slate-400">
-              {isEn ? "Command:" : "发送指令:"}
-            </span>
-            <input
-              type="text"
-              value={imeInput}
-              onChange={(e) => setImeInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && sessionId) {
-                  e.preventDefault();
-                  handleSendImeBar();
-                }
-              }}
-              placeholder={
-                sessionId
-                  ? isEn
-                    ? "Enter long command or Chinese text and press Enter..."
-                    : "输入或粘贴长指令、中文内容后回车发送..."
-                  : isEn
-                  ? "Connect terminal to run (you can still save shortcuts)..."
-                  : "连接终端后可直接发送（未连接也可先输入并存为快捷指令）..."
-              }
-              className="ui-input flex-1 font-mono"
-            />
-            <button
-              type="button"
-              onClick={() => openShortcutCreator(imeInput.trim())}
-              disabled={!imeInput.trim()}
-              title={isEn ? "Save current command to list" : "将当前输入保存到右侧快捷指令列表"}
-              className="ui-btn-secondary"
-            >
-              <BookmarkPlus className="h-3.5 w-3.5 text-blue-500" />
-              {isEn ? "Save" : "存为快捷"}
-            </button>
-            <button
-              onClick={handleSendImeBar}
-              disabled={!sessionId}
-              className="ui-btn-primary"
-            >
-              <Send className="h-3.5 w-3.5" />
-              {isEn ? "Send" : "发送"}
-            </button>
-          </div>
         </div>
 
         {showShortcutDrawer && (
-          <div className="ui-card flex w-80 shrink-0 flex-col overflow-hidden">
+          <div className="ui-card flex w-72 max-w-[40%] shrink-0 flex-col overflow-hidden">
             <div className="ui-card-header">
               <div className="ui-title">
                 <ListChecks className="h-4 w-4 text-blue-500" />
@@ -583,7 +281,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => openShortcutCreator(imeInput.trim())}
+                  onClick={openShortcutCreator}
                   className="ui-btn-primary !px-2.5 !py-1 text-[11px]"
                 >
                   <Plus className="h-3 w-3" />
@@ -678,19 +376,11 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                         <button
                           type="button"
                           disabled={!sessionId}
-                          onClick={() => sendRawData(`${item.cmd}\r`)}
+                          onClick={() => sendCommand(item.cmd)}
                           title={isEn ? "Run now" : "立即执行"}
                           className="rounded-md p-1 text-emerald-600 transition hover:bg-emerald-500/15 disabled:opacity-35 dark:text-emerald-400"
                         >
                           <Play className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setImeInput(item.cmd)}
-                          title={isEn ? "Fill into input bar" : "填入下方输入框修改"}
-                          className="rounded-md p-1 text-slate-500 transition hover:bg-blue-500/10 hover:text-blue-500"
-                        >
-                          <CornerDownLeft className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
@@ -713,7 +403,7 @@ export function AdbTerminalPage({ serial, onLog }: AdbTerminalPageProps) {
                     <button
                       type="button"
                       disabled={!sessionId}
-                      onClick={() => sendRawData(`${item.cmd}\r`)}
+                      onClick={() => sendCommand(item.cmd)}
                       title={item.cmd}
                       className="mt-1 line-clamp-2 w-full break-all text-left font-mono text-[11px] leading-4 text-slate-500 transition hover:text-blue-600 disabled:hover:text-slate-500 dark:text-slate-400 dark:hover:text-blue-400"
                     >

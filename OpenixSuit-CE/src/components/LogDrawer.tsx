@@ -2,6 +2,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
 import { ChevronDown, ChevronUp, Download } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { LogMarkedText } from "../utils/ansi";
 
 interface LogDrawerProps {
   logs: string[];
@@ -52,7 +53,7 @@ export function LogDrawer({ logs, open, onToggle, onClear }: LogDrawerProps) {
           {logs.length === 0 ? (
             <div className="text-slate-500">{t("log.empty")}</div>
           ) : (
-            logs.map((line, i) => <div key={i}>{line}</div>)
+            logs.map((line, i) => <div key={i}><LogMarkedText text={line} /></div>)
           )}
         </div>
       )}

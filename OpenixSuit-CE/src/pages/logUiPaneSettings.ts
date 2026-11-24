@@ -1,11 +1,12 @@
 import type { SerialLineCoding } from "../types/workbench";
 import type { SerialPaneState } from "./SerialPage";
+import { configuredHighlightRules, HIGHLIGHT_COLORS, MAX_HIGHLIGHT_KEYWORD_LENGTH, MAX_HIGHLIGHT_RULES, type LogHighlightRule } from "../utils/logHighlight";
 
 type JsonObject = Record<string, unknown>;
 
 export interface LogUiRequest {
   id: string;
-  action: "get" | "pane-set" | "layout-set" | "bridge-set";
+  action: "get" | "pane-set" | "layout-set" | "bridge-set" | "highlight-set";
   params: unknown;
 }
 
@@ -37,6 +38,23 @@ function integer(value: unknown, field: string, minimum: number, maximum: number
     throw new Error(`${field} must be an integer from ${minimum} to ${maximum}`);
   }
   return value;
+}
+
+function highlightRules(value: unknown): LogHighlightRule[] {
+  if (!Array.isArray(value) || value.length > MAX_HIGHLIGHT_RULES) throw new Error(`highlight_rules must contain at most ${MAX_HIGHLIGHT_RULES} rules`);
+  return value.map((item, index) => {
+    const rule = settingsObject(item, `highlight_rules[${index}]`);
+    const keyword = text(rule.keyword, `highlight_rules[${index}].keyword`).trim();
+    if (!keyword || /[\r\n]/.test(keyword) || keyword.length > MAX_HIGHLIGHT_KEYWORD_LENGTH) throw new Error(`highlight_rules[${index}].keyword must contain 1 to ${MAX_HIGHLIGHT_KEYWORD_LENGTH} characters`);
+    return { keyword, color: choice(rule.color, `highlight_rules[${index}].color`, HIGHLIGHT_COLORS) };
+  });
+}
+
+export function sharedHighlightPatch(params: JsonObject): LogHighlightRule[] {
+  if (Object.keys(params).length !== 1 || !("highlight_rules" in params)) {
+    throw new Error("highlight-set requires highlight_rules");
+  }
+  return highlightRules(params.highlight_rules);
 }
 
 function updateLineCoding(value: unknown, current: SerialLineCoding): SerialLineCoding {
@@ -79,6 +97,8 @@ export function paneSettings(pane: SerialPaneState) {
     auto_scroll: pane.autoScroll,
     search_query: pane.searchQuery,
     filter_only: pane.filterOnly,
+    highlight_rules: configuredHighlightRules(pane.highlightRules),
+    level_colors: pane.levelColors,
   };
 }
 
@@ -113,6 +133,8 @@ export function panePatch(params: JsonObject, pane: SerialPaneState, presets: nu
       case "auto_scroll": next.autoScroll = bool(value, field); break;
       case "search_query": next.searchQuery = text(value, field); break;
       case "filter_only": next.filterOnly = bool(value, field); break;
+      case "highlight_rules": next.highlightRules = highlightRules(value); break;
+      case "level_colors": next.levelColors = bool(value, field); break;
       default: throw new Error(`Unknown pane setting: ${field}`);
     }
   }

@@ -5,7 +5,7 @@ use crate::serial::{
     SerialSessionHandle,
 };
 use crate::state::{epoch_ms, AppState};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -17,8 +17,34 @@ pub struct LogSession {
     pub(crate) log_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) display_options: Option<LogDisplayOptions>,
     #[serde(flatten)]
     pub(crate) source: LogSessionSource,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LogDisplayOptions {
+    pub(crate) highlight_rules: Vec<LogHighlightRule>,
+    pub(crate) level_colors: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LogHighlightRule {
+    pub(crate) keyword: String,
+    pub(crate) color: LogHighlightColor,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum LogHighlightColor {
+    Red,
+    Amber,
+    Green,
+    Blue,
+    Purple,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -43,6 +69,7 @@ impl From<&SerialSessionHandle> for LogSession {
             id: handle.id.clone(),
             log_path: handle.log_path.clone(),
             label: handle.label.clone(),
+            display_options: handle.display_options.clone(),
             source: LogSessionSource::Serial {
                 port_name: handle.port_name.clone(),
                 baud_rate: handle.baud_rate,
@@ -60,11 +87,13 @@ impl LogSession {
         label: Option<String>,
         serial: String,
         command: String,
+        display_options: Option<LogDisplayOptions>,
     ) -> Self {
         Self {
             id,
             log_path,
             label,
+            display_options,
             source: LogSessionSource::Adb { serial, command },
         }
     }
@@ -149,7 +178,10 @@ pub async fn log_session_start(
                 baud_rate,
                 line_coding,
                 serial_options,
+                highlight_rules,
+                level_colors,
             } => {
+                let display_options = LogDisplayOptions { highlight_rules, level_colors };
                 let (handle, _) = open_serial_session(
                     &app,
                     &state,
@@ -161,6 +193,7 @@ pub async fn log_session_start(
                         serial_options,
                     },
                     Some(label),
+                    Some(display_options),
                 )?;
                 Ok(LogSession::from(handle.as_ref()))
             }
@@ -168,6 +201,8 @@ pub async fn log_session_start(
                 label,
                 serial,
                 command,
+                highlight_rules,
+                level_colors,
             } => adb_log::open_adb_log_session(
                 &app,
                 &state,
@@ -175,6 +210,7 @@ pub async fn log_session_start(
                 serial,
                 command,
                 Some(label),
+                Some(LogDisplayOptions { highlight_rules, level_colors }),
             ),
         }
     })
@@ -226,6 +262,7 @@ pub async fn log_profile_bridge_start(
                     serial_options: None,
                 },
                 Some(endpoint.label),
+                None,
             )?;
             if created {
                 opened.push(handle.id.clone());

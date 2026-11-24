@@ -6,6 +6,7 @@ import type { FelDevice } from "../components/TopBar";
 import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult } from "./FlashHub";
 import { SectorFlash } from "./SectorFlash";
+import { LogMarkedText } from "../utils/ansi";
 
 interface FirmwareFlashProps {
   active?: boolean;
@@ -489,7 +490,7 @@ function StandardFlash({
             ref={logBoxRef}
             className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3.5 text-slate-300"
           >
-            {flashLogs.join("\n") || t("flash.logPlaceholder")}
+            {flashLogs.length > 0 ? <LogMarkedText text={flashLogs.join("\n")} /> : t("flash.logPlaceholder")}
           </pre>
         </div>
       </div>

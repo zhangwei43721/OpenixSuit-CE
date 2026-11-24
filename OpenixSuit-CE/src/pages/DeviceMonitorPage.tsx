@@ -22,6 +22,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { MonitorLineChart } from "../components/MonitorLineChart";
 import { BatteryInfo, CpuSnapshot, DeviceMetrics, StorageUsage } from "../types/workbench";
+import { LogMarkedText } from "../utils/ansi";
 
 interface DeviceMonitorPageProps {
   serial: string;
@@ -1154,7 +1155,7 @@ export function DeviceMonitorPage({
                     key={i}
                     className="rounded-md bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 px-2 py-0.5 font-mono text-[11px] tabular-nums text-slate-600 dark:text-slate-300"
                   >
-                    {line}
+                    <LogMarkedText text={line} />
                   </span>
                 ))}
               </div>
@@ -1176,9 +1177,9 @@ export function DeviceMonitorPage({
                   const cpuNum = parseFloat(row.cpu.replace("%", "")) || 0;
                   return (
                     <tr key={`${row.pid}-${row.command}`} className="hover:bg-slate-50 dark:hover:bg-slate-900/60">
-                      <td className="py-2 pr-3 tabular-nums text-slate-500">{row.pid}</td>
-                      <td className="py-2 pr-3 text-slate-600 dark:text-slate-300">{row.user}</td>
-                      <td className="py-2 pr-3 text-slate-500">{row.stat}</td>
+                      <td className="py-2 pr-3 tabular-nums text-slate-500"><LogMarkedText text={row.pid} /></td>
+                      <td className="py-2 pr-3 text-slate-600 dark:text-slate-300"><LogMarkedText text={row.user} /></td>
+                      <td className="py-2 pr-3 text-slate-500"><LogMarkedText text={row.stat} /></td>
                       <td className="py-2 pr-3 tabular-nums">
                         <span
                           className={`inline-block rounded-md px-1.5 py-0.5 text-[11px] ${
@@ -1189,12 +1190,12 @@ export function DeviceMonitorPage({
                               : "text-slate-700 dark:text-slate-200"
                           }`}
                         >
-                          {row.cpu}
+                          <LogMarkedText text={row.cpu} />
                         </span>
                       </td>
-                      <td className="py-2 pr-3 tabular-nums text-slate-600 dark:text-slate-300">{row.mem}</td>
+                      <td className="py-2 pr-3 tabular-nums text-slate-600 dark:text-slate-300"><LogMarkedText text={row.mem} /></td>
                       <td className="py-2 break-all">
-                        <div className="text-slate-800 dark:text-slate-100">{row.command}</div>
+                        <div className="text-slate-800 dark:text-slate-100"><LogMarkedText text={row.command} /></div>
                         {row.paths.length > 0 && onNavigateAdbPath && (
                           <div className="mt-1 flex flex-wrap gap-1.5">
                             {row.paths.map((p) => (
@@ -1206,7 +1207,7 @@ export function DeviceMonitorPage({
                                 className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-[11px] text-blue-600 hover:bg-blue-500/20 dark:text-blue-400"
                               >
                                 <FolderOpen className="h-3 w-3 shrink-0" />
-                                <span>{p}</span>
+                                <span><LogMarkedText text={p} /></span>
                               </button>
                             ))}
                           </div>
@@ -1220,14 +1221,15 @@ export function DeviceMonitorPage({
           </div>
         ) : (
           <pre className="flex-1 overflow-auto p-4 font-mono text-xs leading-5 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 whitespace-pre">
-            {latest?.top_output ||
-              (serial
-                ? isEn
-                  ? "Waiting for metrics sample..."
-                  : "等待采集设备性能数据..."
-                : isEn
-                ? "Please connect an ADB device first."
-                : "请先连接一台 ADB 设备。")}
+            {latest?.top_output ? (
+              <LogMarkedText text={latest.top_output} />
+            ) : serial
+              ? isEn
+                ? "Waiting for metrics sample..."
+                : "等待采集设备性能数据..."
+              : isEn
+              ? "Please connect an ADB device first."
+              : "请先连接一台 ADB 设备。"}
           </pre>
         )}
       </div>

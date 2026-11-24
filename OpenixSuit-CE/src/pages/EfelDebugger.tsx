@@ -4,6 +4,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import Editor from "@monaco-editor/react";
 import { useTranslation } from "react-i18next";
+import { LogMarkedText } from "../utils/ansi";
 
 interface DisasmInsn {
   address: string;
@@ -376,7 +377,7 @@ export function EfelDebugger({
           />
         </div>
         <pre className="ui-terminal h-28 overflow-y-auto p-3 tabular-nums text-slate-300">
-          {opLogs.join("\n") || "OPERATION LOG"}
+          {opLogs.length > 0 ? <LogMarkedText text={opLogs.join("\n")} /> : "OPERATION LOG"}
         </pre>
       </div>
     </div>

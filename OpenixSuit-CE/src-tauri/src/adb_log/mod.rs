@@ -127,7 +127,7 @@ pub async fn adb_log_open(
     serial: String,
     command: String,
 ) -> Result<AdbLogSession, String> {
-    let session = open_adb_log_session(&app, &state, session_id, serial, command, None)?;
+    let session = open_adb_log_session(&app, &state, session_id, serial, command, None, None)?;
     Ok(AdbLogSession {
         id: session.id,
         log_path: session.log_path,
@@ -141,6 +141,7 @@ pub(crate) fn open_adb_log_session(
     serial: String,
     command: String,
     label: Option<String>,
+    display_options: Option<crate::log_sessions::LogDisplayOptions>,
 ) -> Result<LogSession, String> {
     let id = session_id.trim().to_string();
     if id.is_empty() {
@@ -195,7 +196,7 @@ pub(crate) fn open_adb_log_session(
         .map_err(|error| format!("Failed to start adb: {error}"))?;
     let (stop, stopped) = watch::channel(None);
     let (finished, done) = watch::channel(None);
-    let session = LogSession::adb(id.clone(), log_path, label, serial.clone(), command);
+    let session = LogSession::adb(id.clone(), log_path, label, serial.clone(), command, display_options);
     active.insert(
         id.clone(),
         AdbLogHandle {

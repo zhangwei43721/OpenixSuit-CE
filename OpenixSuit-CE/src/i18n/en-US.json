@@ -193,7 +193,37 @@
       "instructions": "Load a bridge profile or choose two connected ports in Settings first.",
       "byteCount_one": "{{count}} byte",
       "byteCount_other": "{{count}} bytes"
+    },
+    "highlight": {
+      "sharedTitle": "Log color marks",
+      "sharedHint": "Keyword rules apply across log views. A pane rule for the same keyword takes priority in that pane.",
+      "levelLegend": "Automatic level colors",
+      "levels": {
+        "debug": "Debug",
+        "info": "Info",
+        "notice": "Notice",
+        "warn": "Warning",
+        "error": "Error",
+        "fatal": "Fatal"
+      },
+      "title": "Keyword Highlighting",
+      "add": "Add Rule",
+      "keyword": "Keyword {{number}}",
+      "color": "Rule {{number}} color",
+      "levelColors": "Detect and color log levels",
+      "hint": "Up to {{maxRules}} rules; each keyword can contain at most {{maxLength}} characters.",
+      "colors": {
+        "red": "Red",
+        "amber": "Amber",
+        "green": "Green",
+        "blue": "Blue",
+        "purple": "Purple"
+      }
     }
+  },
+  "adbTerminal": {
+    "clearScrollback": "Clear scrollback",
+    "connectHint": "Connect to type here. Copy with Ctrl+Shift+C and paste with Ctrl+Shift+V, or use ⌘C / ⌘V on macOS."
   },
   "log": {
     "live": "Live Log",

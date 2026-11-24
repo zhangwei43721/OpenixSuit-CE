@@ -19,6 +19,7 @@ import {
   IncidentAnalysisRecord,
   IncidentAnalysisResult,
 } from "../components/IncidentAnalysis";
+import { LogMarkedText } from "../utils/ansi";
 
 export interface AiSyncTimelineItem {
   time: string;
@@ -325,7 +326,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
 
                     {inc.log_tail.length > 0 && (
                       <pre className="ui-terminal max-h-36 overflow-auto whitespace-pre-wrap p-3 text-[11px]">
-                        {inc.log_tail.join("\n")}
+                        <LogMarkedText text={inc.log_tail.join("\n")} />
                       </pre>
                     )}
                     {analysis && <IncidentAnalysisResult analysis={analysis} />}

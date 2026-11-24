@@ -44,13 +44,16 @@ import {
   SerialViewOptions,
 } from "../types/workbench";
 import { AnsiText, stripAnsi } from "../utils/ansi";
+import { configuredHighlightRules, detectLogLevelFormat, type LogHighlightRule } from "../utils/logHighlight";
 import { useAdbLogOutput, type AdbLogStream } from "./useAdbLogOutput";
 import { SerialBridgePanel, type BridgeSettingsHandle } from "./SerialBridgePanel";
 import { LogProfileControls } from "./LogProfileControls";
 import { BAUD_RATES, SerialPaneSettings } from "./SerialPaneSettings";
 import { PaneSettingsPopover } from "./PaneSettingsPopover";
+import { LogColorSettings } from "./LogColorSettings";
+import { useLogColorSettings } from "../store/logColors";
 import { LogCaptureSettings } from "./LogCaptureSettings";
-import { layoutPatch, panePatch, paneSettings as cliPaneSettings, settingsObject, type LogUiRequest } from "./logUiPaneSettings";
+import { layoutPatch, panePatch, sharedHighlightPatch, paneSettings as cliPaneSettings, settingsObject, type LogUiRequest } from "./logUiPaneSettings";
 import { appendHexRows, hexToBase64, SERIAL_LINE_SUFFIX, type BufferedLine } from "./serialFormats";
 import { findSerialPort, portHasName, readSerialPortBinding, type SerialPortBinding } from "./serialPortBinding";
 
@@ -91,6 +94,8 @@ export interface SerialPaneState {
   panel?: LogPanePanel;
   showTimestamps: boolean;
   ansiEnabled: boolean;
+  highlightRules: LogHighlightRule[];
+  levelColors: boolean;
   autoScroll: boolean;
   followPaused: boolean;
   filterOnly: boolean;
@@ -139,7 +144,7 @@ const LOG_PANES_KEY = "openix_log_panes_v1";
 const PANE_SETTING_KEYS = [
   "paneId", "label", "source", "adbSerial", "adbCommand", "portName", "serialBinding", "baudRate", "customBaud",
   "coding", "charset", "receiveFormat", "sendFormat", "hidden", "showTimestamps",
-  "ansiEnabled", "autoScroll", "filterOnly", "searchQuery", "lineEnding", "resumeConnected",
+  "ansiEnabled", "highlightRules", "levelColors", "autoScroll", "filterOnly", "searchQuery", "lineEnding", "resumeConnected",
 ] as const satisfies readonly (keyof SerialPaneState)[];
 
 function loadPaneSettings(): SerialPaneState[] | null {
@@ -208,6 +213,8 @@ function createPane(portName = "", baudRate = 115200, label?: string): SerialPan
     hidden: false,
     showTimestamps: true,
     ansiEnabled: true,
+    highlightRules: [],
+    levelColors: true,
     autoScroll: true,
     followPaused: false,
     filterOnly: false,
@@ -251,9 +258,16 @@ function paneLines(pane: SerialPaneState): BufferedLine[] {
 function createProfilePane(source: LogProfileSource): SerialPaneState {
   if (source.type === "serial") {
     const pane = createPane(source.port_name, source.baud_rate, source.label);
-    return { ...pane, coding: source.line_coding ?? pane.coding, ...loadSerialView(source.serial_options) };
+    return {
+      ...pane,
+      coding: source.line_coding ?? pane.coding,
+      ...loadSerialView(source.serial_options),
+      highlightRules: source.highlight_rules ?? [],
+      levelColors: source.level_colors ?? true,
+    };
   }
-  return { ...createPane("", 115200, source.label), source: "adb", adbSerial: source.serial, adbCommand: source.command };
+  const pane = { ...createPane("", 115200, source.label), source: "adb" as const, adbSerial: source.serial, adbCommand: source.command };
+  return { ...pane, highlightRules: source.highlight_rules ?? [], levelColors: source.level_colors ?? true };
 }
 
 function normalizeAdbCommand(command: string): string {
@@ -338,6 +352,10 @@ function attachLogSession(
             lastAdbStream: undefined,
           }),
         }),
+    ...((!existing || emptyPane(existing)) && session.display_options && {
+      highlightRules: session.display_options.highlight_rules,
+      levelColors: session.display_options.level_colors,
+    }),
   };
   return index < 0 ? [...panes, next] : panes.map((pane, i) => i === index ? next : pane);
 }
@@ -403,6 +421,7 @@ export function SerialPage({
   onLog,
 }: SerialPageProps) {
   const { t, i18n } = useTranslation();
+  const { rules: sharedHighlightRules, save: saveSharedHighlightRules } = useLogColorSettings();
   const isEn = i18n.language.startsWith("en");
 
   const [subView, setSubView] = useState<"live" | "logs" | "bridge" | "settings">("live");
@@ -763,6 +782,8 @@ export function SerialPage({
           next[matchingIndex] = {
             ...pane,
             label: profilePane.label,
+            highlightRules: profilePane.highlightRules,
+            levelColors: profilePane.levelColors,
             ...(pane.source === "adb" && { adbSerial: profilePane.adbSerial }),
             ...(source.type === "serial" && {
               ...loadSerialView(source.serial_options),
@@ -845,6 +866,7 @@ export function SerialPage({
     if (!bridge) throw new Error("Log settings are still loading");
 
     let columns = columnCount;
+    let highlightRules = sharedHighlightRules;
     switch (action) {
       case "get":
         if (Object.keys(values).length) throw new Error("get does not accept settings");
@@ -895,13 +917,20 @@ export function SerialPage({
         });
         break;
       }
+      case "highlight-set":
+        highlightRules = sharedHighlightPatch(values);
+        flushSync(() => saveSharedHighlightRules(highlightRules));
+        break;
       case "bridge-set":
         await bridge.setSettings(values);
         break;
       default:
         throw new Error(`Unknown log settings action: ${action}`);
     }
-    return { panes: panesRef.current.map(cliPaneSettings), columns, bridge: bridge.getSettings() };
+    return {
+      panes: panesRef.current.map(cliPaneSettings), columns, bridge: bridge.getSettings(),
+      shared_highlight_rules: configuredHighlightRules(highlightRules),
+    };
   };
 
   const adbDeviceForPane = (pane: SerialPaneState) =>
@@ -1145,10 +1174,11 @@ export function SerialPage({
       }
       labels.add(label);
       sources.push(pane.source === "adb"
-        ? { type: "adb", label, serial, command }
+        ? { type: "adb", label, serial, command, highlight_rules: configuredHighlightRules(pane.highlightRules), level_colors: pane.levelColors }
         : {
             type: "serial", label, port_name: portName, baud_rate: pane.baudRate,
             line_coding: pane.coding, serial_options: serialViewOptions(pane),
+            highlight_rules: configuredHighlightRules(pane.highlightRules), level_colors: pane.levelColors,
           });
     }
     const bridge = bridgeSettingsRef.current?.getProfileBridge(sources);
@@ -1184,15 +1214,6 @@ export function SerialPage({
     if (gridRef.current) gridRef.current.scrollTop = gridScrollBeforeEnlarge.current;
     gridScrollBeforeEnlarge.current = null;
   }, [enlarged, subView]);
-
-  const filteredLogText = useMemo(() => {
-    if (!logSearch.trim()) return logContent;
-    const q = logSearch.toLowerCase();
-    return logContent
-      .split("\n")
-      .filter((l) => stripAnsi(l).toLowerCase().includes(q))
-      .join("\n");
-  }, [logContent, logSearch]);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col gap-2">
@@ -1326,6 +1347,7 @@ export function SerialPage({
                 className="min-w-0 scroll-mt-1 rounded-b-xl"
               />
             </section>
+            <LogColorSettings />
             <LogCaptureSettings />
           </div>
         </section>
@@ -1370,11 +1392,6 @@ export function SerialPage({
                 const hexOutput = !isAdb && pane.receiveFormat === "hex";
                 const history = pane.cmdHistory[pane.sendFormat];
                 const displayLines = receivedLines
-                  .filter((l) =>
-                    !pane.filterOnly || !pane.searchQuery
-                      ? true
-                      : stripAnsi(l.text).toLowerCase().includes(pane.searchQuery.toLowerCase())
-                  )
                   .map((l) => (pane.showTimestamps ? `[${l.ts}] ${l.text}` : l.text))
                   .join("\n");
 
@@ -1557,6 +1574,11 @@ export function SerialPage({
                             showTimestamps={pane.showTimestamps}
                             ansiEnabled={pane.ansiEnabled && !hexOutput}
                             searchQuery={pane.searchQuery}
+                            filterOnly={pane.filterOnly}
+                            highlightRules={hexOutput ? undefined : pane.highlightRules}
+                            levelFormat={pane.levelColors && !hexOutput
+                              ? (isAdb ? detectLogLevelFormat(normalizeAdbCommand(pane.adbCommand)) : "serial")
+                              : undefined}
                           />
                         )}
                       </div>
@@ -1761,10 +1783,12 @@ export function SerialPage({
                 </div>
               ) : selectedLogFile ? (
                 <AnsiText
-                  text={filteredLogText}
+                  text={logContent}
                   showTimestamps={logShowTimestamps}
                   ansiEnabled={logAnsi}
                   searchQuery={logSearch}
+                  filterOnly={Boolean(logSearch.trim())}
+                  levelFormat="serial"
                 />
               ) : (
                 <div className="text-xs text-slate-400 font-mono">

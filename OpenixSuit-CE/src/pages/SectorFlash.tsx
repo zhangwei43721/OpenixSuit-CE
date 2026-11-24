@@ -5,6 +5,7 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { Check, Edit2, Plus, Trash2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult, SharedPartitionEntry } from "./FlashHub";
+import { LogMarkedText } from "../utils/ansi";
 
 export function SectorFlash({
   active = true,
@@ -437,7 +438,7 @@ export function SectorFlash({
             ref={logBoxRef}
             className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3 text-slate-300"
           >
-            {opLogs.join("\n") || "OPERATION LOG"}
+            {opLogs.length > 0 ? <LogMarkedText text={opLogs.join("\n")} /> : "OPERATION LOG"}
           </pre>
         </div>
       </div>

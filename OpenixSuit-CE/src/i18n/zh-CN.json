@@ -192,7 +192,37 @@
       "waiting": "等待任一端发送数据…",
       "instructions": "先在设置中载入互转配置，或选择两个已连接的串口。",
       "byteCount": "{{count}} 字节"
+    },
+    "highlight": {
+      "sharedTitle": "日志颜色标记",
+      "sharedHint": "关键词规则适用于所有日志窗口。分屏有同名规则时，优先使用该分屏的颜色。",
+      "levelLegend": "自动级别颜色",
+      "levels": {
+        "debug": "调试",
+        "info": "信息",
+        "notice": "提示",
+        "warn": "警告",
+        "error": "错误",
+        "fatal": "致命"
+      },
+      "title": "关键词高亮",
+      "add": "添加规则",
+      "keyword": "关键词 {{number}}",
+      "color": "规则 {{number}} 颜色",
+      "levelColors": "识别并着色日志级别",
+      "hint": "最多 {{maxRules}} 条规则，每个关键词不超过 {{maxLength}} 个字符。",
+      "colors": {
+        "red": "红色",
+        "amber": "琥珀色",
+        "green": "绿色",
+        "blue": "蓝色",
+        "purple": "紫色"
+      }
     }
+  },
+  "adbTerminal": {
+    "clearScrollback": "清除回滚",
+    "connectHint": "连接终端后可直接输入。复制用 Ctrl+Shift+C，粘贴用 Ctrl+Shift+V，macOS 用 ⌘C / ⌘V。"
   },
   "log": {
     "live": "实时日志",

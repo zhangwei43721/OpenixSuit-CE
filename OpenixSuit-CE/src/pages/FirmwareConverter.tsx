@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { save } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult } from "./FlashHub";
+import { LogMarkedText } from "../utils/ansi";
 
 type TargetKind = "spinor" | "sdcard" | "emmc" | "sdnand" | "ufs";
 
@@ -236,7 +237,7 @@ export function FirmwareConverter({
             </span>
           </div>
           <pre className="ui-terminal min-h-0 flex-1 overflow-y-auto rounded-none border-0 p-3 text-slate-300">
-            {logs.join("\n") || t("converter.logTitle")}
+            {logs.length > 0 ? <LogMarkedText text={logs.join("\n")} /> : t("converter.logTitle")}
           </pre>
         </div>
       </div>

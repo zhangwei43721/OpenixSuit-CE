@@ -6,6 +6,7 @@ import { FileUp, Play, Terminal, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ExtensionTabItem, PluginFileFilter, PluginInput } from "../types/plugin";
 import { ExtensionIcon } from "../components/ExtensionIcon";
+import { LogMarkedText } from "../utils/ansi";
 
 interface PluginRunnerProps {
   item: ExtensionTabItem;
@@ -335,7 +336,7 @@ export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
             ) : (
               logs.map((line, i) => (
                 <div key={i} className="whitespace-pre-wrap break-all leading-5">
-                  {line}
+                  <LogMarkedText text={line} />
                 </div>
               ))
             )}
