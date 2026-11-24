@@ -339,7 +339,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                                 )
                               }
                               title="Pull"
-                              className="ui-select py-1"
+                              className="ui-select ui-select-compact"
                             >
                               <option value="default">pull: default</option>
                               <option value="0">0: 无上下拉</option>
@@ -355,7 +355,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                                 )
                               }
                               title="Drive Level"
-                              className="ui-select py-1"
+                              className="ui-select ui-select-compact"
                             >
                               <option value="default">drv: default</option>
                               <option value="0">drv: 0</option>
@@ -372,7 +372,7 @@ export function SysConfigEditor({ rawText, onLog }: SysConfigEditorProps) {
                                 )
                               }
                               title="Output Level"
-                              className="ui-select py-1"
+                              className="ui-select ui-select-compact"
                             >
                               <option value="default">level: default</option>
                               <option value="0">level: 0</option>

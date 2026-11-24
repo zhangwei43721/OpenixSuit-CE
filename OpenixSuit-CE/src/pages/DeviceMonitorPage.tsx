@@ -624,7 +624,7 @@ export function DeviceMonitorPage({
             value={pollIntervalMs}
             onChange={(e) => setPollIntervalMs(Number(e.target.value))}
             title={isEn ? "Sampling interval" : "采样间隔"}
-            className="ui-select py-1 px-2 text-xs font-mono"
+            className="ui-select ui-select-compact text-xs font-mono"
           >
             <option value={2000}>2s</option>
             <option value={5000}>5s</option>
@@ -846,7 +846,7 @@ export function DeviceMonitorPage({
                   <select
                     value={activeNetIface}
                     onChange={(e) => setSelectedNetIface(e.target.value)}
-                    className="ui-select py-0.5 px-1.5 text-[11px] font-mono font-normal"
+                    className="ui-select ui-select-compact text-[11px] font-mono font-normal"
                   >
                     <option value="__all__">{isEn ? "All" : "全部"}</option>
                     {netIfaceNames.map((name) => (
@@ -923,7 +923,7 @@ export function DeviceMonitorPage({
                   <select
                     value={activeDiskDev}
                     onChange={(e) => setSelectedDiskDev(e.target.value)}
-                    className="ui-select py-0.5 px-1.5 text-[11px] font-mono font-normal"
+                    className="ui-select ui-select-compact text-[11px] font-mono font-normal"
                   >
                     <option value="__all__">{isEn ? "All" : "全部"}</option>
                     {diskDevNames.map((name) => (

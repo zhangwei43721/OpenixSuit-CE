@@ -365,7 +365,7 @@ export function Sidebar({
               disabled={locked}
               value={activeWorkspaceId || ""}
               onChange={(e) => onSelectWorkspace(e.target.value || null)}
-              className="ui-select min-w-0 flex-1 py-1"
+              className="ui-select ui-select-compact min-w-0 flex-1"
             >
               <option value="">{t("nav.globalDefault")}</option>
               {workspaces.map((ws) => (

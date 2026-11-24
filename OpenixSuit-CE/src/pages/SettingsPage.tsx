@@ -122,7 +122,7 @@ export function SettingsPage({
           <select
             value={settings.language}
             onChange={(e) => onUpdate({ language: e.target.value as "zh-CN" | "en-US" })}
-            className="ui-select min-w-[140px] shrink-0"
+            className="ui-select min-w-28 shrink-0"
           >
             <option value="zh-CN">简体中文</option>
             <option value="en-US">English</option>
@@ -137,7 +137,7 @@ export function SettingsPage({
           <select
             value={settings.theme}
             onChange={(e) => onUpdate({ theme: e.target.value as ThemeMode })}
-            className="ui-select min-w-[140px] shrink-0"
+            className="ui-select min-w-28 shrink-0"
           >
             <option value="system">{t("settings.system")}</option>
             <option value="dark">{t("settings.dark")}</option>
@@ -153,7 +153,7 @@ export function SettingsPage({
           <select
             value={settings.usb_backend}
             onChange={(e) => onUpdate({ usb_backend: e.target.value as UsbBackend })}
-            className="ui-select min-w-[140px] shrink-0"
+            className="ui-select min-w-28 shrink-0"
           >
             <option value="auto">Auto</option>
             <option value="winusb">WinUSB</option>

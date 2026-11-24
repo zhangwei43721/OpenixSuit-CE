@@ -1331,7 +1331,7 @@ export function SerialPage({
                       setColumnCount(Number(event.target.value));
                       localStorage.setItem(LOG_COLUMNS_KEY, event.target.value);
                     }}
-                    className="ui-select min-w-[140px]"
+                    className="ui-select min-w-20"
                   >
                     {[2, 3, 4].map((count) => (
                       <option key={count} value={count}>{t("multiLog.columns", { count })}</option>

@@ -109,6 +109,7 @@ export function SerialPaneSettings({
               {t("multiLog.serialPort")}
               <select
                 value={pane.portName}
+                title={pane.portName || undefined}
                 disabled={busy}
                 onChange={(event) => onChange({ portName: event.target.value })}
                 className="ui-select w-full font-mono"

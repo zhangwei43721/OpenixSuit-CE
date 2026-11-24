@@ -6,7 +6,7 @@ import {
   Bot,
   Check,
   Copy,
-  FileCode2,
+  ChevronDown,
   RefreshCw,
   ShieldAlert,
   Terminal,
@@ -35,37 +35,38 @@ interface AiWorkbenchPageProps {
 }
 
 const SKILL_PATH = "skills/openixsuit-ce/SKILL.md";
+const SKILL_REPOSITORY_URL = "https://github.com/zhangwei43721/openixsuit-ce-skill";
 
 const CLI_CHEATSHEET = [
   {
     cmd: "openixsuit-ce ai status",
-    zh: "查看当前 FEL / ADB / 串口会话与工作区状态",
-    en: "Inspect FEL, ADB, serial sessions, and workspace status",
+    zh: "查看设备与会话",
+    en: "View devices and sessions",
   },
   {
     cmd: "openixsuit-ce ai serial-ports",
-    zh: "列出可用串口设备及当前打开的会话",
-    en: "List available serial ports and active sessions",
+    zh: "列出串口",
+    en: "List serial ports",
   },
   {
     cmd: "openixsuit-ce ai serial-logs --tail 120",
-    zh: "读取最近串口输出日志，供 AI 定位 Boot / Kernel 异常",
-    en: "Read recent serial logs for AI boot/kernel diagnosis",
+    zh: "读取最近串口日志",
+    en: "Read recent serial logs",
   },
   {
     cmd: "openixsuit-ce ai power --profile <id> --action cycle",
-    zh: "控制可编程电源执行上电 / 断电 / 重启循环",
-    en: "Control programmable power (on / off / cycle)",
+    zh: "执行电源循环",
+    en: "Cycle power",
   },
   {
     cmd: "openixsuit-ce ai metrics --serial <adb_serial>",
-    zh: "获取 ADB 设备 CPU、内存、温度及 top 快照",
-    en: "Fetch ADB device CPU, memory, thermal, and top metrics",
+    zh: "查看设备指标",
+    en: "View device metrics",
   },
   {
     cmd: "openixsuit-ce ai incidents",
-    zh: "查看自动化规则捕获的异常事件与日志现场",
-    en: "Inspect captured trigger incidents and log snapshots",
+    zh: "查看异常事件",
+    en: "View captured incidents",
   },
 ];
 
@@ -94,7 +95,7 @@ function buildIncidentPrompt(inc: IncidentReport): string {
 }
 
 export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isEn = i18n.language.startsWith("en");
 
   const [incidents, setIncidents] = useState<IncidentReport[]>([]);
@@ -180,48 +181,20 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto pr-0.5">
-      {/* Header Banner */}
-      <div className="ui-toolbar py-3">
-        <div className="flex items-center gap-2.5">
-          <div className="rounded-lg bg-violet-500/15 p-2 text-violet-600 dark:text-violet-400">
-            <Bot className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              {isEn ? "AI CLI + Skill Collaboration Hub" : "AI 协同工作台 (CLI + Skill 模式)"}
-            </h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              {isEn
-                ? "Zero-config local collaboration with Claude Code, Codex, and OpenCode CLI via Skill + openixsuit-ce CLI."
-                : "无需配置 MCP，直接通过 Skill 规范与 openixsuit-ce CLI 与 Claude Code / Codex / OpenCode 协同排障。"}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <div className="ui-subcard flex items-center gap-1.5 px-2.5 py-1.5 font-mono text-xs text-slate-700 dark:text-slate-200">
-            <FileCode2 className="h-3.5 w-3.5 text-blue-500" />
-            <span>{SKILL_PATH}</span>
-            <button
-              type="button"
-              onClick={() =>
-                copyText(
-                  "skill-path",
-                  SKILL_PATH,
-                  isEn ? "Copied Skill path" : "已复制 Skill 路径"
-                )
-              }
-              className="ml-1 text-slate-400 transition hover:text-blue-500"
-              title={isEn ? "Copy Skill Path" : "复制 Skill 路径"}
-            >
-              {copiedId === "skill-path" ? (
-                <Check className="h-3.5 w-3.5 text-emerald-500" />
-              ) : (
-                <Copy className="h-3.5 w-3.5" />
-              )}
-            </button>
-          </div>
-        </div>
+      <div className="ui-toolbar">
+        <h2 className="ui-title">
+          <Bot className="size-4 text-violet-500" />
+          {t("aiWorkbench.title")}
+        </h2>
+        <button
+          type="button"
+          onClick={() => copyText("skill-repository", SKILL_REPOSITORY_URL, t("aiWorkbench.skillCopied"))}
+          className="ui-btn-secondary px-2.5 py-1"
+          title={SKILL_REPOSITORY_URL}
+        >
+          {copiedId === "skill-repository" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          {t(copiedId === "skill-repository" ? "aiWorkbench.copied" : "aiWorkbench.copySkill")}
+        </button>
       </div>
 
       {/* Main Grid: Incidents + Timeline */}
@@ -231,11 +204,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
           <div className="ui-card-header">
             <div className="ui-title">
               <ShieldAlert className="h-4 w-4 text-amber-500" />
-              <span>
-                {isEn
-                  ? `Captured Trigger Incidents (${incidents.length})`
-                  : `自动捕获的异常现场 (${incidents.length})`}
-              </span>
+              <span>{t("aiWorkbench.incidents", { count: incidents.length })}</span>
             </div>
             <div className="flex items-center gap-1.5">
               <button
@@ -262,9 +231,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
           <div className="flex-1 divide-y divide-slate-100 overflow-auto dark:divide-slate-800">
             {incidents.length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-400">
-                {isEn
-                  ? "No trigger incidents yet. Configure rules in Automation to capture serial crashes or panics."
-                  : "暂无捕获的异常事件。可在「自动化与电源」页面配置串口触发规则自动抓拍现场。"}
+                {t("aiWorkbench.noIncidents")}
               </div>
             ) : (
               incidents.map((inc) => {
@@ -303,13 +270,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
                         ) : (
                           <Copy className="h-3.5 w-3.5" />
                         )}
-                        {isCopied
-                          ? isEn
-                            ? "Copied!"
-                            : "已复制"
-                          : isEn
-                          ? "Copy AI Prompt + Logs"
-                          : "复制排障 Prompt + 串口日志"}
+                        {t(isCopied ? "aiWorkbench.copied" : "aiWorkbench.copyIncident")}
                       </button>
                     </div>
 
@@ -319,7 +280,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
 
                     {inc.prompt && (
                       <div className="text-xs text-slate-600 dark:text-slate-300">
-                        <span className="mr-1.5 text-slate-400">Prompt:</span>
+                        <span className="mr-1.5 text-slate-400">{t("aiWorkbench.incidentPrompt")}</span>
                         {inc.prompt}
                       </div>
                     )}
@@ -345,21 +306,14 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
             <div className="ui-card-header">
               <div className="ui-title">
                 <Activity className="h-4 w-4 text-blue-500" />
-                <span>
-                  {isEn
-                    ? `Live CLI Sync Timeline (${syncEvents.length})`
-                    : `CLI 实时协同时间线 (${syncEvents.length})`}
-                </span>
+                <span>{t("aiWorkbench.cliHistory", { count: syncEvents.length })}</span>
               </div>
-              <span className="font-mono text-[11px] text-slate-400">ai-sync-event</span>
             </div>
 
             <div className="max-h-64 flex-1 divide-y divide-slate-100 overflow-auto dark:divide-slate-800">
               {syncEvents.length === 0 ? (
                 <div className="p-6 text-center text-xs text-slate-400">
-                  {isEn
-                    ? "Waiting for CLI invocations (ai-sync-event)..."
-                    : "暂无外部 CLI 调用记录，AI 工具执行命令后将在此实时同步。"}
+                  {t("aiWorkbench.noCliCalls")}
                 </div>
               ) : (
                 [...syncEvents].reverse().map((ev, idx) => (
@@ -397,18 +351,14 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
             </div>
           </div>
 
-          {/* CLI + Skill Quick Cheatsheet */}
-          <div className="ui-card overflow-hidden">
-            <div className="ui-card-header">
-              <div className="ui-title">
-                <Terminal className="h-4 w-4 text-emerald-500" />
-                <span>{isEn ? "CLI + Skill Quick Cheatsheet" : "CLI + Skill 快速协同命令"}</span>
-              </div>
-              <span className="rounded-md bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                Claude Code · Codex · OpenCode
+          <details className="ui-card group overflow-hidden">
+            <summary className="ui-card-header cursor-pointer list-none [&::-webkit-details-marker]:hidden group-open:border-b">
+              <span className="ui-title">
+                <Terminal className="size-4 text-emerald-500" />
+                {t("aiWorkbench.commands")}
               </span>
-            </div>
-
+              <ChevronDown className="size-3.5 text-slate-500 group-open:rotate-180" aria-hidden="true" />
+            </summary>
             <div className="max-h-80 space-y-2 overflow-auto p-3">
               {CLI_CHEATSHEET.map((item) => {
                 const isCopied = copiedId === item.cmd;
@@ -443,7 +393,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
                 );
               })}
             </div>
-          </div>
+          </details>
         </div>
       </div>
     </div>

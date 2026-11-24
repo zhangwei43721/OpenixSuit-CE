@@ -26,6 +26,10 @@ export function resolveAdbDevice(value: string, devices: readonly AdbDevice[]): 
   return legacy.length === 1 ? legacy[0] : undefined;
 }
 
+function adbDeviceLabel(device: AdbDevice): string {
+  return `ADB: ${device.serial}${device.usb_path ? ` · ${device.usb_path}` : ""} (${device.state})`;
+}
+
 export function adbDeviceOnline(device?: AdbDevice): boolean {
   return device?.state === "Device" || device?.state === "Recovery";
 }
@@ -79,7 +83,8 @@ export function TopBar({
   const actionsBlocked = deviceActionBusy || switchingEfex || exitSubmitting;
   const exitTargetAvailable = fesDevices.some((device) => device.id === exitDeviceId);
   const exitAcknowledged = exitResult === "success";
-  const adbReady = adbDeviceOnline(resolveAdbDevice(selectedAdbTarget, adbDevices));
+  const selectedDevice = resolveAdbDevice(selectedAdbTarget, adbDevices);
+  const adbReady = adbDeviceOnline(selectedDevice);
 
   const openExitDialog = () => {
     setExitDeviceId(fesDevices.length === 1 ? fesDevices[0].id : "");
@@ -142,7 +147,8 @@ export function TopBar({
           <select
             value={selectedAdbTarget}
             onChange={(e) => onSelectAdbSerial(e.target.value)}
-            className="rounded-lg border border-blue-500/40 bg-blue-500/10 px-2.5 py-1.5 text-xs font-medium text-blue-600 focus:border-blue-500 focus:outline-none dark:text-blue-400"
+            title={selectedDevice ? adbDeviceLabel(selectedDevice) : undefined}
+            className="ui-select max-w-[min(16rem,26vw)] font-medium text-blue-700 dark:text-blue-300"
           >
             <option value="" disabled>
               {t(unavailableAdbTarget ? "status.adbTargetUnavailable" : "multiLog.pickAdb")}
@@ -151,9 +157,8 @@ export function TopBar({
               <option
                 key={adbDeviceKey(d)}
                 value={adbDeviceKey(d)}
-                className="bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100"
               >
-                ADB: {d.serial}{d.usb_path ? ` · ${d.usb_path}` : ""} ({d.state})
+                {adbDeviceLabel(d)}
               </option>
             ))}
           </select>

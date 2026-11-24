@@ -484,18 +484,31 @@
     "aiDesc": "供外部 AI Agent / openixsuit-ce ai（单二进制 CLI 模式）或 openixsuit-ai CLI 实时协同并同步状态到界面",
     "aiExamples": "调用示例命令"
   },
+  "aiWorkbench": {
+    "title": "AI 协同工作台",
+    "copied": "已复制",
+    "copySkill": "复制 Skill 仓库链接",
+    "skillCopied": "已复制 Skill 仓库链接",
+    "incidents": "异常现场（{{count}}）",
+    "noIncidents": "暂无异常事件",
+    "copyIncident": "复制排障资料",
+    "incidentPrompt": "排障提示",
+    "cliHistory": "CLI 调用记录（{{count}}）",
+    "noCliCalls": "暂无 CLI 调用",
+    "commands": "常用命令"
+  },
   "incidentAnalysis": {
-    "title": "异常自动分析",
-    "description": "含 AI 排障动作的规则触发后，OpenixSuit-CE 会把命中内容和串口日志快照提交给 Codex，以只读方式分析。测试规则时不提交日志。",
-    "enable": "启用 Codex 自动分析",
-    "codexPath": "Codex CLI 可执行文件",
-    "codexPathPlaceholder": "填写绝对路径，或留空从 PATH 查找",
-    "saved": "分析设置已保存",
+    "title": "Codex 自动分析",
+    "description": "实际触发排障规则时，将命中内容和串口日志交给 Codex 只读分析。",
+    "enable": "启用自动分析",
+    "codexPath": "Codex 路径",
+    "codexPathPlaceholder": "留空自动查找",
+    "saved": "设置已保存",
     "status": {
-      "queued": "等待 AI 分析",
-      "running": "AI 分析中",
-      "completed": "AI 分析完成",
-      "failed": "AI 分析失败"
+      "queued": "待分析",
+      "running": "分析中",
+      "completed": "已完成",
+      "failed": "失败"
     }
   },
   "plugins": {

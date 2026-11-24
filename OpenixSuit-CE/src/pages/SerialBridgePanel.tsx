@@ -700,7 +700,8 @@ export function SerialBridgePanel({
                       setSelection((current) => ({ ...current, profileId: "", [key]: path }));
                     }}
                     disabled={endpointSettingsLocked}
-                    className="ui-select w-full min-w-0 truncate py-1"
+                    title={port?.portName || value || undefined}
+                    className="ui-select w-full min-w-0 truncate"
                   >
                     <option value="">{t("multiLog.bridge.selectPort")}</option>
                     {ports.map((candidate) => (
@@ -730,7 +731,7 @@ export function SerialBridgePanel({
               onChange={(event) => setDisplay((previous) => ({
                 ...previous, format: event.target.value as SerialFormat,
               }))}
-              className="ui-select min-w-[140px]"
+              className="ui-select min-w-24"
             >
               <option value="text">{t("multiLog.formatText")}</option>
               <option value="hex">{t("multiLog.formatHex")}</option>
@@ -743,7 +744,7 @@ export function SerialBridgePanel({
               onChange={(event) => setDisplay((previous) => ({
                 ...previous, direction: event.target.value as BridgeDirection,
               }))}
-              className="ui-select min-w-[140px]"
+              className="ui-select min-w-24"
             >
               <option value="both">{t("multiLog.bridge.allDirections")}</option>
               <option value="firstToSecond">{t("multiLog.bridge.firstToSecond")}</option>

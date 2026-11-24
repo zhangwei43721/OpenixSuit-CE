@@ -268,7 +268,7 @@ export function GpioViewer({
             <select
               value={editDraft.mux}
               onChange={(e) => setEditDraft({ ...editDraft, mux: Number(e.target.value) })}
-              className="ui-select py-1"
+              className="ui-select ui-select-compact"
             >
               <option value={0}>(0): GPIO_IN</option>
               <option value={1}>(1): GPIO_OUT</option>
@@ -288,7 +288,7 @@ export function GpioViewer({
             <select
               value={editDraft.pull}
               onChange={(e) => setEditDraft({ ...editDraft, pull: e.target.value })}
-              className="ui-select py-1"
+              className="ui-select ui-select-compact"
             >
               <option value="PULL DISABLE">PULL DISABLE</option>
               <option value="Pull Up">Pull Up</option>
@@ -303,7 +303,7 @@ export function GpioViewer({
             <select
               value={editDraft.drv}
               onChange={(e) => setEditDraft({ ...editDraft, drv: e.target.value })}
-              className="ui-select py-1"
+              className="ui-select ui-select-compact"
             >
               <option value="0x0">0x0</option>
               <option value="0x1">0x1</option>

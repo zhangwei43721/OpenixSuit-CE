@@ -772,7 +772,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                                     kind: e.target.value as TriggerAction["kind"],
                                   })
                                 }
-                                className="ui-select flex-1 py-1"
+                                className="ui-select ui-select-compact flex-1"
                               >
                                 <option value="power_control">
                                   {isEn ? "Power Control" : "电源控制 (上电/断电/循环)"}
@@ -829,7 +829,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                                   onChange={(e) =>
                                     updateAction(idx, { power_profile_id: e.target.value })
                                   }
-                                  className="ui-select py-1"
+                                  className="ui-select ui-select-compact"
                                 >
                                   <option value="">
                                     {isEn ? "-- Power Profile --" : "-- 选择电源配置 --"}
@@ -845,7 +845,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                                   onChange={(e) =>
                                     updateAction(idx, { power_action: e.target.value })
                                   }
-                                  className="ui-select py-1"
+                                  className="ui-select ui-select-compact"
                                 >
                                   <option value="cycle">{isEn ? "Power Cycle" : "电源循环 (Cycle)"}</option>
                                   <option value="on">{isEn ? "Power ON" : "上电 (ON)"}</option>

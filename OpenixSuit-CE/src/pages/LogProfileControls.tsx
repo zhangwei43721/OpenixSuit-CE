@@ -125,7 +125,7 @@ export function LogProfileControls({
           setApplyError("");
         }}
         title={selectedProfile?.name}
-        className="ui-select min-w-0 max-w-40 truncate py-1"
+        className="ui-select ui-select-compact min-w-0 max-w-40 truncate"
       >
         {!profiles.length && (
           <option value="">{t(loadError

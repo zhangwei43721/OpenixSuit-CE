@@ -485,18 +485,31 @@
     "aiDesc": "Endpoint for external AI agents / openixsuit-ce ai (single-binary CLI mode) or openixsuit-ai CLI to sync actions with the GUI",
     "aiExamples": "Example Commands"
   },
+  "aiWorkbench": {
+    "title": "AI Workbench",
+    "copied": "Copied",
+    "copySkill": "Copy Skill Repository Link",
+    "skillCopied": "Copied Skill repository link",
+    "incidents": "Incidents ({{count}})",
+    "noIncidents": "No incidents",
+    "copyIncident": "Copy Incident Details",
+    "incidentPrompt": "Troubleshooting prompt",
+    "cliHistory": "CLI Calls ({{count}})",
+    "noCliCalls": "No CLI calls",
+    "commands": "Common Commands"
+  },
   "incidentAnalysis": {
-    "title": "Automatic Incident Analysis",
-    "description": "When an enabled rule with an AI analysis action fires, OpenixSuit-CE submits the match and captured serial logs to Codex. The analysis runs in read-only mode. Testing a rule does not submit logs.",
-    "enable": "Enable automatic analysis with Codex",
-    "codexPath": "Codex CLI executable",
-    "codexPathPlaceholder": "Absolute path, or leave empty to use PATH",
-    "saved": "Analysis settings saved",
+    "title": "Automatic Codex Analysis",
+    "description": "When a troubleshooting rule fires, Codex receives the matched text and recent serial logs for read-only analysis.",
+    "enable": "Enable automatic analysis",
+    "codexPath": "Codex path",
+    "codexPathPlaceholder": "Leave empty to find it automatically",
+    "saved": "Settings saved",
     "status": {
-      "queued": "Waiting for AI analysis",
-      "running": "AI analysis in progress",
-      "completed": "AI analysis complete",
-      "failed": "AI analysis failed"
+      "queued": "Queued",
+      "running": "Analyzing",
+      "completed": "Completed",
+      "failed": "Failed"
     }
   },
   "plugins": {
