@@ -1,5 +1,6 @@
 use crate::adb;
 use crate::efex;
+use crate::efex::partition_read;
 use crate::efex::standard_flash::{self, StandardFlashOptions};
 use crate::log_capture;
 use crate::log_profiles;
@@ -830,6 +831,38 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                     (code, json!({ "ok": false, "error": msg }))
                 }
             }
+        }
+
+        ("POST", "/api/partition-read/list") => {
+            let target = match parse_json(&req.body) {
+                Ok(value) => value,
+                Err((code, error)) => return (code, json!({ "ok": false, "error": error })),
+            };
+            match partition_read::list(app, &state, target).await {
+                Ok(table) => (200, json!({ "ok": true, "table": table })),
+                Err(error) => {
+                    let (code, error) = map_op_error(error);
+                    (code, json!({ "ok": false, "error": error }))
+                }
+            }
+        }
+
+        ("POST", "/api/partition-read/export") => {
+            let request = match parse_json(&req.body) {
+                Ok(value) => value,
+                Err((code, error)) => return (code, json!({ "ok": false, "error": error })),
+            };
+            match partition_read::export(app, &state, request).await {
+                Ok(result) => (200, json!({ "ok": result.error.is_none(), "result": result })),
+                Err(error) => {
+                    let (code, error) = map_op_error(error);
+                    (code, json!({ "ok": false, "error": error }))
+                }
+            }
+        }
+
+        ("POST", "/api/partition-read/cancel") => {
+            (200, json!({ "ok": true, "cancelled": partition_read::cancel(&state) }))
         }
 
         ("POST", "/api/fes/exit") => {

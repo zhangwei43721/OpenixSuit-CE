@@ -250,6 +250,25 @@
     "upload": "Upload",
     "loading": "Loading..."
   },
+  "partitionRead": {
+    "title": "Read Partitions",
+    "device": "Target device",
+    "pickDevice": "Select a FEL/FES device",
+    "disconnected": "Disconnected",
+    "pickLoader": "Select Boot Firmware",
+    "loaderHint": "Select a firmware image for this board to start FES in memory.",
+    "readTable": "Read Partition Table",
+    "sunxiMbr": "Allwinner MBR",
+    "partition": "Partition",
+    "startSector": "Logical start sector",
+    "size": "Size",
+    "unknownSize": "Unknown length",
+    "export": "Export Selected ({{count}})",
+    "listing": "Reading the partition table…",
+    "preparing": "Preparing export…",
+    "cancelling": "Cancelling…",
+    "savedFiles": "Exported images ({{count}})"
+  },
   "flash": {
     "firmwareSelection": "Firmware Selection",
     "selectFirmware": "Select Firmware",
@@ -283,6 +302,20 @@
     "observeSlot": "Read current slot only",
     "executablePath": "Absolute executable path on device",
     "expectedSha256": "Expected executable SHA-256",
+    "bootSetup": {
+      "enable": "Verify boot after reboot",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "skippedPoweroff": "Skipped (power off after flashing)",
+      "unsaved": "Unsaved",
+      "save": "Save Verification Settings",
+      "discard": "Discard Changes",
+      "saved": "Verification settings saved",
+      "pending": "Save or discard your boot verification changes to preview the flash plan.",
+      "targetRequired": "Enter the ADB target to wait for after reboot.",
+      "programInvalid": "Enter both the absolute path on the device and a 64-character hexadecimal SHA-256 to verify a running program.",
+      "saveError": "Unable to save verification settings. Try again."
+    },
     "result": {
       "flash_completed": "Firmware written",
       "flash_failed": "Firmware write failed",

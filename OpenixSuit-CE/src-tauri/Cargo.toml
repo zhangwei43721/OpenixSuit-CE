@@ -41,6 +41,7 @@ mbrman = "0.5"
 dirs = "5"
 crc32fast = "1.5"
 sha2 = "0.10"
+tempfile = "3"
 clap = { version = "4", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 serialport = { version = "4", features = ["usbportinfo-interface"] }

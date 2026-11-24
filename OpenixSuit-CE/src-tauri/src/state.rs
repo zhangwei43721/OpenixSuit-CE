@@ -29,6 +29,7 @@ impl Default for UsbBackend {
 pub struct AppState {
     pub usb_backend: Mutex<UsbBackend>,
     pub cancel_flash_flag: Arc<AtomicBool>,
+    pub cancel_partition_read: Arc<AtomicBool>,
     pub busy_op: Arc<Mutex<Option<String>>>,
     pub serial_sessions: Arc<Mutex<HashMap<String, Arc<SerialSessionHandle>>>>,
     pub(crate) serial_bridge: SerialBridgeState,
@@ -44,6 +45,7 @@ impl Default for AppState {
         Self {
             usb_backend: Mutex::new(UsbBackend::Auto),
             cancel_flash_flag: Arc::new(AtomicBool::new(false)),
+            cancel_partition_read: Arc::new(AtomicBool::new(false)),
             busy_op: Arc::new(Mutex::new(None)),
             serial_sessions: Arc::new(Mutex::new(HashMap::new())),
             serial_bridge: SerialBridgeState::default(),

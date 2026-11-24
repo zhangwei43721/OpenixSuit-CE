@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult } from "./FlashHub";
 import { SectorFlash } from "./SectorFlash";
 import { LogMarkedText } from "../utils/ansi";
+import { BootCheckSettingsPanel, useBootCheckSettings, type BootCheckRequest } from "./BootCheckSettingsPanel";
 
 interface FirmwareFlashProps {
   active?: boolean;
@@ -73,11 +74,7 @@ interface FlashOptions {
   post_action: "reboot" | "poweroff";
   bus: number | null;
   port: number | null;
-  boot_check: {
-    adbTarget: string;
-    expectedSlot: string | null;
-    programCheck: { executablePath: string; expectedSha256: string } | null;
-  } | null;
+  boot_check: BootCheckRequest | null;
 }
 
 interface BootCheck {
@@ -118,13 +115,11 @@ function StandardFlash({
   const deviceId = felDevices.length === 1 ? felDevices[0].id : felTarget;
   const devicePair = /^bus:(\d+)-port:(\d+)$/.exec(deviceId);
   const targetSelected = felDevices.length <= 1 || felDevices.some((device) => device.id === deviceId);
-  const canStart = !isFlashing && firmwarePath && mode && targetSelected && (!partitionOnly || selected.length > 0);
   const [verify, setVerify] = useState(true);
   const [postAction, setPostAction] = useState<"reboot" | "poweroff">("reboot");
-  const [adbTarget, setAdbTarget] = useState("");
-  const [expectedSlot, setExpectedSlot] = useState("");
-  const [executablePath, setExecutablePath] = useState("");
-  const [expectedSha256, setExpectedSha256] = useState("");
+  const bootSettings = useBootCheckSettings();
+  const bootSettingsPending = postAction === "reboot" && bootSettings.dirty;
+  const canStart = !isFlashing && !bootSettingsPending && firmwarePath && mode && targetSelected && (!partitionOnly || selected.length > 0);
   const [result, setResult] = useState<FlashResult | null>(null);
   const [writing, setWriting] = useState(false);
   const [verifyingBoot, setVerifyingBoot] = useState(false);
@@ -209,14 +204,7 @@ function StandardFlash({
       post_action: postAction,
       bus: devicePair ? Number(devicePair[1]) : null,
       port: devicePair ? Number(devicePair[2]) : null,
-      boot_check: postAction === "reboot" && adbTarget.trim() ? {
-        adbTarget: adbTarget.trim(),
-        expectedSlot: expectedSlot || null,
-        programCheck: executablePath.trim() || expectedSha256.trim() ? {
-          executablePath: executablePath.trim(),
-          expectedSha256: expectedSha256.trim(),
-        } : null,
-      } : null,
+      boot_check: postAction === "reboot" ? bootSettings.request : null,
     };
     try {
       const plan = await invoke<FlashPlan>("flash_firmware_plan", { options });
@@ -353,35 +341,11 @@ function StandardFlash({
                 </select>
               </label>
             )}
-            {postAction === "reboot" && (
-              <details className="space-y-2">
-                <summary className="cursor-pointer font-medium">{t("flash.result.boot")}</summary>
-                <label className="block space-y-1">
-                  <span>{t("flash.adbTarget")}</span>
-                  <input className="ui-input w-full" disabled={isFlashing} value={adbTarget} onChange={(e) => setAdbTarget(e.target.value)} placeholder="adb-usb:usb:1-3#20080411" />
-                </label>
-                {adbTarget.trim() && (
-                  <div className="space-y-2">
-                    <label className="flex items-center justify-between gap-2">
-                      <span>{t("flash.expectedSlot")}</span>
-                      <select className="ui-select" disabled={isFlashing} value={expectedSlot} onChange={(e) => setExpectedSlot(e.target.value)}>
-                        <option value="">{t("flash.observeSlot")}</option>
-                        <option value="a">A</option>
-                        <option value="b">B</option>
-                      </select>
-                    </label>
-                    <label className="block space-y-1">
-                      <span>{t("flash.executablePath")}</span>
-                      <input className="ui-input w-full" disabled={isFlashing} value={executablePath} onChange={(e) => setExecutablePath(e.target.value)} placeholder="/usr/bin/app" />
-                    </label>
-                    <label className="block space-y-1">
-                      <span>{t("flash.expectedSha256")}</span>
-                      <input className="ui-input w-full" disabled={isFlashing} value={expectedSha256} onChange={(e) => setExpectedSha256(e.target.value)} />
-                    </label>
-                  </div>
-                )}
-              </details>
-            )}
+            <BootCheckSettingsPanel
+              settings={bootSettings}
+              afterPoweroff={postAction === "poweroff"}
+              disabled={isFlashing}
+            />
           </div>
         </div>
         <div className="ui-card flex flex-col overflow-hidden text-xs">
@@ -427,6 +391,9 @@ function StandardFlash({
                 </button>
               )}
             </div>
+            {bootSettingsPending && (
+              <p className="text-xs text-amber-700 dark:text-amber-400" role="status">{t("flash.bootSetup.pending")}</p>
+            )}
           </div>
         </div>
       </div>

@@ -8,6 +8,7 @@ import { FirmwareFlash } from "./FirmwareFlash";
 import { GenericFlash } from "./GenericFlash";
 import { FirmwareConverter } from "./FirmwareConverter";
 import { FirmwareInspector } from "./FirmwareInspector";
+import { PartitionReadPage } from "./PartitionReadPage";
 import {
   FlashHistoryItem,
   SerialDataPayload,
@@ -52,7 +53,7 @@ export interface SharedImageInspectResult {
   files: SharedPartitionEntry[];
 }
 
-type FirmwareSubTab = "standard" | "generic" | "converter" | "inspector";
+type FirmwareSubTab = "standard" | "generic" | "partition-read" | "converter" | "inspector";
 
 export function FlashHub({
   felDevices,
@@ -181,6 +182,7 @@ export function FlashHub({
   const tabs: { key: FirmwareSubTab; label: string }[] = [
     { key: "standard", label: t("nav.flashSubStandard") },
     { key: "generic", label: t("nav.flashSubGeneric") },
+    { key: "partition-read", label: t("partitionRead.title") },
     { key: "converter", label: t("nav.converter") },
     { key: "inspector", label: t("nav.inspector") },
   ];
@@ -188,7 +190,7 @@ export function FlashHub({
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
       {/* 公共 .img 固件选择栏（标准刷机 / 格式转换 / 解包查看共用） */}
-      <div className="ui-card p-4 text-xs">
+      <div className={subTab === "partition-read" ? "hidden" : "ui-card p-4 text-xs"}>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0 flex-1 space-y-1">
             <div className="flex items-center gap-2 truncate">
@@ -348,6 +350,9 @@ export function FlashHub({
               onFlashingChange={onFlashingChange}
               onLog={onLog}
             />
+          </div>
+          <div className={subTab === "partition-read" ? "h-full" : "hidden"}>
+            <PartitionReadPage devices={felDevices} deviceBusy={isFlashing} onBusyChange={onFlashingChange} />
           </div>
           <div className={subTab === "converter" ? "h-full" : "hidden"}>
             <FirmwareConverter

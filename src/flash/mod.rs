@@ -128,6 +128,30 @@ impl Flasher<LibefexDeviceBackend> {
             cancel_flag: None,
         }
     }
+
+    pub async fn connect_for_readback(
+        &mut self,
+        boot_firmware: Option<&std::path::Path>,
+    ) -> FlashResult<libefex::Context> {
+        self.check_cancelled()?;
+        let (ctx, location) = self.open_device()?;
+        match self.backend.device_mode(&ctx) {
+            libefex::DeviceMode::Srv => Ok(ctx),
+            libefex::DeviceMode::Fel => {
+                let path = boot_firmware.ok_or_else(|| {
+                    FlashError::InvalidFirmwareFormat("FEL 读回需要匹配板型的引导固件".into())
+                })?;
+                self.packer.load(path).map_err(|error| {
+                    FlashError::InvalidFirmwareFormat(format!("打开引导固件失败: {error}"))
+                })?;
+                let fes_data = self.packer.get_fes().map_err(|_| FlashError::FesNotFound)?;
+                self.prepare_fel_mode(ctx, &fes_data, location).await
+            }
+            mode => Err(FlashError::DeviceOpenFailed(format!(
+                "设备处于 {mode:?}，读取分区需要 FEL 或 FES 模式"
+            ))),
+        }
+    }
 }
 
 impl<B: DeviceBackend> Flasher<B> {

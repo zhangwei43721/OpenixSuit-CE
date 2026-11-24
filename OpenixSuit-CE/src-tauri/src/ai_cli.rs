@@ -58,6 +58,34 @@ enum Commands {
         #[arg(long, value_enum)]
         action: crate::efex::FesExitAction,
     },
+    /// List partitions read from the selected device in FES mode
+    PartitionList {
+        #[arg(long)]
+        device_id: String,
+        /// Matching IMAGEWTY firmware used only to load the temporary FES program in FEL
+        #[arg(long, value_parser = absolute_path)]
+        boot_firmware: Option<PathBuf>,
+    },
+    /// Export one or more device partitions as raw binary files
+    PartitionRead {
+        #[arg(long)]
+        device_id: String,
+        #[arg(long, value_parser = absolute_path)]
+        boot_firmware: Option<PathBuf>,
+        /// Partition name; repeat to export more than one
+        #[arg(long = "partition", required_unless_present = "partition_ids")]
+        partition_names: Vec<String>,
+        /// Numeric partition ID from partition-list; repeat as needed
+        #[arg(long = "partition-id", required_unless_present = "partition_names")]
+        partition_ids: Vec<usize>,
+        /// Refuse to read if the device layout changed since partition-list
+        #[arg(long)]
+        table_id: Option<String>,
+        #[arg(long, value_parser = absolute_path)]
+        out_dir: PathBuf,
+    },
+    /// Cancel the active partition read or partition table scan
+    PartitionReadCancel,
     /// Restart adbd as root
     AdbRoot {
         #[arg(long, default_value = "")]
@@ -293,11 +321,19 @@ fn read_json_object(path: &Path) -> Result<Map<String, Value>, String> {
     result.map_err(|e| format!("Invalid JSON object from {}: {}", path.display(), e))
 }
 
+fn absolute_path(value: &str) -> Result<PathBuf, String> {
+    std::path::absolute(value).map_err(|error| error.to_string())
+}
+
 fn send_http(addr: &str, method: &str, path: &str, body: Option<Value>) -> Result<(u16, Value), String> {
     let mut stream = TcpStream::connect(addr)
         .map_err(|e| format!("Failed to connect to OpenixSuit-CE IPC ({}): {}", addr, e))?;
-    let read_timeout_secs = if path == "/api/flash/execute" { 720 } else { 600 };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(read_timeout_secs)));
+    let read_timeout = match path {
+        "/api/partition-read/export" => None,
+        "/api/flash/execute" => Some(Duration::from_secs(720)),
+        _ => Some(Duration::from_secs(600)),
+    };
+    let _ = stream.set_read_timeout(read_timeout);
     let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
 
     let body_bytes = match body {
@@ -404,6 +440,27 @@ where
             "/api/fes/exit".to_string(),
             Some(json!({ "device_id": device_id, "action": action })),
         ),
+        Commands::PartitionList { device_id, boot_firmware } => (
+            "POST",
+            "/api/partition-read/list".into(),
+            Some(json!({
+                "device_id": device_id,
+                "boot_firmware": boot_firmware,
+            })),
+        ),
+        Commands::PartitionRead { device_id, boot_firmware, partition_names, partition_ids, table_id, out_dir } => (
+            "POST",
+            "/api/partition-read/export".into(),
+            Some(json!({
+                "device_id": device_id,
+                "boot_firmware": boot_firmware,
+                "partition_names": partition_names,
+                "partition_ids": partition_ids,
+                "table_id": table_id,
+                "out_dir": out_dir,
+            })),
+        ),
+        Commands::PartitionReadCancel => ("POST", "/api/partition-read/cancel".into(), None),
         Commands::AdbRoot { serial } => (
             "POST",
             "/api/adb/root".to_string(),

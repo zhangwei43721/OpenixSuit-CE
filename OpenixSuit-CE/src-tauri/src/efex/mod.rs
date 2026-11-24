@@ -20,6 +20,7 @@ use tauri::{AppHandle, Emitter, State};
 
 mod boot_check;
 mod exit;
+pub(crate) mod partition_read;
 pub(crate) mod standard_flash;
 pub(crate) use exit::{request_exit as request_fes_exit, FesExitAction};
 

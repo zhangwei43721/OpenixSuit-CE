@@ -13,7 +13,7 @@ pub(crate) enum FesExitAction {
     Fel,
 }
 
-fn select_target(devices: &[ScannedDevice], device_id: &str) -> Result<(u8, u8), String> {
+pub(super) fn select_target(devices: &[ScannedDevice], device_id: &str) -> Result<(u8, u8), String> {
     let mut matches = devices
         .iter()
         .filter(|dev| efex_device_id(dev.bus, dev.port) == device_id);
@@ -22,7 +22,7 @@ fn select_target(devices: &[ScannedDevice], device_id: &str) -> Result<(u8, u8),
         .ok_or_else(|| format!("未检测到指定的 USB 设备 {device_id}"))?;
     if matches.next().is_some() {
         return Err(format!(
-            "多台 USB 设备共用地址 {device_id}，无法确定退出 FES 的目标"
+            "多台 USB 设备共用地址 {device_id}，请更换 USB 接口"
         ));
     }
     Ok((dev.bus, dev.port))
