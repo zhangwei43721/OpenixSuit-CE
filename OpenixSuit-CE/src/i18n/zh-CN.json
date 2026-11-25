@@ -200,7 +200,7 @@
     },
     "highlight": {
       "sharedTitle": "日志颜色标记",
-      "sharedHint": "关键词规则适用于所有日志窗口。分屏有同名规则时，优先使用该分屏的颜色。",
+      "sharedHint": "关键词配色在多路日志内共用。分屏为同一关键词设置了颜色时，优先使用该分屏的颜色。",
       "levelLegend": "自动级别颜色",
       "levels": {
         "debug": "调试",
@@ -605,8 +605,7 @@
     "copyIncident": "复制排障资料",
     "incidentPrompt": "排障提示",
     "cliHistory": "CLI 调用记录（{{count}}）",
-    "noCliCalls": "暂无 CLI 调用",
-    "commands": "常用命令"
+    "noCliCalls": "暂无 CLI 调用"
   },
   "incidentAnalysis": {
     "title": "Codex 自动分析",

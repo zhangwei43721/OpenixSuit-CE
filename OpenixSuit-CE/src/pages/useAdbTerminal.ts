@@ -2,8 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Terminal } from "@xterm/xterm";
-import { useLogColorRules } from "../store/logColors";
-import { createAdbTerminalHighlightOverlay, type AdbTerminalHighlightOverlay } from "./adbTerminalHighlight";
 import "@xterm/xterm/css/xterm.css";
 
 interface TerminalSession {
@@ -28,12 +26,8 @@ function fitTerminal(host: HTMLDivElement, fit: () => void) {
 }
 
 export function useAdbTerminal(serial: string, onLog: (message: string) => void) {
-  const logColorRules = useLogColorRules();
-  const logColorRulesRef = useRef(logColorRules);
-  logColorRulesRef.current = logColorRules;
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
-  const highlightOverlayRef = useRef<AdbTerminalHighlightOverlay | null>(null);
   const connectionRef = useRef<ShellConnection | null>(null);
   const onLogRef = useRef(onLog);
   onLogRef.current = onLog;
@@ -43,10 +37,6 @@ export function useAdbTerminal(serial: string, onLog: (message: string) => void)
   const [hasScreen, setHasScreen] = useState(false);
   const [termSize, setTermSize] = useState({ cols: 80, rows: 24 });
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    highlightOverlayRef.current?.updateRules(logColorRules);
-  }, [logColorRules]);
 
   const resetConnection = useCallback(() => {
     const connection = connectionRef.current;
@@ -177,7 +167,6 @@ export function useAdbTerminal(serial: string, onLog: (message: string) => void)
       screen.loadAddon(fit);
       screen.open(host);
       terminalRef.current = screen;
-      highlightOverlayRef.current = createAdbTerminalHighlightOverlay(screen, host, logColorRulesRef.current);
       screen.onData(sendRawData);
       screen.onResize(({ cols, rows }) => {
         setTermSize({ cols, rows });
@@ -222,9 +211,7 @@ export function useAdbTerminal(serial: string, onLog: (message: string) => void)
         void subscription.then((unlisten) => unlisten()).catch(() => {});
       }
       observer?.disconnect();
-      highlightOverlayRef.current?.dispose();
       terminal?.dispose();
-      highlightOverlayRef.current = null;
       terminalRef.current = null;
     };
   }, [resetConnection, sendRawData]);

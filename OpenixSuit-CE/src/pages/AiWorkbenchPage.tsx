@@ -9,7 +9,6 @@ import {
   ChevronDown,
   RefreshCw,
   ShieldAlert,
-  Terminal,
   Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -36,39 +35,6 @@ interface AiWorkbenchPageProps {
 
 const SKILL_PATH = "skills/openixsuit-ce/SKILL.md";
 const SKILL_REPOSITORY_URL = "https://github.com/zhangwei43721/openixsuit-ce-skill";
-
-const CLI_CHEATSHEET = [
-  {
-    cmd: "openixsuit-ce ai status",
-    zh: "查看设备与会话",
-    en: "View devices and sessions",
-  },
-  {
-    cmd: "openixsuit-ce ai serial-ports",
-    zh: "列出串口",
-    en: "List serial ports",
-  },
-  {
-    cmd: "openixsuit-ce ai serial-logs --tail 120",
-    zh: "读取最近串口日志",
-    en: "Read recent serial logs",
-  },
-  {
-    cmd: "openixsuit-ce ai power --profile <id> --action cycle",
-    zh: "执行电源循环",
-    en: "Cycle power",
-  },
-  {
-    cmd: "openixsuit-ce ai metrics --serial <adb_serial>",
-    zh: "查看设备指标",
-    en: "View device metrics",
-  },
-  {
-    cmd: "openixsuit-ce ai incidents",
-    zh: "查看异常事件",
-    en: "View captured incidents",
-  },
-];
 
 function buildIncidentPrompt(inc: IncidentReport): string {
   return [
@@ -390,50 +356,6 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
               )}
             </div>
           </div>
-
-          <details className="ui-card group overflow-hidden">
-            <summary className="ui-card-header cursor-pointer list-none [&::-webkit-details-marker]:hidden group-open:border-b">
-              <span className="ui-title">
-                <Terminal className="size-4 text-emerald-500" />
-                {t("aiWorkbench.commands")}
-              </span>
-              <ChevronDown className="size-3.5 text-slate-500 group-open:rotate-180" aria-hidden="true" />
-            </summary>
-            <div className="max-h-80 space-y-2 overflow-auto p-3">
-              {CLI_CHEATSHEET.map((item) => {
-                const isCopied = copiedId === item.cmd;
-                return (
-                  <div
-                    key={item.cmd}
-                    className="ui-subcard flex items-center justify-between gap-2 p-2.5"
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate font-mono text-xs text-blue-600 dark:text-blue-400">
-                        {item.cmd}
-                      </div>
-                      <div className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
-                        {isEn ? item.en : item.zh}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        copyText(item.cmd, item.cmd, `Copied CLI command: ${item.cmd}`)
-                      }
-                      className="ui-btn-secondary shrink-0 p-1.5"
-                      title={isEn ? "Copy Command" : "复制命令"}
-                    >
-                      {isCopied ? (
-                        <Check className="h-3.5 w-3.5 text-emerald-500" />
-                      ) : (
-                        <Copy className="h-3.5 w-3.5" />
-                      )}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </details>
         </div>
       </div>
     </div>

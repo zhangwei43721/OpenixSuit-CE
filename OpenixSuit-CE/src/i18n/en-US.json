@@ -201,7 +201,7 @@
     },
     "highlight": {
       "sharedTitle": "Log color marks",
-      "sharedHint": "Keyword rules apply across log views. A pane rule for the same keyword takes priority in that pane.",
+      "sharedHint": "Keyword colors are shared within Multi-Log. A pane's color for the same keyword takes priority in that pane.",
       "levelLegend": "Automatic level colors",
       "levels": {
         "debug": "Debug",
@@ -607,8 +607,7 @@
     "copyIncident": "Copy Incident Details",
     "incidentPrompt": "Troubleshooting prompt",
     "cliHistory": "CLI Calls ({{count}})",
-    "noCliCalls": "No CLI calls",
-    "commands": "Common Commands"
+    "noCliCalls": "No CLI calls"
   },
   "incidentAnalysis": {
     "title": "Automatic Codex Analysis",

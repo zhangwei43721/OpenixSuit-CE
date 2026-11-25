@@ -186,6 +186,7 @@ export function LogColorSettings() {
   const { t } = useTranslation();
   const { rules, save } = useLogColorSettings();
   const [error, setError] = useState("");
+  const title = t("multiLog.highlight.sharedTitle");
 
   const change = (next: LogHighlightRule[]) => {
     try {
@@ -198,7 +199,7 @@ export function LogColorSettings() {
 
   return (
     <section className="ui-card space-y-3 p-4 text-sm">
-      <LogColorRuleList title={t("multiLog.highlight.sharedTitle")} rules={rules} onChange={change}>
+      <LogColorRuleList title={title} rules={rules} onChange={change}>
         <p className="text-xs text-slate-500 dark:text-slate-400">{t("multiLog.highlight.sharedHint")}</p>
       </LogColorRuleList>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-slate-200 pt-3 text-xs dark:border-slate-800">
@@ -207,7 +208,7 @@ export function LogColorSettings() {
           <span key={level} className={`font-semibold ${className}`}>{t(`multiLog.highlight.levels.${level}`)}</span>
         ))}
       </div>
-      {error && <div role="alert" className="ui-alert-err">{error}</div>}
+      {error && <div role="alert" className="ui-alert-err block break-words">{error}</div>}
     </section>
   );
 }

@@ -52,7 +52,7 @@ import { LogProfileControls } from "./LogProfileControls";
 import { BAUD_RATES, SerialPaneSettings } from "./SerialPaneSettings";
 import { PaneSettingsPopover } from "./PaneSettingsPopover";
 import { LogColorSettings } from "./LogColorSettings";
-import { useLogColorSettings } from "../store/logColors";
+import { LogColorProvider, useLogColorSettings } from "../store/logColors";
 import { LogCaptureSettings } from "./LogCaptureSettings";
 import { layoutPatch, panePatch, sharedHighlightPatch, paneSettings as cliPaneSettings, settingsObject, type LogUiRequest } from "./logUiPaneSettings";
 import { appendHexRows, hexToBase64, SERIAL_LINE_SUFFIX, type BufferedLine } from "./serialFormats";
@@ -418,7 +418,15 @@ function appendChunkToLines(
   return { lines: trimmed, endsWithNewline: ended, addedLines };
 }
 
-export function SerialPage({
+export function SerialPage(props: SerialPageProps) {
+  return (
+    <LogColorProvider>
+      <SerialPageContent {...props} />
+    </LogColorProvider>
+  );
+}
+
+function SerialPageContent({
   activeWorkspace,
   adbDevices,
   selectedAdbSerial,
