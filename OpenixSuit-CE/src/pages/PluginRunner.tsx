@@ -1,348 +1,465 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { FileUp, Play, Terminal, Trash2 } from "lucide-react";
+import { Check, Play, RefreshCw, Square, Terminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { ExtensionTabItem, PluginFileFilter, PluginInput } from "../types/plugin";
+import { PluginField, PluginProvider, PluginProviderSession, PluginRun, PluginTabItem } from "../types/plugin";
+import { AdbDevice, adbDeviceKey, adbDeviceLabel, FelDevice, efexDeviceLabel } from "../components/TopBar";
 import { ExtensionIcon } from "../components/ExtensionIcon";
 import { LogMarkedText } from "../utils/ansi";
 
 interface PluginRunnerProps {
-  item: ExtensionTabItem;
+  item: PluginTabItem;
   serial: string;
+  adbDevices: AdbDevice[];
+  felDevices: FelDevice[];
   onLog: (msg: string) => void;
 }
 
-interface PluginLogPayload {
-  plugin_id: string;
-  line: string;
+interface JsonDraft {
+  __pluginJsonDraft: string;
 }
 
-function getInputKey(field: PluginInput): string {
-  return field.id || field.name || "";
+async function pluginRequest<T>(action: string, args: Record<string, unknown> = {}): Promise<T> {
+  return invoke<T>("plugin_request", { action, args });
 }
 
-function getInputLabel(field: PluginInput): string {
-  return field.label || field.name || field.id || "";
+function initialValues(fields: PluginField[]): Record<string, unknown> {
+  return Object.fromEntries(fields.map((field) => [
+    field.id,
+    field.default ?? (field.type === "boolean" ? false : field.type === "number" ? 0 : field.type === "json" ? {} : ""),
+  ]));
 }
 
-function getInputType(field: PluginInput): "file" | "text" | "select" | "boolean" {
-  const raw = field.type ?? field.kind;
-  if (raw === "file" || raw === "select" || raw === "boolean") return raw;
-  return "text";
+function isJsonDraft(value: unknown): value is JsonDraft {
+  return !!value && typeof value === "object" && "__pluginJsonDraft" in value;
 }
 
-function normalizeOptions(
-  options?: Array<string | { label?: string; value: string }>
-): Array<{ label: string; value: string }> {
-  if (!Array.isArray(options)) return [];
-  return options.map((opt) =>
-    typeof opt === "string"
-      ? { label: opt, value: opt }
-      : { label: opt.label || opt.value, value: opt.value }
-  );
-}
-
-function normalizeFilters(field: PluginInput): PluginFileFilter[] | undefined {
-  if (Array.isArray(field.filters) && field.filters.length > 0) {
-    if (typeof field.filters[0] === "string") {
-      const exts = (field.filters as string[])
-        .map((e) => e.replace(/^\./, "").trim())
-        .filter(Boolean);
-      return exts.length > 0 ? [{ name: getInputLabel(field) || "File", extensions: exts }] : undefined;
-    }
-    return field.filters as PluginFileFilter[];
-  }
-  if (Array.isArray(field.extensions) && field.extensions.length > 0) {
-    return [{ name: getInputLabel(field) || "File", extensions: field.extensions }];
-  }
-  return undefined;
-}
-
-function buildDefaults(inputs: PluginInput[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (const field of inputs) {
-    const key = getInputKey(field);
-    if (!key) continue;
-    const fType = getInputType(field);
-    if (fType === "boolean") {
-      out[key] =
-        typeof field.default === "boolean"
-          ? field.default
-          : String(field.default ?? "").toLowerCase() === "true";
-    } else if (fType === "select") {
-      const opts = normalizeOptions(field.options);
-      out[key] =
-        field.default !== undefined ? String(field.default) : opts[0]?.value ?? "";
-    } else {
-      out[key] = field.default !== undefined ? String(field.default) : "";
+function normalizeInputs(fields: PluginField[], values: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...values };
+  for (const field of fields) {
+    if (field.type !== "json") continue;
+    const value = values[field.id];
+    if (!isJsonDraft(value)) continue;
+    try {
+      normalized[field.id] = JSON.parse(value.__pluginJsonDraft);
+    } catch {
+      throw new Error(`${field.label}: ${"Invalid JSON"}`);
     }
   }
-  return out;
+  const missing = fields.filter((field) => field.required && (normalized[field.id] === undefined || normalized[field.id] === null || normalized[field.id] === ""));
+  if (missing.length) throw new Error(missing.map((field) => field.label).join(", "));
+  return normalized;
 }
 
-export function PluginRunner({ item, serial, onLog }: PluginRunnerProps) {
+function FieldInput({ field, value, onChange }: { field: PluginField; value: unknown; onChange: (value: unknown) => void }) {
   const { t } = useTranslation();
-  const inputSpecs = useMemo(
-    () => item.tab?.inputs ?? item.plugin.inputs ?? [],
-    [item]
+  const className = "ui-input w-full";
+
+  if (field.type === "boolean") {
+    return <input type="checkbox" checked={Boolean(value)} onChange={(event) => onChange(event.target.checked)} />;
+  }
+  if (field.type === "select") {
+    return (
+      <select className="ui-select w-full" value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
+        {(field.options ?? []).map((option) => <option key={option} value={option}>{option}</option>)}
+      </select>
+    );
+  }
+  if (field.type === "file") {
+    return (
+      <div className="flex gap-2">
+        <input className={className} value={String(value ?? "")} onChange={(event) => onChange(event.target.value)} />
+        <button className="ui-btn-secondary shrink-0" type="button" onClick={async () => {
+          const selected = await open();
+          if (typeof selected === "string") onChange(selected);
+        }}>
+          {t("common.browse")}
+        </button>
+      </div>
+    );
+  }
+  if (field.type === "json") {
+    const text = isJsonDraft(value) ? value.__pluginJsonDraft : JSON.stringify(value ?? {}, null, 2);
+    return (
+      <textarea
+        className={`${className} min-h-24 font-mono`}
+        value={text}
+        onChange={(event) => {
+          const draft = event.target.value;
+          try { onChange(JSON.parse(draft)); }
+          catch { onChange({ __pluginJsonDraft: draft } satisfies JsonDraft); }
+        }}
+      />
+    );
+  }
+  return (
+    <input
+      className={className}
+      type={field.type === "number" ? "number" : "text"}
+      required={field.required}
+      value={String(value ?? "")}
+      onChange={(event) => onChange(field.type === "number" ? Number(event.target.value) : event.target.value)}
+    />
   );
+}
 
-  const [formValues, setFormValues] = useState<Record<string, string | boolean>>(() =>
-    buildDefaults(inputSpecs)
-  );
-  const [logs, setLogs] = useState<string[]>([]);
-  const [running, setRunning] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const logBoxRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    setFormValues((prev) => {
-      const defaults = buildDefaults(inputSpecs);
-      const merged: Record<string, string | boolean> = { ...defaults };
-      for (const key of Object.keys(defaults)) {
-        if (prev[key] !== undefined && prev[key] !== "") {
-          merged[key] = prev[key];
-        }
-      }
-      return merged;
-    });
-  }, [inputSpecs]);
-
-  useEffect(() => {
-    const unlisten = listen<PluginLogPayload>("plugin-log", (event) => {
-      const { plugin_id, line } = event.payload;
-      if (plugin_id === item.pluginId) {
-        const time = new Date().toLocaleTimeString();
-        setLogs((prev) => [...prev.slice(-499), `[${time}] ${line}`]);
-      }
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, [item.pluginId]);
-
-  useEffect(() => {
-    if (logBoxRef.current) {
-      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+function JsonValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined) return <span className="text-slate-400">—</span>;
+  if (Array.isArray(value)) {
+    if (value.length > 0 && value.every((item) => item && typeof item === "object" && !Array.isArray(item))) {
+      const columns = [...new Set(value.flatMap((item) => Object.keys(item as object)))];
+      return (
+        <div className="overflow-auto">
+          <table className="w-full border-collapse text-left text-xs">
+            <thead><tr>{columns.map((column) => <th key={column} className="border-b border-slate-200 px-2 py-1 dark:border-slate-700">{column}</th>)}</tr></thead>
+            <tbody>{value.map((row, index) => <tr key={index}>{columns.map((column) => <td key={column} className="border-b border-slate-100 px-2 py-1 font-mono dark:border-slate-800">{formatValue((row as Record<string, unknown>)[column])}</td>)}</tr>)}</tbody>
+          </table>
+        </div>
+      );
     }
-  }, [logs.length]);
+    return <ul className="list-disc space-y-0.5 pl-5 text-xs">{value.map((item, index) => <li key={index}>{formatValue(item)}</li>)}</ul>;
+  }
+  if (typeof value === "object") {
+    return (
+      <dl className="grid gap-2 sm:grid-cols-2">
+        {Object.entries(value as Record<string, unknown>).map(([key, item]) => (
+          <div key={key} className="rounded-lg border border-slate-200 bg-white/60 px-2.5 py-2 dark:border-slate-700 dark:bg-slate-900/50">
+            <dt className="text-[10px] font-medium uppercase tracking-wide text-slate-500">{key}</dt>
+            <dd className="mt-1 break-all font-mono text-xs">{formatValue(item)}</dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  return <span className="break-all font-mono text-xs">{String(value)}</span>;
+}
 
-  const setFieldValue = (key: string, value: string | boolean) => {
-    setFormValues((prev) => ({ ...prev, [key]: value }));
-  };
+function formatValue(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
 
-  const browseInputFile = async (field: PluginInput) => {
-    try {
-      const filters = normalizeFilters(field);
-      const file = await open(filters ? { filters } : undefined);
-      if (typeof file === "string") {
-        setFieldValue(getInputKey(field), file);
-      }
-    } catch (err) {
-      setErrorMsg(String(err));
-    }
-  };
-
-  const handleRun = async () => {
-    if (running) return;
-    setRunning(true);
-    setErrorMsg(null);
-    const title = item.tab ? `${item.plugin.name} / ${item.tab.label}` : item.plugin.name;
-    onLog(`运行拓展 [${title}]`);
-    try {
-      const res = await invoke<string[] | string | void>("run_plugin", {
-        pluginId: item.pluginId,
-        tabId: item.tabId ?? null,
-        serial,
-        inputs: formValues,
-      });
-      if (typeof res === "string" && res) {
-        const time = new Date().toLocaleTimeString();
-        setLogs((prev) => [...prev.slice(-499), `[${time}] ${res}`]);
-      }
-    } catch (err) {
-      const msg = String(err);
-      setErrorMsg(msg);
-      const time = new Date().toLocaleTimeString();
-      setLogs((prev) => [...prev.slice(-499), `[${time}] ERROR: ${msg}`]);
-      onLog(`拓展运行失败 [${title}]: ${msg}`);
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  const title = item.tab ? item.tab.label : item.plugin.name;
-  const description = item.tab?.description || item.plugin.description;
+function ProviderCard({
+  provider,
+  manifestActions,
+  sessions,
+  providerInputs,
+  providerCallInputs,
+  busy,
+  onProviderInput,
+  onCallInput,
+  onStart,
+  onStop,
+  onCall,
+}: {
+  provider: PluginProvider;
+  manifestActions: PluginTabItem["plugin"]["manifest"]["actions"];
+  sessions: PluginProviderSession[];
+  providerInputs: Record<string, unknown>;
+  providerCallInputs: Record<string, Record<string, unknown>>;
+  busy: boolean;
+  onProviderInput: (id: string, key: string, value: unknown) => void;
+  onCallInput: (key: string, values: Record<string, unknown>) => void;
+  onStart: () => void;
+  onStop: (sessionId: string) => void;
+  onCall: (sessionId: string, operation: string, inputs: Record<string, unknown>) => void;
+}) {
+  const { t } = useTranslation();
+  const connectId = provider.actions.connect;
+  const connectAction = manifestActions.find((action) => action.id === connectId);
+  const connectValues = providerInputs;
 
   return (
-    <div className="flex h-full flex-col space-y-4">
-      <div className="ui-toolbar items-start py-3 sm:items-center">
-        <div>
-          <div className="flex flex-wrap items-center gap-2">
-            <ExtensionIcon icon={item.icon} className="h-5 w-5 shrink-0 text-blue-500" />
-            <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              {title}
-            </h2>
-            <span className="rounded-md bg-blue-600/15 px-2 py-0.5 font-mono text-[11px] font-medium text-blue-600 dark:text-blue-400">
-              {item.plugin.name} v{item.plugin.version}
-            </span>
+    <div className="ui-subcard space-y-3 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <strong className="text-xs">{provider.label} <span className="font-normal text-slate-500">({provider.kind})</span></strong>
+        <button className="ui-btn-primary" disabled={busy} onClick={onStart}><Play className="h-3 w-3" />{t("plugins.startProvider")}</button>
+      </div>
+      {connectAction?.inputs.map((field) => (
+        <label key={field.id} className="block space-y-1 text-xs">
+          <span>{field.label}{field.required ? " *" : ""}</span>
+          {field.description && <span className="block text-slate-500">{field.description}</span>}
+          <FieldInput field={field} value={connectValues[field.id] ?? initialValues([field])[field.id]} onChange={(value) => onProviderInput(provider.id, field.id, value)} />
+        </label>
+      ))}
+      <div className="space-y-2">
+        {sessions.filter((session) => session.provider === provider.id).map((session) => (
+          <div key={session.id} className="ui-subcard space-y-2 p-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span><code>{session.id}</code> · {session.status}{session.error ? ` · ${session.error}` : ""}</span>
+              <button className="ui-btn-secondary py-1" onClick={() => onStop(session.id)}><Square className="h-3 w-3" />{t("plugins.stopProvider")}</button>
+            </div>
+            {session.logs.length > 0 && <pre className="max-h-32 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-slate-500">{session.logs.join("\n")}</pre>}
+            <div className="space-y-2">
+              {Object.entries(provider.actions).filter(([operation]) => operation.toLowerCase() !== "connect").map(([operation, actionId]) => {
+                const callAction = manifestActions.find((action) => action.id === actionId);
+                const inputKey = `${session.id}:${operation}`;
+                const values = providerCallInputs[inputKey] ?? initialValues(callAction?.inputs ?? []);
+                return (
+                  <div key={operation} className="ui-subcard space-y-2 p-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <strong>{operation}</strong>
+                      <button className="ui-btn-secondary py-1" onClick={() => onCall(session.id, operation, values)}><Terminal className="h-3 w-3" />{t("plugins.callProvider")}</button>
+                    </div>
+                    {callAction?.inputs.map((field) => (
+                      <label key={field.id} className="block space-y-1 text-[11px]">
+                        <span>{field.label}{field.required ? " *" : ""}</span>
+                        <FieldInput field={field} value={values[field.id]} onChange={(value) => onCallInput(inputKey, { ...values, [field.id]: value })} />
+                      </label>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
           </div>
-          {description && (
-            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              {description}
-            </p>
-          )}
-        </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
-        <div className="flex shrink-0 items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-          <span>{t("plugins.targetDevice")}:</span>
-          <code className="rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono tabular-nums text-slate-800 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-            {serial || t("plugins.noDevice")}
-          </code>
+function RunCard({
+  run,
+  action,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  run: PluginRun;
+  action?: PluginTabItem["plugin"]["manifest"]["actions"][number];
+  busy: boolean;
+  onConfirm: (run: PluginRun) => void;
+  onCancel: (runId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const output = run.result && typeof run.result === "object" ? run.result as Record<string, unknown> : {};
+  const canCancel = run.status === "running" || run.status === "awaiting_confirmation";
+
+  return (
+    <article className="ui-subcard space-y-2 p-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs">
+        <strong>{action?.label ?? run.action}</strong>
+        <span className="rounded bg-slate-200 px-1.5 py-0.5 dark:bg-slate-800">{run.status}</span>
+        <span className="text-slate-500">{run.origin}{run.device ? ` · ${run.device}` : ""}</span>
+        <span className="ml-auto font-mono text-[10px] text-slate-400">{run.id}</span>
+        {canCancel && <button className="ui-btn-secondary py-1" disabled={busy} onClick={() => onCancel(run.id)}><Square className="h-3 w-3" />{t("plugins.cancel")}</button>}
+      </div>
+      {run.confirmation && (
+        <div className="ui-alert-warn block space-y-2">
+          <strong>{run.confirmation.summary}</strong>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="rounded-lg border border-amber-500/20 px-2.5 py-2 text-xs"><span className="text-amber-700 dark:text-amber-300">{t("plugins.capability")}</span><div className="mt-1 font-mono">{run.confirmation.capability}</div></div>
+            {run.confirmation.device && <div className="rounded-lg border border-amber-500/20 px-2.5 py-2 text-xs"><span className="text-amber-700 dark:text-amber-300">{t("plugins.targetDevice")}</span><div className="mt-1 font-mono">{run.confirmation.device}</div></div>}
+          </div>
+          {run.confirmation.details !== undefined && <JsonValue value={run.confirmation.details} />}
+          <button className="ui-btn-primary" disabled={busy} onClick={() => onConfirm(run)}><Check className="h-3.5 w-3.5" />{t("plugins.confirm")}</button>
         </div>
+      )}
+      {run.error && <div className="text-xs text-rose-500">{run.error}</div>}
+      {run.logs.length > 0 && <pre className="max-h-44 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-2 font-mono text-[10px] text-slate-200"><LogMarkedText text={run.logs.join("\n")} /></pre>}
+      {run.result !== undefined && (
+        <div className="space-y-2">
+          {action?.output && action.output.length > 0 && <div className="grid gap-2 sm:grid-cols-2">{action.output.map((field) => <div key={field.id} className="ui-subcard p-2"><div className="text-[10px] font-medium text-slate-500">{field.label}</div><div className="mt-1"><JsonValue value={output[field.id]} /></div></div>)}</div>}
+          <details>
+            <summary className="cursor-pointer text-xs text-slate-500">{t("plugins.result")}</summary>
+            <div className="mt-2"><JsonValue value={run.result} /></div>
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-slate-500">{JSON.stringify(run.result, null, 2)}</pre>
+          </details>
+        </div>
+      )}
+    </article>
+  );
+}
+
+export function PluginRunner({ item, serial, adbDevices, felDevices, onLog }: PluginRunnerProps) {
+  const { t } = useTranslation();
+  const { manifest } = item.plugin;
+  const actions = useMemo(() => {
+    const pageIds = item.page?.actions;
+    return manifest.actions.filter((action) => !pageIds || pageIds.includes(action.id));
+  }, [manifest.actions, item.page]);
+  const [actionId, setActionId] = useState(actions[0]?.id ?? "");
+  const action = actions.find((entry) => entry.id === actionId) ?? actions[0];
+  const [inputs, setInputs] = useState<Record<string, unknown>>(() => initialValues(action?.inputs ?? []));
+  const [targetDevice, setTargetDevice] = useState(serial);
+  const [runs, setRuns] = useState<PluginRun[]>([]);
+  const [sessions, setSessions] = useState<PluginProviderSession[]>([]);
+  const [providerInputs, setProviderInputs] = useState<Record<string, Record<string, unknown>>>({});
+  const [providerCallInputs, setProviderCallInputs] = useState<Record<string, Record<string, unknown>>>({});
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    const [runList, providerList] = await Promise.all([
+      pluginRequest<PluginRun[]>("runs", { id: manifest.id }).catch(() => []),
+      pluginRequest<PluginProviderSession[]>("providers", { id: manifest.id }).catch(() => []),
+    ]);
+    setRuns(Array.isArray(runList) ? runList.slice(-100).reverse() : []);
+    setSessions(Array.isArray(providerList) ? providerList.slice(-50).reverse() : []);
+  }, [manifest.id]);
+
+  useEffect(() => {
+    setActionId(actions[0]?.id ?? "");
+    setInputs(initialValues(actions[0]?.inputs ?? []));
+  }, [actions]);
+  useEffect(() => { setTargetDevice(serial); }, [serial]);
+  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const runListener = listen<PluginRun>("plugin-run-changed", ({ payload }) => {
+      if (payload.plugin_id === manifest.id) setRuns((previous) => [payload, ...previous.filter((run) => run.id !== payload.id)].slice(0, 100));
+    });
+    const providerListener = listen<PluginProviderSession>("plugin-provider-changed", ({ payload }) => {
+      if (payload.plugin_id === manifest.id) setSessions((previous) => [payload, ...previous.filter((session) => session.id !== payload.id)].slice(0, 50));
+    });
+    return () => { runListener.then((unlisten) => unlisten()); providerListener.then((unlisten) => unlisten()); };
+  }, [manifest.id]);
+
+  const request = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+      await load();
+    } catch (requestError) {
+      setError(String(requestError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const addRun = (run: PluginRun) => setRuns((previous) => [run, ...previous.filter((entry) => entry.id !== run.id)].slice(0, 100));
+  const runAction = async (id: string, values: Record<string, unknown>) => {
+    const selected = manifest.actions.find((entry) => entry.id === id);
+    const run = await pluginRequest<PluginRun>("run", {
+      id: manifest.id,
+      action: id,
+      inputs: normalizeInputs(selected?.inputs ?? [], values),
+      device: targetDevice || undefined,
+    });
+    addRun(run);
+    onLog(`Plugin ${manifest.id}/${id}: ${run.status}`);
+  };
+
+  const handleProviderStart = async (provider: PluginProvider) => {
+    const connect = manifest.actions.find((entry) => entry.id === provider.actions.connect);
+    const session = await pluginRequest<PluginProviderSession>("provider_start", {
+      id: manifest.id,
+      provider: provider.id,
+      inputs: normalizeInputs(connect?.inputs ?? [], providerInputs[provider.id] ?? initialValues(connect?.inputs ?? [])),
+      device: targetDevice || undefined,
+    });
+    setSessions((previous) => [session, ...previous.filter((entry) => entry.id !== session.id)].slice(0, 50));
+  };
+
+  const handleProviderCall = async (sessionId: string, operation: string, values: Record<string, unknown>) => {
+    const provider = manifest.providers.find((entry) => entry.id === sessions.find((session) => session.id === sessionId)?.provider);
+    const actionId = provider?.actions[operation];
+    const action = manifest.actions.find((entry) => entry.id === actionId);
+    const run = await pluginRequest<PluginRun>("provider_call", {
+      session_id: sessionId,
+      operation,
+      inputs: normalizeInputs(action?.inputs ?? [], values),
+    });
+    addRun(run);
+  };
+
+  const title = item.page?.label ?? manifest.name;
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-4 overflow-auto pr-1">
+      <div className="ui-toolbar items-start">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <ExtensionIcon icon={item.icon} className="h-5 w-5 text-blue-500" />
+            <h2 className="ui-title text-sm">{title}</h2>
+            <span className="rounded bg-slate-200 px-2 py-0.5 font-mono text-[10px] dark:bg-slate-800">v{manifest.version}</span>
+          </div>
+          {(item.page?.description || manifest.description) && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{item.page?.description || manifest.description}</p>}
+        </div>
+        <label className="flex min-w-60 items-center gap-2 text-xs text-slate-500">
+          <span className="shrink-0">{t("plugins.targetDevice")}</span>
+          <select className="ui-select min-w-0 flex-1" value={targetDevice} onChange={(event) => setTargetDevice(event.target.value)}>
+            <option value="">{t("plugins.noDevice")}</option>
+            {adbDevices.length > 0 && <optgroup label="ADB">{adbDevices.map((device) => <option key={adbDeviceKey(device)} value={adbDeviceKey(device)}>{adbDeviceLabel(device)}</option>)}</optgroup>}
+            {felDevices.length > 0 && <optgroup label="FEL">{felDevices.map((device) => <option key={device.id} value={device.id}>{efexDeviceLabel(device)}</option>)}</optgroup>}
+          </select>
+        </label>
       </div>
 
-      {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
+      {error && <div className="ui-alert-err">{error}</div>}
 
-      <div className="ui-card overflow-hidden p-4">
-        {inputSpecs.length === 0 ? (
-          <div className="ui-subcard border-dashed p-4 text-center text-xs text-slate-400">
-            {t("plugins.noInputs")}
+      {actions.length > 0 && (
+        <section className="ui-card space-y-3 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <select className="ui-select min-w-48 flex-1" value={action?.id ?? ""} onChange={(event) => {
+              const next = actions.find((entry) => entry.id === event.target.value);
+              setActionId(event.target.value);
+              setInputs(initialValues(next?.inputs ?? []));
+            }}>
+              {actions.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+            </select>
+            <button className="ui-btn-primary" disabled={!action || busy} onClick={() => action && request(() => runAction(action.id, inputs))}>
+              <Play className="h-3.5 w-3.5" />{t("plugins.run")}
+            </button>
           </div>
-        ) : (
-          <div className="space-y-3.5">
-            {inputSpecs.map((field) => {
-              const key = getInputKey(field);
-              const label = getInputLabel(field);
-              const fType = getInputType(field);
-              const val = formValues[key];
-              const options = normalizeOptions(field.options);
+          {action?.description && <p className="text-xs text-slate-500 dark:text-slate-400">{action.description}</p>}
+          {action?.inputs.length ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              {action.inputs.map((field) => (
+                <label key={field.id} className="space-y-1 text-xs">
+                  <span className="font-medium">{field.label}{field.required ? " *" : ""}</span>
+                  {field.description && <span className="block text-slate-500">{field.description}</span>}
+                  <FieldInput field={field} value={inputs[field.id]} onChange={(value) => setInputs((previous) => ({ ...previous, [field.id]: value }))} />
+                </label>
+              ))}
+            </div>
+          ) : <p className="text-xs text-slate-500">{t("plugins.noInputs")}</p>}
+        </section>
+      )}
 
-              return (
-                <div key={key} className="flex flex-col gap-1.5">
-                  <div className="flex items-center gap-1.5 text-xs font-medium text-slate-700 dark:text-slate-200">
-                    <span>{label}</span>
-                    {field.required && <span className="text-rose-500">*</span>}
-                    <span className="font-mono text-[11px] font-normal text-slate-400">
-                      ({key})
-                    </span>
-                  </div>
-                  {field.description && (
-                    <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                      {field.description}
-                    </div>
-                  )}
+      {manifest.providers.length > 0 && (
+        <section className="ui-card space-y-3 p-4">
+          <div className="ui-card-header p-0">
+            <h3 className="ui-title text-sm">{t("plugins.providers")}</h3>
+            <button className="ui-btn-secondary" onClick={() => void load()}><RefreshCw className="h-3.5 w-3.5" />{t("common.refresh")}</button>
+          </div>
+          {manifest.providers.map((provider) => (
+            <ProviderCard
+              key={provider.id}
+              provider={provider}
+              manifestActions={manifest.actions}
+              sessions={sessions}
+              providerInputs={providerInputs[provider.id] ?? initialValues(manifest.actions.find((entry) => entry.id === provider.actions.connect)?.inputs ?? [])}
+              providerCallInputs={providerCallInputs}
+              busy={busy}
+              onProviderInput={(providerId, key, value) => setProviderInputs((previous) => ({
+                ...previous,
+                [providerId]: { ...(previous[providerId] ?? {}), [key]: value },
+              }))}
+              onCallInput={(key, values) => setProviderCallInputs((previous) => ({ ...previous, [key]: values }))}
+              onStart={() => void request(() => handleProviderStart(provider))}
+              onStop={(sessionId) => void request(async () => {
+                const stopped = await pluginRequest<PluginProviderSession>("provider_stop", { session_id: sessionId });
+                setSessions((previous) => [stopped, ...previous.filter((entry) => entry.id !== stopped.id)].slice(0, 50));
+              })}
+              onCall={(sessionId, operation, values) => void request(() => handleProviderCall(sessionId, operation, values))}
+            />
+          ))}
+        </section>
+      )}
 
-                  {fType === "file" && (
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={typeof val === "string" ? val : ""}
-                        onChange={(e) => setFieldValue(key, e.target.value)}
-                        placeholder={field.placeholder || t("plugins.selectFile")}
-                        className="ui-input flex-1"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => browseInputFile(field)}
-                        className="ui-btn-secondary shrink-0"
-                      >
-                        <FileUp className="h-3.5 w-3.5" />
-                        {t("common.browse")}
-                      </button>
-                    </div>
-                  )}
-
-                  {fType === "text" && (
-                    <input
-                      type="text"
-                      value={typeof val === "string" ? val : ""}
-                      onChange={(e) => setFieldValue(key, e.target.value)}
-                      placeholder={field.placeholder || ""}
-                      className="ui-input w-full"
-                    />
-                  )}
-
-                  {fType === "select" && (
-                    <select
-                      value={typeof val === "string" ? val : ""}
-                      onChange={(e) => setFieldValue(key, e.target.value)}
-                      className="ui-select w-full"
-                    >
-                      {options.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  )}
-
-                  {fType === "boolean" && (
-                    <label className="ui-subcard inline-flex w-fit cursor-pointer items-center gap-2 px-3 py-1.5 text-xs text-slate-700 dark:text-slate-200">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(val)}
-                        onChange={(e) => setFieldValue(key, e.target.checked)}
-                        className="h-4 w-4 accent-blue-600"
-                      />
-                      <span className="font-mono text-[11px]">{Boolean(val) ? "ON" : "OFF"}</span>
-                    </label>
-                  )}
-                </div>
-              );
-            })}
+      <section className="ui-card overflow-hidden">
+        <div className="ui-card-header">
+          <h3 className="ui-title text-sm">{t("plugins.runHistory")}</h3>
+          <button className="ui-btn-secondary" onClick={() => void load()}><RefreshCw className="h-3.5 w-3.5" />{t("common.refresh")}</button>
+        </div>
+        {runs.length === 0 ? <p className="p-4 text-xs text-slate-500">{t("plugins.noRuns")}</p> : (
+          <div className="max-h-[55vh] space-y-2 overflow-auto p-3">
+            {runs.map((run) => <RunCard key={run.id} run={run} action={manifest.actions.find((entry) => entry.id === run.action)} busy={busy} onConfirm={(pendingRun) => void request(() => pluginRequest("confirm", { run_id: pendingRun.id, token: pendingRun.confirmation?.token }))} onCancel={(runId) => void request(() => pluginRequest("cancel", { run_id: runId }))} />)}
           </div>
         )}
-
-        <div className="mt-4 flex justify-end border-t border-slate-200 pt-3 dark:border-slate-800">
-          <button
-            type="button"
-            disabled={running}
-            onClick={handleRun}
-            className="ui-btn-success px-4 py-2"
-          >
-            <Play className="h-3.5 w-3.5" />
-            {running ? t("plugins.running") : t("plugins.run")}
-          </button>
-        </div>
-      </div>
-
-      <div className="ui-card flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div className="ui-card-header">
-          <span className="ui-title">
-            <Terminal className="h-4 w-4 text-blue-500" />
-            <span>{t("plugins.logs")}</span>
-          </span>
-          {logs.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setLogs([])}
-              className="ui-btn-secondary px-2 py-1 text-[11px]"
-            >
-              <Trash2 className="h-3 w-3" />
-              {t("log.clear")}
-            </button>
-          )}
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col p-4">
-          <div
-            ref={logBoxRef}
-            className="ui-terminal min-h-[160px] flex-1 overflow-auto p-3"
-          >
-            {logs.length === 0 ? (
-              <span className="text-slate-500">{t("log.empty")}</span>
-            ) : (
-              logs.map((line, i) => (
-                <div key={i} className="whitespace-pre-wrap break-all leading-5">
-                  <LogMarkedText text={line} />
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
+      </section>
     </div>
   );
 }

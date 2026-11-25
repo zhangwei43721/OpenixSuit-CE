@@ -1,20 +1,18 @@
 ---
 name: v881-app-push
-description: V881 App 快推安装插件，支持推送应用文件、设置权限并执行重启命令。
+description: V881 应用推送插件，调用宿主组合部署操作传输文件并按需重启服务。
 ---
 
-# V881 App 快推安装插件
+# V881 App 快推安装
 
-## 输入参数
-- `local_file` (`file`, 必填): 本地应用文件
-- `remote_dir` (`text`, 必填, 默认 `/usr/bin`): 设备目标目录
-- `remote_name` (`text`, 必填, 默认 `v881_app`): 设备端文件名
-- `need_root` (`boolean`, 可选, 默认 `true`): 是否先切换 `adb root`
-- `restart_cmd` (`text`, 可选): 推送完成后执行的命令
-
-## 安装与运行示例
+插件 action `deploy` 调用宿主 `adb.deploy`，由宿主完成设备检查、可选 root、目录准备、文件传输和可选重启命令。需要 `devices.read`、`adb.transfer`、`adb.root`、`adb.shell` 权限；设备操作执行前由宿主确认。
 
 ```bash
-openixsuit-ce ai plugin-install ./plugins/v881-app-push
-openixsuit-ce ai plugin-run v881-app-push --serial <serial> --inputs '{"local_file":"/path/to/app","remote_dir":"/usr/bin","remote_name":"v881_app","need_root":true}'
+openixsuit-ai plugin validate ./plugins/v881-app-push
+openixsuit-ai plugin install ./plugins/v881-app-push
+openixsuit-ai plugin run v881-app-push deploy --device "$adb_serial" --inputs '{"local_file":"/path/to/app","remote_dir":"/usr/bin","remote_name":"v881_app","need_root":true,"restart_cmd":""}'
+openixsuit-ai plugin runs
+openixsuit-ai plugin show RUN_ID
 ```
+
+确认执行前检查目标设备和部署路径。清单及 JS 入口分别见本目录 `manifest.json`、`main.js`。完整字段和 CLI 说明见 OpenixSuit-CE Skill 的 `references/plugins.md`。

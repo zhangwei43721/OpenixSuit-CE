@@ -8,7 +8,8 @@ use base64::Engine as _;
 use serde::Serialize;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
@@ -27,6 +28,7 @@ enum StopReason {
 #[derive(Clone)]
 pub struct AdbLogHandle {
     session: LogSession,
+    recent: Arc<Mutex<VecDeque<String>>>,
     stop: watch::Sender<Option<StopReason>>,
     done: watch::Receiver<Option<Result<(), String>>>,
 }
@@ -197,10 +199,12 @@ pub(crate) fn open_adb_log_session(
     let (stop, stopped) = watch::channel(None);
     let (finished, done) = watch::channel(None);
     let session = LogSession::adb(id.clone(), log_path, label, serial.clone(), command, display_options);
+    let recent = Arc::new(Mutex::new(VecDeque::with_capacity(200)));
     active.insert(
         id.clone(),
         AdbLogHandle {
             session: session.clone(),
+            recent: recent.clone(),
             stop,
             done,
         },
@@ -214,6 +218,19 @@ pub(crate) fn open_adb_log_session(
     tauri::async_runtime::spawn(async move {
         let mut stop_reason = stopped.clone();
         let result = collect(child, writer, stopped, |stream, timestamp, bytes| {
+            if let Ok(mut tail) = recent.lock() {
+                for line in bytes.split_inclusive(|&byte| byte == b'\n') {
+                    if tail.len() == 200 {
+                        tail.pop_front();
+                    }
+                    let value = String::from_utf8_lossy(line);
+                    let value = value.trim_end_matches(['\r', '\n']).chars().take(4096).collect::<String>();
+                    tail.push_back(match stream {
+                        Stream::Stdout => value,
+                        Stream::Stderr => format!("[stderr] {value}"),
+                    });
+                }
+            }
             let _ = app.emit(
                 "adb-log-data",
                 LogData {
@@ -298,6 +315,12 @@ pub(crate) fn active_sessions(state: &AppState) -> Result<Vec<LogSession>, Strin
         .values()
         .map(|handle| handle.session.clone())
         .collect())
+}
+
+pub(crate) fn recent_lines(state: &AppState, session_id: &str, lines: usize) -> Option<Vec<String>> {
+    let recent = state.adb_log_sessions.lock().ok()?.get(session_id)?.recent.clone();
+    let guard = recent.lock().ok()?;
+    Some(guard.iter().skip(guard.len().saturating_sub(lines)).cloned().collect())
 }
 
 pub async fn stop_all(state: &AppState) {

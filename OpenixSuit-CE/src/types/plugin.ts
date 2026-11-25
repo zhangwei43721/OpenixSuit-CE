@@ -1,77 +1,130 @@
-export interface PluginFileFilter {
-  name: string;
-  extensions: string[];
-}
+export type PluginFieldType = "text" | "file" | "select" | "boolean" | "number" | "json";
 
-export interface PluginInput {
-  id?: string;
-  name?: string;
-  label?: string;
-  type?: "file" | "text" | "select" | "boolean";
-  kind?: "file" | "text" | "select" | "boolean";
-  required?: boolean;
-  default?: string | boolean;
-  placeholder?: string;
-  description?: string;
-  options?: Array<string | { label?: string; value: string }>;
-  filters?: Array<string | PluginFileFilter>;
-  extensions?: string[];
-}
-
-export interface PluginTabSpec {
+export interface PluginField {
   id: string;
   label: string;
-  icon?: string;
+  type: PluginFieldType;
+  required?: boolean;
+  default?: unknown;
+  options?: string[];
   description?: string;
-  inputs?: PluginInput[];
+}
+
+export interface PluginAction {
+  id: string;
+  label: string;
+  description?: string;
+  inputs: PluginField[];
+  output?: PluginField[];
+  entry: {
+    kind: "javascript" | "process";
+    file?: string;
+    export?: string;
+    program?: string;
+    binding?: string;
+    interpreter?: string;
+    args?: string[];
+    interpreter_args?: string[];
+    protocol?: "ndjson" | "stdio";
+    platforms?: Record<string, string>;
+  };
+  timeout_ms?: number;
+}
+
+export interface PluginPage {
+  id: string;
+  label: string;
+  description?: string;
+  icon?: string;
+  actions: string[];
+}
+
+export interface PluginProvider {
+  id: string;
+  label: string;
+  kind: "log" | "device" | "power";
+  actions: Record<string, string>;
+  reconnect_ms?: number;
 }
 
 export interface PluginManifest {
   id: string;
   name: string;
   version: string;
-  icon?: string;
   description?: string;
-  author?: string;
-  inputs?: PluginInput[];
-  tabs?: PluginTabSpec[];
+  icon?: string;
+  permissions: string[];
+  settings: PluginField[];
+  actions: PluginAction[];
+  pages: PluginPage[];
+  providers: PluginProvider[];
 }
 
-export interface ExtensionTabItem {
+export interface InstalledPlugin {
+  manifest: PluginManifest;
+  enabled: boolean;
+  grants: string[];
+  settings: Record<string, unknown>;
+  bindings: Record<string, { program?: string; interpreter?: string }>;
+  source?: string;
+}
+
+export interface PluginRun {
+  id: string;
+  plugin_id: string;
+  action: string;
+  origin: string;
+  device?: string;
+  status: "running" | "awaiting_confirmation" | "succeeded" | "failed" | "cancelled" | "timed_out";
+  logs: string[];
+  result?: unknown;
+  error?: string;
+  confirmation?: {
+    token: string;
+    capability: string;
+    device?: string;
+    summary: string;
+    details: unknown;
+  };
+}
+
+export interface PluginProviderSession {
+  id: string;
+  plugin_id: string;
+  provider: string;
+  status: string;
+  logs: string[];
+  error?: string;
+}
+
+export interface PluginTabItem {
   key: `ext:${string}`;
   pluginId: string;
-  tabId?: string;
+  pageId?: string;
   label: string;
   icon?: string;
-  plugin: PluginManifest;
-  tab?: PluginTabSpec;
+  plugin: InstalledPlugin;
+  page?: PluginPage;
 }
 
-export function getExtensionTabs(plugins: PluginManifest[]): ExtensionTabItem[] {
-  const items: ExtensionTabItem[] = [];
-  for (const plugin of plugins) {
-    const tabs = Array.isArray(plugin.tabs) ? plugin.tabs : [];
-    if (tabs.length > 0) {
-      for (const tab of tabs) {
-        items.push({
-          key: `ext:${plugin.id}:${tab.id}`,
-          pluginId: plugin.id,
-          tabId: tab.id,
-          label: tab.label || plugin.name,
-          icon: tab.icon || plugin.icon,
-          plugin,
-          tab,
-        });
-      }
-    } else {
-      items.push({
-        key: `ext:${plugin.id}`,
-        pluginId: plugin.id,
-        label: plugin.name,
-        icon: plugin.icon,
+export function getExtensionTabs(plugins: InstalledPlugin[]): PluginTabItem[] {
+  return plugins.flatMap((plugin) => {
+    if (!plugin.enabled) return [];
+    const pages = plugin.manifest.pages ?? [];
+    if (pages.length) {
+      return pages.map((page) => ({
+        key: `ext:${plugin.manifest.id}:${page.id}` as const,
+        pluginId: plugin.manifest.id,
+        pageId: page.id,
+        label: page.label || plugin.manifest.name,
+        icon: page.icon || plugin.manifest.icon,
         plugin,
-      });
+        page,
+      }));
     }
-  }
-  return items;
+    if (plugin.manifest.actions.length || plugin.manifest.providers.length) {
+      return [{ key: `ext:${plugin.manifest.id}` as const, pluginId: plugin.manifest.id, label: plugin.manifest.name, icon: plugin.manifest.icon, plugin }];
+    }
+    return [];
+  });
 }

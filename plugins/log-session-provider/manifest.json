@@ -1,0 +1,85 @@
+{
+  "id": "log-session-provider",
+  "name": "日志会话连续采集示例",
+  "version": "1.0.0",
+  "description": "读取现有日志会话或持续输出内置样例文本，示范日志 provider 自动重连。",
+  "permissions": [
+    "logs.read",
+    "providers.log"
+  ],
+  "settings": [],
+  "actions": [
+    {
+      "id": "connect",
+      "label": "读取或输出一批日志",
+      "inputs": [
+        {
+          "id": "source_session_id",
+          "label": "日志会话 ID",
+          "type": "text",
+          "required": false,
+          "description": "可选；留空时使用样例文本。"
+        },
+        {
+          "id": "sample_text",
+          "label": "无设备样例日志",
+          "type": "text",
+          "required": false,
+          "description": "没有日志会话时每轮输出，可用 PANIC 触发日志规则。"
+        }
+      ],
+      "output": [
+        {
+          "id": "emitted",
+          "label": "输出行数",
+          "type": "number"
+        }
+      ],
+      "entry": {
+        "kind": "javascript",
+        "file": "main.js",
+        "export": "connect"
+      },
+      "timeout_ms": 10000
+    },
+    {
+      "id": "status",
+      "label": "查看 provider 状态",
+      "inputs": [],
+      "output": [
+        {
+          "id": "status",
+          "label": "Provider 状态",
+          "type": "json"
+        }
+      ],
+      "entry": {
+        "kind": "javascript",
+        "file": "main.js",
+        "export": "status"
+      },
+      "timeout_ms": 10000
+    }
+  ],
+  "pages": [
+    {
+      "id": "logs",
+      "label": "日志 provider",
+      "actions": [
+        "status"
+      ]
+    }
+  ],
+  "providers": [
+    {
+      "id": "tail",
+      "label": "现有日志或样例文本",
+      "kind": "log",
+      "actions": {
+        "connect": "connect",
+        "status": "status"
+      },
+      "reconnect_ms": 1500
+    }
+  ]
+}

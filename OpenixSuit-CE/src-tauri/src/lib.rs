@@ -20,6 +20,8 @@ mod state;
 mod system;
 mod triggers;
 
+pub use plugins::worker_process as plugin_worker_process;
+
 use state::AppState;
 use tauri::Manager;
 
@@ -31,6 +33,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
+        .manage(plugins::Jobs::default())
+        .manage(plugins::Providers::default())
         .manage(system::updates::PendingUpdate::default())
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {
@@ -167,16 +171,16 @@ pub fn run() {
             system::updates::desktop_check_update,
             system::updates::desktop_install_update,
             // plugins
-            plugins::list_plugins,
-            plugins::install_plugin,
-            plugins::uninstall_plugin,
-            plugins::run_plugin,
+            plugins::plugin_request,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
-                tauri::async_runtime::block_on(adb_log::stop_all(&app.state::<AppState>()));
+                tauri::async_runtime::block_on(async {
+                    plugins::shutdown(app).await;
+                    adb_log::stop_all(&app.state::<AppState>()).await;
+                });
             }
         });
 }

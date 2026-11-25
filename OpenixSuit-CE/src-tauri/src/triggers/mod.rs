@@ -19,7 +19,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TriggerCondition {
-    pub kind: String, // "contains" | "contains_cs" | "regex" | "timeout" | "count"
+    pub kind: String, // "contains" | "contains_cs" | "regex" | "timeout" | "count" | "device_online" | "flash_completed"
     pub pattern: String,
     pub timeout_secs: u64,
     pub count_threshold: u32,
@@ -35,6 +35,10 @@ pub struct TriggerAction {
     pub include_serial_lines: usize,
     pub serial_data: String,
     pub webhook_url: String,
+    pub plugin_id: String,
+    pub plugin_action: String,
+    pub plugin_inputs: serde_json::Map<String, serde_json::Value>,
+    pub adb_serial: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -196,11 +200,15 @@ async fn execute_rule_and_report(
         if session_id.is_empty() {
             Vec::new()
         } else {
-            serial::serial_get_buffer_with_state(&state, &session_id, Some(tail_count))
-                .unwrap_or_default()
+            crate::plugins::provider_logs(&app, &session_id, tail_count)
+                .or_else(|| crate::adb_log::recent_lines(&state, &session_id, tail_count))
+                .unwrap_or_else(|| serial::serial_get_buffer_with_state(&state, &session_id, Some(tail_count)).unwrap_or_default())
         }
     };
 
+    let created_at = epoch_secs();
+    let sequence = INCIDENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let id = format!("inc-{}-{sequence:020}", epoch_ms());
     let mut combined_prompts = Vec::new();
     let mut action_results = Vec::new();
 
@@ -304,6 +312,26 @@ async fn execute_rule_and_report(
                 }
             }
 
+            "plugin_action" => {
+                let lifecycle_device = matches!(rule.condition.kind.as_str(), "device_online" | "flash_completed")
+                    .then(|| port_name.as_str());
+                let incident = json!({
+                    "event":rule.condition.kind, "device":lifecycle_device, "id":id, "rule_id":rule.id, "rule_name":rule.name, "session_id":session_id,
+                    "port_name":port_name, "matched_text":matched_text, "created_at":created_at,
+                    "log_tail": log_tail.iter().rev().take(100).rev()
+                        .map(|line| line.chars().take(1500).collect::<String>()).collect::<Vec<_>>()
+                });
+                let device = (!action.adb_serial.trim().is_empty())
+                    .then(|| action.adb_serial.trim().to_owned())
+                    .or_else(|| lifecycle_device.map(str::to_owned));
+                let result = crate::plugins::run_trigger(&app, action.plugin_id.clone(), action.plugin_action.clone(),
+                    device, action.plugin_inputs.clone(), incident).await;
+                match result {
+                    Ok(run_id) => action_results.push(format!("plugin_action: {run_id}")),
+                    Err(error) => action_results.push(format!("plugin_action: ERR - {error}")),
+                }
+            }
+
             "send_ai" => {
                 let rendered = if action.prompt.trim().is_empty() {
                     format!(
@@ -330,9 +358,6 @@ async fn execute_rule_and_report(
         }
     }
 
-    let created_at = epoch_secs();
-    let sequence = INCIDENT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    let id = format!("inc-{}-{sequence:020}", epoch_ms());
     let report = IncidentReport {
         id: id.clone(),
         rule_id: rule.id.clone(),
@@ -451,13 +476,86 @@ pub fn on_serial_line(app: &AppHandle, session_id: &str, port_name: &str, line: 
     }
 }
 
+pub(crate) fn on_device_event(app: &AppHandle, kind: &str, device: &str) {
+    let now = epoch_secs();
+    let Ok(mut rules) = rules_mutex().lock() else { return };
+    let mut matched = Vec::new();
+    for rule in rules.iter_mut().filter(|rule| rule.enabled && rule.condition.kind == kind) {
+        let filter = rule.condition.pattern.trim();
+        if (!filter.is_empty() && filter != device)
+            || (rule.last_triggered_at > 0 && now.saturating_sub(rule.last_triggered_at) < rule.cooldown_secs)
+        {
+            continue;
+        }
+        rule.trigger_count += 1;
+        rule.last_triggered_at = now;
+        matched.push(rule.clone());
+    }
+    if matched.is_empty() {
+        return;
+    }
+    if let Ok(path) = rules_path() {
+        let _ = save_json_pretty(&path, &*rules);
+    }
+    drop(rules);
+    for rule in matched {
+        let app = app.clone();
+        let device = device.to_owned();
+        let event = format!("{kind}: {device}");
+        tauri::async_runtime::spawn(async move {
+            let report = execute_rule_and_report(app.clone(), rule, String::new(), device, event).await;
+            crate::incident_analysis::enqueue(&app, report);
+        });
+    }
+}
+
+async fn poll_device_edges(app: &AppHandle, previous: &mut Option<std::collections::BTreeSet<String>>) {
+    let needed = rules_mutex().lock().is_ok_and(|rules|
+        rules.iter().any(|rule| rule.enabled && rule.condition.kind == "device_online"));
+    if !needed {
+        *previous = None;
+        return;
+    }
+    let backend = {
+        let state = app.state::<AppState>();
+        let Ok(backend) = state.usb_backend.lock() else { return };
+        backend.clone()
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let adb = adb::adb_list_devices().map(|devices| devices.into_iter()
+            .filter(|device| device.is_online()).map(|device| device.target().to_owned()).collect::<Vec<_>>());
+        let fel = crate::efex::scan_devices_with_backend(&backend)
+            .into_iter().map(|device| device.id).collect::<Vec<_>>();
+        (adb, fel)
+    }).await;
+    if let Ok((adb, fel)) = result {
+        let mut current = fel.into_iter().collect::<std::collections::BTreeSet<_>>();
+        match adb {
+            Ok(devices) => current.extend(devices),
+            Err(_) => {
+                if let Some(previous) = previous.as_ref() {
+                    current.extend(previous.iter().filter(|id| !id.starts_with("bus:")).cloned());
+                }
+            }
+        }
+        if let Some(previous) = previous.as_ref() {
+            for device in current.difference(previous) {
+                on_device_event(app, "device_online", device);
+            }
+        }
+        *previous = Some(current);
+    }
+}
+
 pub fn start_trigger_watcher(app: AppHandle) {
     // Prime the rules cache on startup.
     let _ = rules_mutex();
 
     tauri::async_runtime::spawn(async move {
+        let mut online = None;
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
+            poll_device_edges(&app, &mut online).await;
 
             let now_ms = epoch_ms();
             let now_secs = now_ms / 1000;
@@ -591,7 +689,7 @@ pub fn save_rule_draft(app: &AppHandle, mut rule: TriggerRule) -> Result<Trigger
     }
     if !matches!(
         rule.condition.kind.as_str(),
-        "contains" | "contains_cs" | "regex" | "timeout" | "count"
+        "contains" | "contains_cs" | "regex" | "timeout" | "count" | "device_online" | "flash_completed"
     ) {
         return Err(format!(
             "Unknown trigger condition: {}",
@@ -614,7 +712,7 @@ pub fn save_rule_draft(app: &AppHandle, mut rule: TriggerRule) -> Result<Trigger
     if let Some(action) = rule.actions.iter().find(|action| {
         !matches!(
             action.kind.as_str(),
-            "power_control" | "send_ai" | "adb_reboot" | "serial_send" | "notify_webhook"
+            "power_control" | "send_ai" | "adb_reboot" | "serial_send" | "notify_webhook" | "plugin_action"
         )
     }) {
         return Err(format!("Unknown trigger action: {}", action.kind));
@@ -720,6 +818,10 @@ fn preview_test_condition(
         ));
     }
     let matched = match rule.condition.kind.as_str() {
+        "device_online" | "flash_completed" => {
+            let device = sample_line.trim();
+            !device.is_empty() && (rule.condition.pattern.trim().is_empty() || rule.condition.pattern.trim() == device)
+        }
         "contains" | "contains_cs" | "regex" | "count" => {
             let current = counters_mutex()
                 .lock()

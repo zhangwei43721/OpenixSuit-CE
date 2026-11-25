@@ -60,20 +60,24 @@ export interface PowerProfile {
 }
 
 export interface TriggerCondition {
-  kind: "contains" | "contains_cs" | "regex" | "timeout" | "count";
+  kind: "contains" | "contains_cs" | "regex" | "timeout" | "count" | "device_online" | "flash_completed";
   pattern: string;
   timeout_secs: number;
   count_threshold: number;
 }
 
 export interface TriggerAction {
-  kind: "power_control" | "send_ai" | "adb_reboot" | "serial_send" | "notify_webhook";
+  kind: "power_control" | "send_ai" | "adb_reboot" | "serial_send" | "notify_webhook" | "plugin_action";
   power_profile_id: string;
   power_action: string;
   prompt: string;
   include_serial_lines: number;
   serial_data: string;
   webhook_url: string;
+  plugin_id?: string;
+  plugin_action?: string;
+  plugin_inputs?: Record<string, unknown>;
+  adb_serial?: string;
 }
 
 export interface TriggerRule {

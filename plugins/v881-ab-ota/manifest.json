@@ -1,129 +1,26 @@
 {
   "id": "v881-ab-ota",
   "name": "V881 A/B 分区升级",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "检查当前 A/B 槽位并将镜像安全写入非活动槽位，可在读回校验后重启。",
   "icon": "plugin://icon.svg",
-  "description": "检测 V881 设备当前 A/B 活动槽位，推送并写入非活动槽位分区镜像后可选自动重启。",
-  "inputs": [
+  "permissions": ["devices.read", "adb.partition", "adb.reboot"],
+  "settings": [],
+  "actions": [
     {
-      "id": "slot_image",
-      "label": "升级分区镜像",
-      "type": "file",
-      "required": true,
-      "filters": [
-        "img",
-        "bin"
+      "id": "upgrade",
+      "label": "升级非活动槽位",
+      "description": "先检查当前槽位，再由宿主完成非活动槽位写入、读回校验和可选重启。",
+      "inputs": [
+        {"id":"slot_image","label":"升级分区镜像","type":"file","required":true,"description":"待写入的分区镜像文件"},
+        {"id":"target_partition","label":"目标分区","type":"select","required":true,"default":"boot","options":["boot","rootfs","system"]},
+        {"id":"auto_reboot","label":"校验后自动重启","type":"boolean","required":false,"default":true}
       ],
-      "description": "待写入非活动槽位的分区镜像文件"
-    },
-    {
-      "id": "target_partition",
-      "label": "目标分区",
-      "type": "select",
-      "required": true,
-      "default": "boot",
-      "options": [
-        "boot",
-        "rootfs",
-        "system"
-      ],
-      "description": "待升级的 A/B 分区名称"
-    },
-    {
-      "id": "auto_reboot",
-      "label": "写入后自动重启",
-      "type": "boolean",
-      "required": false,
-      "default": true,
-      "description": "是否在分区写入校验完成后自动重启设备"
+      "output": [{"id":"result","label":"写入结果","type":"json"}],
+      "entry": {"kind":"javascript","file":"main.js","export":"upgrade"},
+      "timeout_ms": 900000
     }
   ],
-  "steps": [
-    {
-      "name": "init-log",
-      "action": "log",
-      "message": "开始执行 V881 A/B 分区安全升级 (partition={{target_partition}})"
-    },
-    {
-      "name": "adb-root",
-      "action": "adb.root"
-    },
-    {
-      "name": "probe-slot",
-      "action": "adb.shell",
-      "command": "getprop ro.boot.slot_suffix",
-      "save_as": "current_slot"
-    },
-    {
-      "name": "assert-ab-supported",
-      "action": "assert",
-      "left": "{{current_slot}}",
-      "op": "not_empty",
-      "message": "未检测到 A/B 槽位属性 ro.boot.slot_suffix，中止升级以保护设备"
-    },
-    {
-      "name": "compute-inactive-slot",
-      "action": "adb.shell",
-      "command": "if [ '{{current_slot}}' = '_a' ]; then echo _b; else echo _a; fi",
-      "save_as": "target_slot"
-    },
-    {
-      "name": "assert-inactive-slot",
-      "action": "assert",
-      "left": "{{target_slot}}",
-      "op": "neq",
-      "right": "{{current_slot}}",
-      "message": "目标槽位与当前活动槽位冲突"
-    },
-    {
-      "name": "log-target",
-      "action": "log",
-      "message": "当前槽位 {{current_slot}} -> 目标写入分区 /dev/block/by-name/{{target_partition}}{{target_slot}}"
-    },
-    {
-      "name": "push-image",
-      "action": "adb.push",
-      "local_path": "{{slot_image}}",
-      "remote_path": "/tmp/v881_ota_slot.img"
-    },
-    {
-      "name": "verify-upload",
-      "action": "adb.shell",
-      "command": "test -s /tmp/v881_ota_slot.img && echo UPLOAD_OK",
-      "save_as": "upload_status"
-    },
-    {
-      "name": "assert-upload",
-      "action": "assert",
-      "left": "{{upload_status}}",
-      "op": "contains",
-      "right": "UPLOAD_OK",
-      "message": "OTA 镜像推送校验失败"
-    },
-    {
-      "name": "write-slot",
-      "action": "adb.shell",
-      "command": "dd if=/tmp/v881_ota_slot.img of=/dev/block/by-name/{{target_partition}}{{target_slot}} bs=1M conv=fsync && rm -f /tmp/v881_ota_slot.img && echo FLASH_OK",
-      "save_as": "flash_status"
-    },
-    {
-      "name": "assert-write",
-      "action": "assert",
-      "left": "{{flash_status}}",
-      "op": "contains",
-      "right": "FLASH_OK",
-      "message": "写入非活动槽位失败"
-    },
-    {
-      "name": "reboot-if-enabled",
-      "when": "{{auto_reboot}} == true",
-      "action": "adb.reboot"
-    },
-    {
-      "name": "done-no-reboot",
-      "when": "{{auto_reboot}} != true",
-      "action": "log",
-      "message": "非活动槽位写入完成，未启用自动重启，请手动校验后重启"
-    }
-  ]
+  "pages": [{"id":"upgrade","label":"A/B 升级","description":"把镜像写入当前未启动的分区槽位。","actions":["upgrade"]}],
+  "providers": []
 }

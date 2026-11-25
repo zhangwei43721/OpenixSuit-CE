@@ -25,7 +25,7 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
-import { ExtensionTabItem } from "../types/plugin";
+import { PluginTabItem } from "../types/plugin";
 import { ExtensionIcon } from "./ExtensionIcon";
 import { useSidebarDrag } from "./useSidebarDrag";
 import { DeviceWorkspace } from "../types/workbench";
@@ -142,7 +142,7 @@ interface SidebarProps {
   activeTab: TabKey;
   collapsed: boolean;
   locked: boolean;
-  extensionTabs: ExtensionTabItem[];
+  extensionTabs: PluginTabItem[];
   workspaces: DeviceWorkspace[];
   activeWorkspaceId: string | null;
   onSelectWorkspace: (id: string | null) => void;
@@ -607,7 +607,7 @@ export function Sidebar({
                   <button
                     key={ext.key}
                     disabled={locked}
-                    title={collapsed ? ext.label : ext.plugin.name}
+                    title={collapsed ? ext.label : ext.plugin.manifest.name}
                     onClick={() => onSelect(ext.key)}
                     className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-sm transition disabled:opacity-50 ${
                       activeTab === ext.key

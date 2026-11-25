@@ -1,112 +1,28 @@
 {
   "id": "v881-app-push",
   "name": "V881 App 快推安装",
-  "version": "1.0.0",
+  "version": "2.0.0",
+  "description": "把本地程序或应用包部署到 V881 指定目录，可按需提权并执行重启命令。",
   "icon": "plugin://icon.svg",
-  "description": "将本地可执行程序或应用包快速推送至 V881 设备目录、自动赋予执行权限并可选执行重启命令。",
-  "inputs": [
+  "permissions": ["devices.read", "adb.transfer", "adb.root", "adb.shell"],
+  "settings": [],
+  "actions": [
     {
-      "id": "local_file",
-      "label": "本地应用文件",
-      "type": "file",
-      "required": true,
-      "filters": [
-        "bin",
-        "apk",
-        "ipk",
-        "sh"
+      "id": "deploy",
+      "label": "推送应用",
+      "description": "由宿主完成设备检查、目录准备、文件传输和可选重启命令。",
+      "inputs": [
+        {"id":"local_file","label":"本地应用文件","type":"file","required":true,"description":"待推送的二进制程序或安装包"},
+        {"id":"remote_dir","label":"设备目标目录","type":"text","required":true,"default":"/usr/bin"},
+        {"id":"remote_name","label":"设备端文件名","type":"text","required":true,"default":"v881_app"},
+        {"id":"need_root","label":"先切换 adb root","type":"boolean","required":false,"default":true},
+        {"id":"restart_cmd","label":"推送后执行命令","type":"text","required":false,"default":"","description":"可选，例如 /etc/init.d/app restart"}
       ],
-      "description": "待推送的本地二进制程序或安装包"
-    },
-    {
-      "id": "remote_dir",
-      "label": "设备目标目录",
-      "type": "text",
-      "required": true,
-      "default": "/usr/bin",
-      "description": "设备端存放目录"
-    },
-    {
-      "id": "remote_name",
-      "label": "设备端文件名",
-      "type": "text",
-      "required": true,
-      "default": "v881_app",
-      "description": "推送到设备后的文件名"
-    },
-    {
-      "id": "need_root",
-      "label": "先切换 adb root",
-      "type": "boolean",
-      "required": false,
-      "default": true,
-      "description": "推送系统目录前建议开启"
-    },
-    {
-      "id": "restart_cmd",
-      "label": "推送后执行命令（可选）",
-      "type": "text",
-      "required": false,
-      "default": "",
-      "description": "例如 /etc/init.d/app restart"
+      "output": [{"id":"result","label":"部署结果","type":"json"}],
+      "entry": {"kind":"javascript","file":"main.js","export":"deploy"},
+      "timeout_ms": 180000
     }
   ],
-  "steps": [
-    {
-      "name": "start-log",
-      "action": "log",
-      "message": "准备推送 {{local_file}} -> {{remote_dir}}/{{remote_name}}"
-    },
-    {
-      "name": "adb-root",
-      "when": "{{need_root}} == true",
-      "action": "adb.root"
-    },
-    {
-      "name": "ensure-dir",
-      "action": "adb.shell",
-      "command": "mkdir -p '{{remote_dir}}' && echo DIR_OK",
-      "save_as": "dir_check"
-    },
-    {
-      "name": "assert-dir",
-      "action": "assert",
-      "left": "{{dir_check}}",
-      "op": "contains",
-      "right": "DIR_OK",
-      "message": "创建设备目标目录失败"
-    },
-    {
-      "name": "push-app",
-      "action": "adb.push",
-      "local_path": "{{local_file}}",
-      "remote_path": "{{remote_dir}}/{{remote_name}}"
-    },
-    {
-      "name": "chmod-verify",
-      "action": "adb.shell",
-      "command": "chmod +x '{{remote_dir}}/{{remote_name}}' && ls -l '{{remote_dir}}/{{remote_name}}' && echo PUSH_OK",
-      "save_as": "push_check"
-    },
-    {
-      "name": "assert-push",
-      "action": "assert",
-      "left": "{{push_check}}",
-      "op": "contains",
-      "right": "PUSH_OK",
-      "message": "应用推送或赋权失败"
-    },
-    {
-      "name": "run-restart-cmd",
-      "when": "{{restart_cmd}} != \"\"",
-      "action": "adb.shell",
-      "command": "{{restart_cmd}}",
-      "save_as": "restart_out"
-    },
-    {
-      "name": "finish-log",
-      "action": "log",
-      "message": "V881 App 快推完成: {{remote_dir}}/{{remote_name}}"
-    }
-  ]
+  "pages": [{"id":"deploy","label":"应用推送","actions":["deploy"]}],
+  "providers": []
 }

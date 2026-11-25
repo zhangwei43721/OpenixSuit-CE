@@ -53,6 +53,7 @@ libc = "0.2"
 tauri-plugin-updater = "2"
 tauri-plugin-opener = "2"
 semver = "1"
+rquickjs = "0.12.2"
 
 [target.'cfg(windows)'.dependencies]
 portable-pty = "0.9"

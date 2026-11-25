@@ -34,6 +34,7 @@ import {
   TriggerRule,
 } from "../types/workbench";
 import { LogMarkedText } from "../utils/ansi";
+import { InstalledPlugin, PluginProviderSession } from "../types/plugin";
 
 interface AutomationPageProps {
   onLog: (msg: string) => void;
@@ -66,6 +67,10 @@ function createEmptyRule(idx: number): TriggerRule {
         include_serial_lines: 120,
         serial_data: "",
         webhook_url: "",
+        plugin_id: "",
+        plugin_action: "",
+        plugin_inputs: {},
+        adb_serial: "",
       },
     ],
     cooldown_secs: 30,
@@ -83,6 +88,10 @@ function createEmptyAction(kind: TriggerAction["kind"] = "power_control"): Trigg
     include_serial_lines: 100,
     serial_data: "reboot\n",
     webhook_url: "",
+    plugin_id: "",
+    plugin_action: "",
+    plugin_inputs: {},
+    adb_serial: "",
   };
 }
 
@@ -112,6 +121,8 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
 
   // Trigger Rules State
   const [rules, setRules] = useState<TriggerRule[]>([]);
+  const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
+  const [providerSessions, setProviderSessions] = useState<PluginProviderSession[]>([]);
   const [selectedRuleId, setSelectedRuleId] = useState<string>("");
   const [sessions, setSessions] = useState<SerialSessionInfo[]>([]);
   const [incidents, setIncidents] = useState<IncidentReport[]>([]);
@@ -147,12 +158,14 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
   } | null>(null);
 
   const loadAll = useCallback(async () => {
-    const [rulesRes, profilesRes, incidentsRes, sessRes, portsRes] = await Promise.all([
+    const [rulesRes, profilesRes, incidentsRes, sessRes, portsRes, pluginsRes, providerRes] = await Promise.all([
       invoke<TriggerRule[]>("trigger_list_rules").catch(() => []),
       invoke<PowerProfile[]>("power_list_profiles").catch(() => []),
       invoke<IncidentReport[]>("trigger_list_incidents").catch(() => []),
       invoke<SerialSessionInfo[]>("serial_list_sessions").catch(() => []),
       invoke<SerialPortInfo[]>("serial_list_ports").catch(() => []),
+      invoke<InstalledPlugin[]>("plugin_request", { action: "list", args: {} }).catch(() => []),
+      invoke<PluginProviderSession[]>("plugin_request", { action: "providers", args: {} }).catch(() => []),
     ]);
 
     const safeRules = Array.isArray(rulesRes) ? rulesRes : [];
@@ -164,6 +177,8 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
     setIncidents(Array.isArray(incidentsRes) ? incidentsRes : []);
     setSessions(Array.isArray(sessRes) ? sessRes : []);
     setSerialPorts(Array.isArray(portsRes) ? portsRes : []);
+    setPlugins(Array.isArray(pluginsRes) ? pluginsRes.filter((plugin) => plugin.enabled) : []);
+    setProviderSessions(Array.isArray(providerRes) ? providerRes.slice(-100) : []);
 
     setSelectedRuleId((prev) =>
       prev && safeRules.some((r) => r.id === prev) ? prev : safeRules[0]?.id || ""
@@ -199,6 +214,26 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
       powerListener.then((unlisten) => unlisten()).catch(() => {});
     };
   }, [loadAll]);
+
+  useEffect(() => {
+    const listener = listen("plugins-changed", () => {
+      Promise.all([
+        invoke<InstalledPlugin[]>("plugin_request", { action: "list", args: {} }),
+        invoke<PluginProviderSession[]>("plugin_request", { action: "providers", args: {} }),
+      ]).then(([items, providers]) => {
+        setPlugins(Array.isArray(items) ? items.filter((plugin) => plugin.enabled) : []);
+        setProviderSessions(Array.isArray(providers) ? providers.slice(-100) : []);
+      }).catch(() => { setPlugins([]); setProviderSessions([]); });
+    });
+    return () => { listener.then((unlisten) => unlisten()); };
+  }, []);
+
+  useEffect(() => {
+    const listener = listen<PluginProviderSession>("plugin-provider-changed", ({ payload }) => {
+      setProviderSessions((previous) => [payload, ...previous.filter((item) => item.id !== payload.id)].slice(0, 100));
+    });
+    return () => { listener.then((unlisten) => unlisten()); };
+  }, []);
 
   // Listen to trigger-fired events
   useEffect(() => {
@@ -455,8 +490,18 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
         return isEn
           ? `"${cond.pattern}" ≥ ${cond.count_threshold}x`
           : `"${cond.pattern}" 累计出现 ≥ ${cond.count_threshold} 次`;
+      case "device_online":
+        return isEn ? `Device online${cond.pattern ? `: ${cond.pattern}` : ""}` : `设备上线${cond.pattern ? `：${cond.pattern}` : ""}`;
+      case "flash_completed":
+        return isEn ? `Flash completed${cond.pattern ? `: ${cond.pattern}` : ""}` : `刷写完成${cond.pattern ? `：${cond.pattern}` : ""}`;
     }
   };
+
+  const activeLogProviders = providerSessions.filter((session) => {
+    const plugin = plugins.find((item) => item.manifest.id === session.plugin_id);
+    const provider = plugin?.manifest.providers.find((item) => item.id === session.provider);
+    return provider?.kind === "log" && !["stopped", "failed", "cancelled", "closed", "error", "completed", "disconnected"].includes(session.status.toLowerCase());
+  });
 
   const actionMeta = (action: TriggerAction) => {
     switch (action.kind) {
@@ -502,6 +547,16 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
           badge: "border-indigo-500/40 bg-indigo-500/10 text-indigo-600 dark:text-indigo-300",
           icon: <Webhook className="w-4 h-4 text-indigo-500" />,
         };
+      case "plugin_action": {
+        const plugin = plugins.find((entry) => entry.manifest.id === (action.plugin_id ?? ""));
+        const pluginAction = plugin?.manifest.actions.find((entry) => entry.id === (action.plugin_action ?? ""));
+        return {
+          title: isEn ? "Plugin Action" : "插件动作",
+          detail: `${plugin?.manifest.name ?? action.plugin_id ?? ""} / ${pluginAction?.label ?? action.plugin_action ?? ""}`,
+          badge: "border-cyan-500/40 bg-cyan-500/10 text-cyan-600 dark:text-cyan-300",
+          icon: <Zap className="w-4 h-4 text-cyan-500" />,
+        };
+      }
     }
   };
 
@@ -696,7 +751,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                       </div>
                       <div className="flex flex-col gap-1.5">
                         <label className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                          {isEn ? "Target Serial Session" : "监听串口会话"}
+                          {isEn ? "Target Log Source" : "监听日志来源"}
                         </label>
                         <select
                           value={selectedRule.target_session_id}
@@ -705,12 +760,19 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                           }
                           className="ui-select w-full"
                         >
-                          <option value="">{isEn ? "All Active Serials" : "全部活动串口"}</option>
+                          <option value="">{isEn ? "All active log sources" : "全部活动日志来源"}</option>
                           {sessions.map((s) => (
                             <option key={s.id} value={s.id}>
                               {s.port_name} ({s.id})
                             </option>
                           ))}
+                          {activeLogProviders.length > 0 && <optgroup label={isEn ? "Plugin log providers" : "插件日志 Provider"}>
+                            {activeLogProviders.map((session) => {
+                              const plugin = plugins.find((item) => item.manifest.id === session.plugin_id);
+                              const provider = plugin?.manifest.providers.find((item) => item.id === session.provider);
+                              return <option key={`plugin:${session.id}`} value={session.id}>{plugin?.manifest.name} / {provider?.label} ({session.status})</option>;
+                            })}
+                          </optgroup>}
                         </select>
                       </div>
                     </div>
@@ -723,11 +785,13 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <select
                           value={selectedRule.condition.kind}
-                          onChange={(e) =>
+                          onChange={(e) => {
+                            const kind = e.target.value as TriggerCondition["kind"];
                             updateCondition({
-                              kind: e.target.value as TriggerCondition["kind"],
-                            })
-                          }
+                              kind,
+                              pattern: kind === "device_online" || kind === "flash_completed" ? "" : selectedRule.condition.pattern,
+                            });
+                          }}
                           className="ui-select"
                         >
                           <option value="contains">{isEn ? "Contains (nocase)" : "包含 (忽略大小写)"}</option>
@@ -735,6 +799,8 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                           <option value="regex">{isEn ? "Regex" : "正则表达式"}</option>
                           <option value="timeout">{isEn ? "Silence Timeout" : "静默超时"}</option>
                           <option value="count">{isEn ? "Match Count" : "次数累计"}</option>
+                          <option value="device_online">{isEn ? "Device Online" : "设备上线"}</option>
+                          <option value="flash_completed">{isEn ? "Flash Completed" : "刷写完成"}</option>
                         </select>
 
                         {selectedRule.condition.kind === "timeout" ? (
@@ -753,7 +819,9 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                             type="text"
                             value={selectedRule.condition.pattern}
                             onChange={(e) => updateCondition({ pattern: e.target.value })}
-                            placeholder={isEn ? "Pattern / Keyword" : "匹配关键字或正则..."}
+                            placeholder={selectedRule.condition.kind === "device_online" || selectedRule.condition.kind === "flash_completed"
+                              ? (isEn ? "Optional exact device ID filter" : "可选：按设备 ID 精确筛选，留空匹配全部")
+                              : (isEn ? "Pattern / Keyword" : "匹配关键字或正则...")}
                             className="ui-input font-mono sm:col-span-2"
                           />
                         )}
@@ -850,6 +918,9 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                                 </option>
                                 <option value="notify_webhook">
                                   {isEn ? "Webhook Notify" : "钉钉/飞书 Webhook 通知"}
+                                </option>
+                                <option value="plugin_action">
+                                  {isEn ? "Plugin Action" : "运行插件动作"}
                                 </option>
                               </select>
 
@@ -963,6 +1034,59 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                                 placeholder="https://oapi.dingtalk.com/robot/send?access_token=..."
                                 className="ui-input w-full font-mono"
                               />
+                            )}
+
+                            {act.kind === "plugin_action" && (
+                              <div className="space-y-2">
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                  <select
+                                    className="ui-select ui-select-compact"
+                                    value={act.plugin_id ?? ""}
+                                    onChange={(e) => {
+                                      const plugin = plugins.find((entry) => entry.manifest.id === e.target.value);
+                                      updateAction(idx, { plugin_id: e.target.value, plugin_action: plugin?.manifest.actions[0]?.id ?? "", plugin_inputs: {} });
+                                    }}
+                                  >
+                                    <option value="">{isEn ? "-- Select enabled plugin --" : "-- 选择已启用插件 --"}</option>
+                                    {plugins.map((plugin) => <option key={plugin.manifest.id} value={plugin.manifest.id}>{plugin.manifest.name}</option>)}
+                                  </select>
+                                  <select
+                                    className="ui-select ui-select-compact"
+                                    value={act.plugin_action ?? ""}
+                                    onChange={(e) => updateAction(idx, { plugin_action: e.target.value, plugin_inputs: {} })}
+                                    disabled={!act.plugin_id}
+                                  >
+                                    <option value="">{isEn ? "-- Select action --" : "-- 选择动作 --"}</option>
+                                    {plugins.find((plugin) => plugin.manifest.id === (act.plugin_id ?? ""))?.manifest.actions.map((pluginAction) => <option key={pluginAction.id} value={pluginAction.id}>{pluginAction.label}</option>)}
+                                  </select>
+                                </div>
+                                <label className="block space-y-1 text-[11px] text-slate-500">
+                                  <span>{isEn ? "Action inputs (JSON object)" : "动作输入参数（JSON 对象）"}</span>
+                                  <textarea
+                                    key={`${idx}:${act.plugin_id}:${act.plugin_action}`}
+                                    defaultValue={JSON.stringify(act.plugin_inputs ?? {}, null, 2)}
+                                    onBlur={(e) => {
+                                      try {
+                                        const value = JSON.parse(e.currentTarget.value);
+                                        if (!value || Array.isArray(value) || typeof value !== "object") throw new Error("Expected a JSON object");
+                                        updateAction(idx, { plugin_inputs: value });
+                                      } catch {
+                                        setStatusBanner({ type: "err", text: isEn ? "Plugin action inputs must be a JSON object" : "插件动作输入必须是 JSON 对象" });
+                                      }
+                                    }}
+                                    className="ui-input min-h-24 w-full font-mono"
+                                  />
+                                </label>
+                                <label className="block space-y-1 text-[11px] text-slate-500">
+                                  <span>{isEn ? "Pinned ADB serial (optional)" : "指定 ADB 序列号（可选）"}</span>
+                                  <input
+                                    className="ui-input w-full font-mono"
+                                    value={act.adb_serial ?? ""}
+                                    onChange={(e) => updateAction(idx, { adb_serial: e.target.value })}
+                                    placeholder={isEn ? "Use the incident device when empty" : "留空时使用事件中的设备"}
+                                  />
+                                </label>
+                              </div>
                             )}
                           </div>
                         ))}

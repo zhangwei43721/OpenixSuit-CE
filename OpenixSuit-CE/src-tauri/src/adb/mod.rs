@@ -818,7 +818,7 @@ pub fn adb_screencap_png(serial: String) -> Result<String, String> {
         return Err("Invalid PNG data returned by adb screencap".to_string());
     }
 
-    let b64 = crate::plugins::base64_encode(&output.stdout);
+    let b64 = STANDARD.encode(&output.stdout);
     Ok(format!("data:image/png;base64,{}", b64))
 }
 

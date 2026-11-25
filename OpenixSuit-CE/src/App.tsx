@@ -20,7 +20,7 @@ import { AiWorkbenchPage } from "./pages/AiWorkbenchPage";
 import { PluginRunner } from "./pages/PluginRunner";
 import { SettingsPage } from "./pages/SettingsPage";
 import { WorkspaceModal } from "./components/WorkspaceModal";
-import { getExtensionTabs, PluginManifest } from "./types/plugin";
+import { getExtensionTabs, InstalledPlugin } from "./types/plugin";
 import { DeviceWorkspace } from "./types/workbench";
 
 const STORAGE_ADB_SERIAL_KEY = "adb_last_serial";
@@ -63,7 +63,7 @@ export default function App() {
     settings: false,
     [activeTab]: true,
   }));
-  const [plugins, setPlugins] = useState<PluginManifest[]>([]);
+  const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
   const extensionTabs = useMemo(() => getExtensionTabs(plugins), [plugins]);
   const [workspaces, setWorkspaces] = useState<DeviceWorkspace[]>([]);
   const [workspacesLoaded, setWorkspacesLoaded] = useState(false);
@@ -97,7 +97,7 @@ export default function App() {
 
   const refreshPlugins = useCallback(async () => {
     try {
-      const list = await invoke<PluginManifest[]>("list_plugins");
+      const list = await invoke<InstalledPlugin[]>("plugin_request", { action: "list", args: {} });
       setPlugins(Array.isArray(list) ? list : []);
     } catch {
       setPlugins([]);
@@ -209,6 +209,7 @@ export default function App() {
       );
       refreshAllDevices();
     });
+    const unlistenPlugins = listen("plugins-changed", () => { refreshPlugins(); });
 
     const unlistenAiSync = listen<AiSyncEventPayload>("ai-sync-event", (event) => {
       const { source, action, status, message } = event.payload;
@@ -263,6 +264,7 @@ export default function App() {
       clearTimeout(initScanTimer);
       clearInterval(adbTimer);
       unlisten.then((fn) => fn());
+      unlistenPlugins.then((fn) => fn());
       unlistenAiSync.then((fn) => fn());
       unlistenFlashLog.then((fn) => fn());
     };
@@ -533,7 +535,7 @@ export default function App() {
           {extensionTabs.map((ext) =>
             visitedTabs[ext.key] ? (
               <div key={ext.key} className={activeTab === ext.key ? "h-full" : "hidden"}>
-                <PluginRunner item={ext} serial={selectedAdbSerial} onLog={appendLog} />
+                <PluginRunner item={ext} serial={selectedAdbSerial} adbDevices={adbDevices} felDevices={felDevices} onLog={appendLog} />
               </div>
             ) : null
           )}

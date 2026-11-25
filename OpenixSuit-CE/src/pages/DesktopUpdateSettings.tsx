@@ -73,13 +73,13 @@ export function DesktopUpdateSettings() {
     : null;
 
   return (
-    <div className="space-y-2 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="space-y-0.5">
-          <div className="font-medium text-slate-900 dark:text-slate-100">{t("settings.version")}</div>
-          <div className="text-xs text-slate-500 dark:text-slate-400">OpenixSuit-CE{version && ` v${version}`}</div>
+    <div className="min-w-0 space-y-2 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+          <span className="font-medium">{t("settings.version")}</span>
+          <span className="break-all font-mono text-xs text-slate-500 dark:text-slate-400">{version && `v${version}`}</span>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex min-w-0 flex-wrap gap-2">
           <button type="button" onClick={checkUpdate} disabled={busy !== null} className="ui-btn-secondary">
             <RefreshCw className={`h-3.5 w-3.5 ${busy === "check" ? "animate-spin" : ""}`} />
             {t("settings.update.check")}

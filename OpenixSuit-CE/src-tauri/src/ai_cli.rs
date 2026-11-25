@@ -1,3 +1,5 @@
+mod plugin;
+
 use clap::{Parser, Subcommand};
 use serde_json::{json, Map, Value};
 use std::ffi::OsString;
@@ -180,21 +182,10 @@ enum Commands {
         #[arg(value_parser = parse_u32_auto)]
         address: u32,
     },
-    /// List installed workflow plugins
-    Plugins,
-    /// Install a .oixplugin or .zip plugin package
-    PluginInstall { package_path: String },
-    /// Uninstall an installed plugin by ID
-    PluginUninstall { plugin_id: String },
-    /// Run an installed declarative workflow plugin
-    PluginRun {
-        plugin_id: String,
-        #[arg(long, value_name = "TAB_ID")]
-        tab: Option<String>,
-        #[arg(long, default_value = "")]
-        serial: String,
-        #[arg(long, default_value = "{}")]
-        inputs: String,
+    /// Build, install and run OpenixSuit-CE plugins
+    Plugin {
+        #[command(subcommand)]
+        command: plugin::PluginCommand,
     },
     /// List available host serial ports
     SerialPorts,
@@ -348,7 +339,7 @@ fn send_http(addr: &str, method: &str, path: &str, body: Option<Value>) -> Resul
         )
     } else {
         format!(
-            "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            "{} {} HTTP/1.1\r\nHost: {}\r\nX-OpenixSuit-Client: cli\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             method,
             path,
             addr,
@@ -577,47 +568,7 @@ where
             "/api/efel/exec".to_string(),
             Some(json!({ "address": address })),
         ),
-        Commands::Plugins => ("GET", "/api/plugins".to_string(), None),
-        Commands::PluginInstall { package_path } => (
-            "POST",
-            "/api/plugins/install".to_string(),
-            Some(json!({ "package_path": package_path })),
-        ),
-        Commands::PluginUninstall { plugin_id } => (
-            "POST",
-            "/api/plugins/uninstall".to_string(),
-            Some(json!({ "plugin_id": plugin_id })),
-        ),
-        Commands::PluginRun {
-            plugin_id,
-            tab,
-            serial,
-            inputs,
-        } => {
-            let parsed_inputs: Map<String, Value> = match serde_json::from_str(&inputs) {
-                Ok(m) => m,
-                Err(e) => {
-                    println!(
-                        "{}",
-                        json!({
-                            "ok": false,
-                            "error": format!("Invalid --inputs JSON object: {}", e)
-                        })
-                    );
-                    return ExitCode::from(1);
-                }
-            };
-            (
-                "POST",
-                "/api/plugins/run".to_string(),
-                Some(json!({
-                    "plugin_id": plugin_id,
-                    "tab_id": tab,
-                    "serial": serial,
-                    "inputs": parsed_inputs,
-                })),
-            )
-        }
+        Commands::Plugin { command } => return plugin::run(&cli.addr, command),
         Commands::SerialPorts => ("GET", "/api/serial/ports".to_string(), None),
         Commands::SerialOpen {
             port_name,

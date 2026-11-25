@@ -1,0 +1,113 @@
+{
+  "id": "v881-log-diagnostic",
+  "name": "V881 离线日志诊断",
+  "version": "2.0.0",
+  "description": "分析手动粘贴的日志，或读取事件上下文提供的日志快照；不连接设备。",
+  "permissions": [
+    "process.execute"
+  ],
+  "settings": [],
+  "actions": [
+    {
+      "id": "analyze",
+      "label": "分析日志",
+      "description": "统计常见异常关键词并附上匹配行；未填写文本时读取事件日志快照。",
+      "inputs": [
+        {
+          "id": "log_text",
+          "label": "日志文本",
+          "type": "text",
+          "required": false,
+          "description": "可手动粘贴多行日志；留空时读取 context.incident.log_tail。"
+        },
+        {
+          "id": "max_matches",
+          "label": "最多显示匹配行",
+          "type": "number",
+          "required": false,
+          "default": 20
+        }
+      ],
+      "output": [
+        {
+          "id": "line_count",
+          "label": "日志行数",
+          "type": "number"
+        },
+        {
+          "id": "findings",
+          "label": "匹配结果",
+          "type": "json"
+        },
+        {
+          "id": "matched_text",
+          "label": "事件命中内容",
+          "type": "text",
+          "required": false
+        }
+      ],
+      "entry": {
+        "kind": "javascript",
+        "file": "main.js",
+        "export": "analyze"
+      },
+      "timeout_ms": 30000
+    },
+    {
+      "id": "analyze-python",
+      "label": "用 Python 分析日志",
+      "description": "统计常见异常关键词并附上匹配行；未填写文本时读取事件日志快照。",
+      "inputs": [
+        {
+          "id": "log_text",
+          "label": "日志文本",
+          "type": "text",
+          "required": false,
+          "description": "可手动粘贴多行日志；留空时读取 context.incident.log_tail。"
+        },
+        {
+          "id": "max_matches",
+          "label": "最多显示匹配行",
+          "type": "number",
+          "required": false,
+          "default": 20
+        }
+      ],
+      "output": [
+        {
+          "id": "line_count",
+          "label": "日志行数",
+          "type": "number"
+        },
+        {
+          "id": "findings",
+          "label": "匹配结果",
+          "type": "json"
+        },
+        {
+          "id": "matched_text",
+          "label": "事件命中内容",
+          "type": "text",
+          "required": false
+        }
+      ],
+      "entry": {
+        "kind": "process",
+        "program": "diagnose.py",
+        "interpreter": "python"
+      },
+      "timeout_ms": 30000
+    }
+  ],
+  "pages": [
+    {
+      "id": "diagnostic",
+      "label": "离线诊断",
+      "actions": [
+        "analyze",
+        "analyze-python"
+      ]
+    }
+  ],
+  "providers": []
+}

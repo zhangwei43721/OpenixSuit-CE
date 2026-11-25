@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, State};
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub(crate) struct StandardFlashOptions {
     pub firmware_path: String,
     pub mode: String,
@@ -200,24 +200,6 @@ pub(crate) async fn run(
     execute(app, state, source, options).await
 }
 
-pub(crate) async fn run_plugin_flash(
-    app: &AppHandle,
-    state: &AppState,
-    source: &str,
-    options: StandardFlashOptions,
-) -> Result<(), String> {
-    let result = execute(app, state, source, options).await?;
-    if result.ok() {
-        Ok(())
-    } else {
-        Err(result
-            .flash
-            .error
-            .or(result.boot.adb_reconnect.message)
-            .unwrap_or_else(|| "刷写任务未完成".into()))
-    }
-}
-
 async fn execute(
     app: &AppHandle,
     state: &AppState,
@@ -262,22 +244,26 @@ async fn execute(
         if let Some(target) = adb_target {
             verify_usb_path(request.device, target.trim())?;
         }
+        let pair = request.device.selected_pair();
         execute_openix_flash_with_outcome(&app_clone, packer, request, &cancel_flag)
+            .map(|outcome| (outcome, pair))
     });
-    let (flash, transition_error) = match result.await.map_err(|e| format!("刷写任务异常: {e}"))?
+    let (flash, transition_error, write_target) = match result.await.map_err(|e| format!("刷写任务异常: {e}"))?
     {
-        Ok(outcome) => (
+        Ok((outcome, pair)) => (
             FlashStageResult {
                 status: "completed",
                 error: None,
             },
             outcome.post_action.err(),
+            pair.map(|(bus, port)| format!("bus:{bus}-port:{port}")),
         ),
         Err(error) => (
             FlashStageResult {
                 status: "failed",
                 error: Some(error),
             },
+            None,
             None,
         ),
     };
@@ -316,6 +302,9 @@ async fn execute(
         );
     }
     let _ = app.emit("standard-flash-result", &result);
+    if let Some(device) = write_target {
+        crate::triggers::on_device_event(app, "flash_completed", &device);
+    }
     Ok(result)
 }
 
