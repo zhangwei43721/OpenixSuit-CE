@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Check, Copy, FolderOpen, Puzzle, RefreshCw, Terminal, Trash2, Upload } from "lucide-react";
+import { FolderOpen, Puzzle, RefreshCw, Terminal, Trash2, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AppSettings, ThemeMode, UsbBackend } from "../store/settings";
 import { PluginManifest } from "../types/plugin";
@@ -16,14 +16,10 @@ interface SettingsPageProps {
   onUpdate: (patch: Partial<AppSettings>) => void;
   onRefreshPlugins: () => Promise<void>;
   onLog: (msg: string) => void;
+  onOpenAiWorkbench?: () => void;
 }
 
 const AI_ENDPOINT = "http://127.0.0.1:28765";
-const AI_CLI_EXAMPLES = [
-  "openixsuit-ce ai status",
-  "openixsuit-ai status",
-  "curl http://127.0.0.1:28765/api/status",
-];
 
 export function SettingsPage({
   settings,
@@ -31,9 +27,9 @@ export function SettingsPage({
   onUpdate,
   onRefreshPlugins,
   onLog,
+  onOpenAiWorkbench,
 }: SettingsPageProps) {
   const { t } = useTranslation();
-  const [copiedCmd, setCopiedCmd] = useState<string | null>(null);
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginError, setPluginError] = useState<string | null>(null);
 
@@ -94,16 +90,6 @@ export function SettingsPage({
       onLog(msg);
     } finally {
       setPluginBusy(false);
-    }
-  };
-
-  const copyText = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedCmd(text);
-      setTimeout(() => setCopiedCmd((cur) => (cur === text ? null : cur)), 2000);
-    } catch {
-      // ignore clipboard errors
     }
   };
 
@@ -275,32 +261,10 @@ export function SettingsPage({
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">{t("settings.aiDesc")}</div>
           </div>
-          <code className="rounded-md bg-purple-500/15 px-2.5 py-1 font-mono text-xs font-medium text-purple-600 dark:text-purple-300">
-            {AI_ENDPOINT}
-          </code>
-        </div>
-
-        <div className="space-y-2 p-4">
-          <div className="text-xs font-medium text-slate-500 dark:text-slate-400">{t("settings.aiExamples")}</div>
-          {AI_CLI_EXAMPLES.map((cmd) => (
-            <div key={cmd} className="relative">
-              <pre className="ui-terminal whitespace-pre-wrap break-all p-3 pr-20 text-emerald-400">
-                {cmd}
-              </pre>
-              <button
-                type="button"
-                onClick={() => copyText(cmd)}
-                className="absolute right-2 top-2 flex items-center gap-1 rounded-md bg-slate-800 px-2.5 py-1 text-xs text-slate-200 transition hover:bg-slate-700"
-              >
-                {copiedCmd === cmd ? (
-                  <Check className="h-3.5 w-3.5 text-emerald-400" />
-                ) : (
-                  <Copy className="h-3.5 w-3.5" />
-                )}
-                {copiedCmd === cmd ? t("driver.copied") : t("driver.copy")}
-              </button>
-            </div>
-          ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <code className="rounded-md bg-purple-500/15 px-2.5 py-1 font-mono text-xs font-medium text-purple-600 dark:text-purple-300">{AI_ENDPOINT}</code>
+            {onOpenAiWorkbench && <button type="button" onClick={onOpenAiWorkbench} className="ui-btn-secondary">{t("aiWorkbench.title")}</button>}
+          </div>
         </div>
       </div>
 

@@ -66,6 +66,9 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [lastGesture, setLastGesture] = useState<string>("");
   const [tapMarker, setTapMarker] = useState<{ xPct: number; yPct: number } | null>(null);
+  const [controlEnabled, setControlEnabled] = useState(false);
+  const [lastFrameAt, setLastFrameAt] = useState<number | null>(null);
+  const [frameSerial, setFrameSerial] = useState("");
 
   const imgRef = useRef<HTMLImageElement | null>(null);
   const pointerStartRef = useRef<PointerStart | null>(null);
@@ -105,6 +108,8 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
       }
       if (dataUrl) {
         setImageSrc(dataUrl);
+        setLastFrameAt(Date.now());
+        setFrameSerial(serial);
       }
       setError(null);
       lastErrRef.current = null;
@@ -122,7 +127,6 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
   }, [serial]);
 
   useEffect(() => {
-    setImageSrc("");
     setResolution(null);
     lastErrRef.current = null;
     setError(null);
@@ -168,7 +172,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLImageElement>) => {
-    if (!serial || e.button !== 0) return;
+    if (!serial || !controlEnabled || e.button !== 0) return;
     const mapped = mapPointerToDevice(e.clientX, e.clientY);
     if (!mapped) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -184,7 +188,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
   const handlePointerUp = async (e: React.PointerEvent<HTMLImageElement>) => {
     const start = pointerStartRef.current;
     pointerStartRef.current = null;
-    if (!start || !serial) return;
+    if (!start || !serial || !controlEnabled) return;
 
     const mapped = mapPointerToDevice(e.clientX, e.clientY);
     if (!mapped) return;
@@ -226,7 +230,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
   };
 
   const sendKeyEvent = async (keycode: number, label: string) => {
-    if (!serial) return;
+    if (!serial || !controlEnabled) return;
     try {
       setLastGesture(`KeyEvent ${label} (${keycode})`);
       await invoke("adb_input_keyevent", { serial, keycode });
@@ -287,6 +291,16 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
               {displayRes.width} × {displayRes.height}
             </span>
           )}
+          {imageSrc && (
+            <span className={`rounded-md border px-2 py-0.5 text-[11px] tabular-nums ${
+              !serial || error || frameSerial !== serial
+                ? "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+            }`}>
+              {!serial || error || frameSerial !== serial ? (isEn ? "Stale frame" : "历史画面") : (isEn ? "Frame" : "画面")}
+              {lastFrameAt ? ` · ${new Date(lastFrameAt).toLocaleTimeString()}` : ""}
+            </span>
+          )}
 
           {lastGesture && (
             <span className="hidden font-mono text-[11px] tabular-nums text-slate-400 md:inline-block">
@@ -296,6 +310,17 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="ui-segmented" aria-label={isEn ? "Screen interaction mode" : "屏幕交互模式"}>
+            {[
+              { value: false, label: isEn ? "View only" : "仅查看" },
+              { value: true, label: isEn ? "Allow control" : "允许控制" },
+            ].map((option) => (
+              <button key={String(option.value)} type="button" onClick={() => setControlEnabled(option.value)}
+                className={`ui-segmented-btn ${controlEnabled === option.value ? "bg-blue-600 text-white shadow-sm" : "text-slate-600 dark:text-slate-300"}`}>
+                {option.label}
+              </button>
+            ))}
+          </div>
           {/* Auto refresh interval */}
           <div className="ui-segmented">
             {[
@@ -345,7 +370,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
           </span>
           <button
             onClick={() => sendKeyEvent(4, "Back")}
-            disabled={!serial}
+            disabled={!serial || !controlEnabled}
             className="ui-btn-secondary !px-2.5 !py-1"
           >
             <ArrowLeft className="h-3.5 w-3.5" />
@@ -353,7 +378,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
           </button>
           <button
             onClick={() => sendKeyEvent(3, "Home")}
-            disabled={!serial}
+            disabled={!serial || !controlEnabled}
             className="ui-btn-secondary !px-2.5 !py-1"
           >
             <Home className="h-3.5 w-3.5" />
@@ -361,7 +386,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
           </button>
           <button
             onClick={() => sendKeyEvent(187, "Recent")}
-            disabled={!serial}
+            disabled={!serial || !controlEnabled}
             className="ui-btn-secondary !px-2.5 !py-1"
           >
             <LayoutGrid className="h-3.5 w-3.5" />
@@ -369,7 +394,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
           </button>
           <button
             onClick={() => sendKeyEvent(25, "Vol-")}
-            disabled={!serial}
+            disabled={!serial || !controlEnabled}
             className="ui-btn-secondary !px-2.5 !py-1"
           >
             <Volume1 className="h-3.5 w-3.5" />
@@ -377,7 +402,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
           </button>
           <button
             onClick={() => sendKeyEvent(24, "Vol+")}
-            disabled={!serial}
+            disabled={!serial || !controlEnabled}
             className="ui-btn-secondary !px-2.5 !py-1"
           >
             <Volume2 className="h-3.5 w-3.5" />
@@ -385,7 +410,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
           </button>
           <button
             onClick={() => sendKeyEvent(26, "Power")}
-            disabled={!serial}
+            disabled={!serial || !controlEnabled}
             className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-1 text-xs font-medium text-rose-600 transition hover:bg-rose-500/20 disabled:pointer-events-none disabled:opacity-45 dark:text-rose-400"
           >
             <Power className="h-3.5 w-3.5" />
@@ -394,9 +419,9 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
         </div>
 
         <span className="text-[11px] text-slate-500 dark:text-slate-400">
-          {isEn
-            ? "Click to tap · Drag to swipe"
-            : "点击屏幕发送 Tap · 按住拖拽发送 Swipe 滑动"}
+          {controlEnabled
+            ? isEn ? "Click to tap · Drag to swipe" : "点击屏幕发送点击 · 按住拖拽发送滑动"
+            : isEn ? "View only. Enable control to send input." : "当前仅查看；开启允许控制后可发送触控和按键。"}
         </span>
       </div>
 
@@ -426,7 +451,7 @@ export function AdbScreenPage({ serial, onLog }: AdbScreenPageProps) {
                   });
                 }
               }}
-              className="block h-auto max-h-[calc(100vh-260px)] w-auto max-w-full cursor-crosshair select-none object-contain"
+              className={`block h-auto max-h-[calc(100vh-260px)] w-auto max-w-full select-none object-contain ${controlEnabled ? "cursor-crosshair" : "cursor-default"}`}
             />
             {tapMarker && (
               <span

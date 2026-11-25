@@ -254,7 +254,7 @@ export const AnsiText = memo(function AnsiText({
           if (!(caseSensitive ? body : body.toLowerCase()).includes(needle)) return null;
         }
         return (
-          <div key={index} className="min-h-[1.25rem]">
+          <div key={index} data-log-line={index} className="min-h-[1.25rem]">
             {renderLine(line, showTimestamps, highlightLine, levelFormat)}
           </div>
         );

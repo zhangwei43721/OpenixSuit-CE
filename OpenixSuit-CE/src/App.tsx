@@ -480,7 +480,6 @@ export default function App() {
           {visitedTabs.adb && (
             <div className={activeTab === "adb" ? "h-full" : "hidden"}>
               <AdbExplorer
-                key={selectedAdbSerial}
                 serial={selectedAdbSerial}
                 theme={effectiveTheme}
                 jumpRequest={adbJumpRequest}
@@ -496,7 +495,6 @@ export default function App() {
           {visitedTabs.monitor && (
             <div className={activeTab === "monitor" ? "h-full" : "hidden"}>
               <DeviceMonitorPage
-                key={selectedAdbSerial}
                 serial={selectedAdbSerial}
                 onLog={appendLog}
                 onNavigateAdbPath={(remotePath) => {
@@ -546,6 +544,7 @@ export default function App() {
                 plugins={plugins}
                 onUpdate={updateSettings}
                 onRefreshPlugins={refreshPlugins}
+                onOpenAiWorkbench={() => selectTab("ai")}
                 onLog={appendLog}
               />
             </div>

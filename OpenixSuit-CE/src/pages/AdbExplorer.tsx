@@ -92,7 +92,7 @@ type PromptModal =
   | null;
 
 export function AdbExplorer({
-  serial,
+  serial: requestedSerial,
   theme,
   jumpRequest,
   onLog,
@@ -103,6 +103,7 @@ export function AdbExplorer({
   onLog: (msg: string) => void;
 }) {
   const { t, i18n } = useTranslation();
+  const [serial, setSerial] = useState(requestedSerial);
   const [currentPath, setCurrentPath] = useState(() =>
     serial ? getSavedPathForSerial(serial) : "/"
   );
@@ -118,7 +119,9 @@ export function AdbExplorer({
   const downloads = useAdbFileDownloads();
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [editingFile, setEditingFile] = useState<{ path: string; content: string } | null>(null);
+  const [editingFile, setEditingFile] = useState<{ path: string; content: string; originalContent: string; serial: string } | null>(null);
+  const [pendingEditorAction, setPendingEditorAction] = useState<{ type: "close" } | { type: "switch"; serial: string } | null>(null);
+  const [editorPromptOpen, setEditorPromptOpen] = useState(false);
   const [fileViewTab, setFileViewTab] = useState<"editor" | "ansi">("editor");
   const [modal, setModal] = useState<PromptModal>(null);
   const [renamingName, setRenamingName] = useState<string | null>(null);
@@ -131,6 +134,21 @@ export function AdbExplorer({
   const reqIdRef = useRef(0);
   const serialRef = useRef(serial);
   const currentPathRef = useRef(currentPath);
+
+  useEffect(() => {
+    if (requestedSerial === serial) {
+      setPendingEditorAction(null);
+      setEditorPromptOpen(false);
+      return;
+    }
+    if (editingFile && editingFile.content !== editingFile.originalContent) {
+      setPendingEditorAction({ type: "switch", serial: requestedSerial });
+      setEditorPromptOpen(true);
+      return;
+    }
+    if (editingFile) setEditingFile(null);
+    setSerial(requestedSerial);
+  }, [requestedSerial, serial]);
 
   const loadDir = async (
     targetSerial: string,
@@ -418,9 +436,20 @@ export function AdbExplorer({
       if (modal.type === "mkdir" && modal.value.trim()) {
         await invoke("adb_mkdir", { serial, remotePath: joinPath(modal.value.trim()) });
       } else if (modal.type === "delete") {
+        const failed: string[] = [];
         for (const name of modal.names) {
-          await invoke("adb_delete", { serial, remotePath: joinPath(name) });
+          try {
+            await invoke("adb_delete", { serial, remotePath: joinPath(name) });
+            onLog(`${i18n.language.startsWith("en") ? "Deleted" : "已删除"}: ${name}`);
+          } catch (error) {
+            failed.push(`${name}: ${String(error)}`);
+            onLog(`${i18n.language.startsWith("en") ? "Delete failed" : "删除失败"}: ${name}: ${String(error)}`);
+          }
         }
+        setModal(null);
+        await loadDir(serial, currentPath);
+        if (failed.length) setErrorMsg(`${i18n.language.startsWith("en") ? "Failed items" : "失败项目"}: ${failed.join("; ")}`);
+        return;
       }
       setModal(null);
       await loadDir(serial, currentPath);
@@ -452,26 +481,51 @@ export function AdbExplorer({
     const remotePath = joinPath(name);
     try {
       const content = await invoke<string>("adb_read_text", { serial, remotePath });
-      setEditingFile({ path: remotePath, content });
+      setEditingFile({ path: remotePath, content, originalContent: content, serial });
     } catch (err) {
       setErrorMsg(String(err));
     }
   };
 
   const saveEditedText = async () => {
-    if (!editingFile || !serial) return;
+    if (!editingFile?.serial) return;
     try {
       await invoke("adb_write_text", {
-        serial,
+        serial: editingFile.serial,
         remotePath: editingFile.path,
         content: editingFile.content,
       });
       onLog(`Saved: ${editingFile.path}`);
       setEditingFile(null);
-      await loadDir(serial, currentPath);
+      const action = pendingEditorAction;
+      setPendingEditorAction(null);
+      setEditorPromptOpen(false);
+      if (action?.type === "switch") setSerial(action.serial);
+      else if (editingFile.serial === serial) await loadDir(serial, currentPath);
     } catch (err) {
       setErrorMsg(String(err));
     }
+  };
+
+  const requestEditorClose = () => {
+    if (!editingFile) return;
+    if (editingFile.content !== editingFile.originalContent) {
+      setPendingEditorAction((current) => current?.type === "switch" ? current : { type: "close" });
+      setEditorPromptOpen(true);
+      return;
+    }
+    const action = pendingEditorAction;
+    setEditingFile(null);
+    setPendingEditorAction(null);
+    if (action?.type === "switch") setSerial(action.serial);
+  };
+
+  const discardEditorChanges = () => {
+    const action = pendingEditorAction;
+    setPendingEditorAction(null);
+    setEditorPromptOpen(false);
+    setEditingFile(null);
+    if (action?.type === "switch") setSerial(action.serial);
   };
 
   const handleUpload = async () => {
@@ -866,7 +920,7 @@ export function AdbExplorer({
                     {t("adb.ansiTab")}
                   </button>
                 </div>
-                <button onClick={() => setEditingFile(null)} className="ui-btn-secondary">
+                <button onClick={requestEditorClose} className="ui-btn-secondary">
                   {t("common.cancel")}
                 </button>
                 <button onClick={saveEditedText} className="ui-btn-primary">
@@ -889,6 +943,29 @@ export function AdbExplorer({
                   options={{ minimap: { enabled: false }, fontSize: 13 }}
                 />
               )}
+            </div>
+          </div>
+        </div>
+      )}
+      {pendingEditorAction && editorPromptOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-6">
+          <div className="ui-card w-full max-w-md space-y-4 p-5 shadow-xl">
+            <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+              {i18n.language.startsWith("en") ? "Save changes before continuing?" : "继续前要保存文件修改吗？"}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2">
+              <button type="button" onClick={() => {
+                if (pendingEditorAction.type === "close") setPendingEditorAction(null);
+                setEditorPromptOpen(false);
+              }} className="ui-btn-secondary">
+                {i18n.language.startsWith("en") ? "Continue editing" : "继续编辑"}
+              </button>
+              <button type="button" onClick={discardEditorChanges} className="ui-btn-danger">
+                {i18n.language.startsWith("en") ? "Discard" : "放弃修改"}
+              </button>
+              <button type="button" onClick={() => void saveEditedText()} className="ui-btn-primary">
+                {i18n.language.startsWith("en") ? "Save and continue" : "保存并继续"}
+              </button>
             </div>
           </div>
         </div>

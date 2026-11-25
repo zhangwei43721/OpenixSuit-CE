@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -102,6 +102,21 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
   const [analyses, setAnalyses] = useState<Record<string, IncidentAnalysisRecord>>({});
   const [loading, setLoading] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [deviceFilter, setDeviceFilter] = useState("");
+  const [ruleFilter, setRuleFilter] = useState("");
+  const [analysisFilter, setAnalysisFilter] = useState("all");
+
+  const filteredIncidents = useMemo(() => {
+    const deviceQuery = deviceFilter.trim().toLowerCase();
+    const ruleQuery = ruleFilter.trim().toLowerCase();
+    return incidents.filter((incident) => {
+      const device = `${incident.port_name} ${incident.session_id}`.toLowerCase();
+      const analysisStatus = analyses[incident.id]?.status ?? "not-started";
+      return (!deviceQuery || device.includes(deviceQuery)) &&
+        (!ruleQuery || `${incident.rule_name} ${incident.rule_id}`.toLowerCase().includes(ruleQuery)) &&
+        (analysisFilter === "all" || analysisStatus === analysisFilter);
+    });
+  }, [incidents, analyses, deviceFilter, ruleFilter, analysisFilter]);
 
   const loadIncidents = useCallback(async () => {
     setLoading(true);
@@ -204,7 +219,7 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
           <div className="ui-card-header">
             <div className="ui-title">
               <ShieldAlert className="h-4 w-4 text-amber-500" />
-              <span>{t("aiWorkbench.incidents", { count: incidents.length })}</span>
+              <span>{t("aiWorkbench.incidents", { count: filteredIncidents.length })}</span>
             </div>
             <div className="flex items-center gap-1.5">
               <button
@@ -228,17 +243,41 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 gap-2 border-b border-slate-100 p-3 dark:border-slate-800 sm:grid-cols-3">
+            <input value={deviceFilter} onChange={(event) => setDeviceFilter(event.target.value)}
+              placeholder={isEn ? "Filter device" : "筛选设备"} aria-label={isEn ? "Filter by device" : "按设备筛选"} className="ui-input min-w-0 text-xs" />
+            <input value={ruleFilter} onChange={(event) => setRuleFilter(event.target.value)}
+              placeholder={isEn ? "Filter rule" : "筛选规则"} aria-label={isEn ? "Filter by rule" : "按规则筛选"} className="ui-input min-w-0 text-xs" />
+            <select value={analysisFilter} onChange={(event) => setAnalysisFilter(event.target.value)} aria-label={isEn ? "Filter analysis status" : "按分析状态筛选"} className="ui-select min-w-0 text-xs">
+              <option value="all">{isEn ? "All analysis states" : "全部分析状态"}</option>
+              <option value="not-started">{isEn ? "Not started" : "未分析"}</option>
+              <option value="queued">{isEn ? "Queued" : "排队中"}</option>
+              <option value="running">{isEn ? "Running" : "分析中"}</option>
+              <option value="completed">{isEn ? "Completed" : "已完成"}</option>
+              <option value="failed">{isEn ? "Failed" : "失败"}</option>
+            </select>
+          </div>
+
           <div className="flex-1 divide-y divide-slate-100 overflow-auto dark:divide-slate-800">
-            {incidents.length === 0 ? (
+            {filteredIncidents.length === 0 ? (
               <div className="p-8 text-center text-xs text-slate-400">
-                {t("aiWorkbench.noIncidents")}
+                {incidents.length === 0 ? t("aiWorkbench.noIncidents") : isEn ? "No incidents match these filters." : "没有符合筛选条件的异常事件。"}
               </div>
             ) : (
-              incidents.map((inc) => {
+              filteredIncidents.map((inc) => {
                 const isCopied = copiedId === `inc-${inc.id}`;
                 const analysis = analyses[inc.id];
                 return (
-                  <div key={inc.id} className="space-y-2.5 p-4">
+                  <details key={inc.id} className="group">
+                    <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 [&::-webkit-details-marker]:hidden">
+                      <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-300">{inc.rule_name}</span>
+                      <span className="font-mono text-xs text-slate-500">{inc.port_name || inc.session_id || "-"}</span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-slate-600 dark:text-slate-300">{inc.matched_text}</span>
+                      <span className="font-mono text-[11px] tabular-nums text-slate-400">{new Date(inc.created_at * 1000).toLocaleString()}</span>
+                      <span className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500 dark:bg-slate-800 dark:text-slate-300">{analysis?.status ?? (isEn ? "Not analyzed" : "未分析")}</span>
+                      <ChevronDown className="size-3.5 text-slate-400 transition group-open:rotate-180" aria-hidden="true" />
+                    </summary>
+                    <div className="space-y-2.5 border-t border-slate-100 p-4 dark:border-slate-800">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-md bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-600 dark:text-amber-300">
@@ -291,7 +330,8 @@ export function AiWorkbenchPage({ syncEvents, onLog }: AiWorkbenchPageProps) {
                       </pre>
                     )}
                     {analysis && <IncidentAnalysisResult analysis={analysis} />}
-                  </div>
+                    </div>
+                  </details>
                 );
               })
             )}

@@ -7,6 +7,7 @@ import { writeTextFile } from "@tauri-apps/plugin-fs";
 import {
   Cable,
   ChevronDown,
+  ChevronUp,
   Clock,
   Download,
   Eye,
@@ -98,6 +99,7 @@ export interface SerialPaneState {
   levelColors: boolean;
   autoScroll: boolean;
   followPaused: boolean;
+  followNewLines: number;
   filterOnly: boolean;
   searchQuery: string;
   lineEnding: SerialLineEnding;
@@ -217,6 +219,7 @@ function createPane(portName = "", baudRate = 115200, label?: string): SerialPan
     levelColors: true,
     autoScroll: true,
     followPaused: false,
+    followNewLines: 0,
     filterOnly: false,
     searchQuery: "",
     lineEnding: "lf",
@@ -382,8 +385,8 @@ function appendChunkToLines(
   endsWithNewline: boolean,
   chunk: string,
   timestamp: string
-): { lines: BufferedLine[]; endsWithNewline: boolean } {
-  if (!chunk) return { lines: prevLines, endsWithNewline };
+): { lines: BufferedLine[]; endsWithNewline: boolean; addedLines: number } {
+  if (!chunk) return { lines: prevLines, endsWithNewline, addedLines: 0 };
   const ts = timestamp ? timestamp.slice(0, 12) : formatNowTime();
   const normalized = chunk.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const parts = normalized.split("\n");
@@ -398,19 +401,21 @@ function appendChunkToLines(
     startIdx = 1;
   }
 
+  let addedLines = 0;
   for (let i = startIdx; i < parts.length; i++) {
     // Skip trailing empty segment after final newline until real chars arrive
     if (i === parts.length - 1 && parts[i] === "") {
       continue;
     }
     next.push({ ts, text: parts[i] });
+    addedLines++;
   }
 
   const ended = normalized.endsWith("\n");
   const trimmed =
     next.length > MAX_BUFFER_LINES ? next.slice(next.length - MAX_BUFFER_LINES) : next;
 
-  return { lines: trimmed, endsWithNewline: ended };
+  return { lines: trimmed, endsWithNewline: ended, addedLines };
 }
 
 export function SerialPage({
@@ -485,6 +490,7 @@ export function SerialPage({
 
   const scrollRefs = useRef<Record<string, HTMLDivElement>>({});
   const formatScrollPositions = useRef<Record<string, Partial<Record<SerialFormat, number>>>>({});
+  const searchMatchPositions = useRef<Record<string, number>>({});
   const pendingFormatScroll = useRef(new Map<string, symbol>());
   const gridRef = useRef<HTMLDivElement>(null);
   const gridScrollBeforeEnlarge = useRef<number | null>(null);
@@ -629,6 +635,9 @@ export function SerialPage({
             lines: updated.lines,
             hexRows,
             endsWithNewline: updated.endsWithNewline,
+            followNewLines: pane.followPaused
+              ? pane.followNewLines + updated.addedLines
+              : 0,
           };
         })
       );
@@ -648,7 +657,14 @@ export function SerialPage({
         text,
         timestamp
       );
-      return { ...pane, ...updated, lastAdbStream: stream };
+      return {
+        ...pane,
+        ...updated,
+        lastAdbStream: stream,
+        followNewLines: pane.followPaused
+          ? pane.followNewLines + updated.addedLines
+          : 0,
+      };
     }));
   }, []);
 
@@ -749,17 +765,31 @@ export function SerialPage({
   };
 
   const handleReceiveScroll = (pane: SerialPaneState, element: HTMLDivElement) => {
-    if (pane.source !== "serial" || !pane.autoScroll || pendingFormatScroll.current.has(pane.paneId)) return;
+    if (!pane.autoScroll || pendingFormatScroll.current.has(pane.paneId)) return;
     const scrollable = element.scrollHeight > element.clientHeight;
     if (!scrollable) return;
     const paused = element.scrollHeight - element.clientHeight - element.scrollTop > 3;
-    if (paused !== pane.followPaused) updatePane(pane.paneId, { followPaused: paused });
+    if (paused !== pane.followPaused) updatePane(pane.paneId, { followPaused: paused, ...(paused ? {} : { followNewLines: 0 }) });
   };
 
   const jumpToLatest = (pane: SerialPaneState) => {
     const element = scrollRefs.current[pane.paneId];
     if (element) element.scrollTop = element.scrollHeight;
-    if (pane.followPaused) updatePane(pane.paneId, { followPaused: false });
+    if (pane.followPaused) updatePane(pane.paneId, { followPaused: false, followNewLines: 0 });
+  };
+
+  const findMatch = (pane: SerialPaneState, direction: -1 | 1) => {
+    const query = pane.searchQuery.trim().toLowerCase();
+    if (!query) return;
+    const matchingIndexes = paneLines(pane).flatMap((line, index) =>
+      stripAnsi(line.text).toLowerCase().includes(query) ? [index] : []
+    );
+    if (!matchingIndexes.length) return;
+    const current = searchMatchPositions.current[pane.paneId] ?? (direction > 0 ? -1 : 0);
+    const next = (current + direction + matchingIndexes.length) % matchingIndexes.length;
+    searchMatchPositions.current[pane.paneId] = next;
+    const line = scrollRefs.current[pane.paneId]?.querySelector<HTMLElement>(`[data-log-line="${matchingIndexes[next]}"]`);
+    line?.scrollIntoView({ block: "center" });
   };
 
   const handleLoadLogProfile = (profile: LogProfile) => {
@@ -1391,6 +1421,10 @@ export function SerialPage({
                 const receivedLines = paneLines(pane);
                 const hexOutput = !isAdb && pane.receiveFormat === "hex";
                 const history = pane.cmdHistory[pane.sendFormat];
+                const searchNeedle = pane.searchQuery.trim().toLowerCase();
+                const matchingLineCount = searchNeedle
+                  ? receivedLines.reduce((count, line) => count + Number(stripAnsi(line.text).toLowerCase().includes(searchNeedle)), 0)
+                  : 0;
                 const displayLines = receivedLines
                   .map((l) => (pane.showTimestamps ? `[${l.ts}] ${l.text}` : l.text))
                   .join("\n");
@@ -1512,17 +1546,33 @@ export function SerialPage({
                             type="text"
                             autoFocus
                             value={pane.searchQuery}
-                            onChange={(e) => updatePane(pane.paneId, { searchQuery: e.target.value })}
+                            onChange={(e) => {
+                              delete searchMatchPositions.current[pane.paneId];
+                              updatePane(pane.paneId, { searchQuery: e.target.value });
+                            }}
                             placeholder={t("multiLog.search")}
                             className="min-w-0 flex-1 bg-transparent text-xs text-slate-700 dark:text-slate-200 placeholder-slate-400 focus:outline-none"
                           />
                           {pane.searchQuery && (
-                            <button
-                              onClick={() => updatePane(pane.paneId, { searchQuery: "" })}
-                              className="text-slate-400 hover:text-slate-600"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
+                            <>
+                              <span className="whitespace-nowrap text-[11px] text-slate-500" aria-live="polite">{matchingLineCount}</span>
+                              <button type="button" onClick={() => findMatch(pane, -1)} disabled={!matchingLineCount} aria-label={isEn ? "Previous match" : "上一个匹配项"} title={isEn ? "Previous match" : "上一个匹配项"} className="rounded p-0.5 text-slate-500 hover:bg-slate-200 disabled:opacity-40 dark:hover:bg-slate-800">
+                                <ChevronUp className="h-3.5 w-3.5" />
+                              </button>
+                              <button type="button" onClick={() => findMatch(pane, 1)} disabled={!matchingLineCount} aria-label={isEn ? "Next match" : "下一个匹配项"} title={isEn ? "Next match" : "下一个匹配项"} className="rounded p-0.5 text-slate-500 hover:bg-slate-200 disabled:opacity-40 dark:hover:bg-slate-800">
+                                <ChevronDown className="h-3.5 w-3.5" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  delete searchMatchPositions.current[pane.paneId];
+                                  updatePane(pane.paneId, { searchQuery: "" });
+                                }}
+                                aria-label={isEn ? "Clear search" : "清除搜索"}
+                                className="text-slate-400 hover:text-slate-600"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            </>
                           )}
                         </div>
                         <label className="flex shrink-0 items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400 cursor-pointer select-none">
@@ -1582,14 +1632,16 @@ export function SerialPage({
                           />
                         )}
                       </div>
-                      {!isAdb && !pane.panel && receivedLines.length > 0 && (!pane.autoScroll || pane.followPaused) && (
+                      {!pane.panel && receivedLines.length > 0 && (!pane.autoScroll || pane.followPaused) && (
                         <button
                           type="button"
                           onClick={() => jumpToLatest(pane)}
                           className="ui-btn-secondary absolute bottom-2 right-3 px-2 py-1"
                         >
                           <ChevronDown className="h-3.5 w-3.5" />
-                          {t("multiLog.jumpToLatest")}
+                          {pane.followPaused && pane.followNewLines > 0
+                            ? `${isEn ? "New" : "新增"} ${pane.followNewLines} · ${t("multiLog.jumpToLatest")}`
+                            : t("multiLog.jumpToLatest")}
                         </button>
                       )}
                     </div>

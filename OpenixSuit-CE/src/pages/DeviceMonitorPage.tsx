@@ -184,6 +184,7 @@ export function DeviceMonitorPage({
   onLogRef.current = onLog;
   const fetchingRef = useRef(false);
   const lastErrRef = useRef<string | null>(null);
+  const previousSerialRef = useRef(serial);
 
   const fetchMetrics = useCallback(
     async (forceSlow = false) => {
@@ -279,19 +280,22 @@ export function DeviceMonitorPage({
 
   // Reset samples when serial changes
   useEffect(() => {
-    setSamples([]);
-    setUnmountedEntries([]);
-    prevSnapshotRef.current = null;
-    cachedSlowRef.current = {
-      kernel: "",
-      storage: [],
-      battery: null,
-      top_output: "",
-      lastSlowAt: 0,
-    };
-    lastErrRef.current = null;
-    setError(null);
     if (serial) {
+      if (previousSerialRef.current && previousSerialRef.current !== serial) {
+        setSamples([]);
+        setUnmountedEntries([]);
+        prevSnapshotRef.current = null;
+        cachedSlowRef.current = {
+          kernel: "",
+          storage: [],
+          battery: null,
+          top_output: "",
+          lastSlowAt: 0,
+        };
+      }
+      previousSerialRef.current = serial;
+      lastErrRef.current = null;
+      setError(null);
       fetchMetrics(true);
     }
   }, [serial, fetchMetrics]);
@@ -513,6 +517,18 @@ export function DeviceMonitorPage({
           <span className="text-xs font-mono tabular-nums px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700">
             {serial || (isEn ? "No ADB Device" : "未连接设备")}
           </span>
+          {latest && (
+            <span className={`text-[11px] px-2 py-0.5 rounded-md border font-mono tabular-nums ${
+              !serial || error
+                ? "bg-amber-500/10 text-amber-700 dark:text-amber-300 border-amber-500/20"
+                : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/20"
+            }`}>
+              {!serial || error
+                ? isEn ? "Stale snapshot" : "历史数据"
+                : isEn ? "Live sample" : "实时采样"}
+              {" · "}{new Date(latest.timestamp_ms).toLocaleTimeString()}
+            </span>
+          )}
           {latest && (
             <>
               <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 font-mono tabular-nums">
