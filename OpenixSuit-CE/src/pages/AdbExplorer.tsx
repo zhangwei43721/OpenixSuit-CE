@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -27,6 +27,7 @@ import { AnsiText } from "../utils/ansi";
 import { AdbFileDownloadStatus, useAdbFileDownloads } from "./AdbFileDownloads";
 import { AdbFileToolbar } from "./AdbFileToolbar";
 import { formatFileSize, matchesFilename, sortFiles, type FileSort } from "./adbFileBrowser";
+import { useAdbFileViewport } from "./useAdbFileViewport";
 
 const STORAGE_PATHS_KEY = "adb_paths_by_serial";
 const VIEW_MODE_KEY = "adb_file_view_mode";
@@ -128,12 +129,35 @@ export function AdbExplorer({
   const [renameDraft, setRenameDraft] = useState("");
   const [lastClickedName, setLastClickedName] = useState<string | null>(null);
   const renameBusyRef = useRef(false);
-  const listWrapRef = useRef<HTMLDivElement | null>(null);
   const [listEl, setListEl] = useState<HTMLDivElement | null>(null);
+  const [revealName, setRevealName] = useState<string | null>(null);
+  const { first, end, rowHeight, gridHeight, gridCardStyle, syncScroll, revealIndex } =
+    useAdbFileViewport(listEl, viewMode, visibleEntries.length);
+  const entryIndices = useMemo(() => new Map(visibleEntries.map((item, index) => [item.name, index])), [visibleEntries]);
+  const windowEntries = visibleEntries.slice(first, end).map((item, offset) => ({ item, index: first + offset }));
+  // 编辑中的文件滚出窗口后继续保留输入框和焦点。
+  const renameIndex = renamingName === null ? undefined : entryIndices.get(renamingName);
+  if (renameIndex !== undefined) {
+    const entry = { item: visibleEntries[renameIndex], index: renameIndex };
+    if (renameIndex < first) windowEntries.unshift(entry);
+    if (renameIndex >= end) windowEntries.push(entry);
+  }
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const reqIdRef = useRef(0);
   const serialRef = useRef(serial);
   const currentPathRef = useRef(currentPath);
+
+  useLayoutEffect(() => {
+    if (listEl) listEl.scrollTop = 0;
+    syncScroll();
+  }, [listEl, syncScroll, visibleEntries]);
+
+  useLayoutEffect(() => {
+    if (!listEl || loading || revealName === null) return;
+    const index = entryIndices.get(revealName);
+    if (index !== undefined) revealIndex(index);
+    setRevealName(null);
+  }, [entryIndices, listEl, loading, revealIndex, revealName]);
 
   useEffect(() => {
     if (requestedSerial === serial) {
@@ -175,6 +199,7 @@ export function AdbExplorer({
       setEntries(list);
       if (highlightName && list.some((e) => e.name === highlightName)) {
         setSelectedNames([highlightName]);
+        setRevealName(highlightName);
       }
       return list;
     } catch (err) {
@@ -244,10 +269,6 @@ export function AdbExplorer({
       return false;
     }
     if (match.is_dir) return Boolean(await loadDir(serial, path));
-    requestAnimationFrame(() => {
-      const items = listWrapRef.current?.querySelectorAll<HTMLElement>("[data-item-name]");
-      Array.from(items ?? []).find((item) => item.dataset.itemName === name)?.scrollIntoView({ block: "nearest" });
-    });
     return true;
   };
 
@@ -260,6 +281,7 @@ export function AdbExplorer({
   const joinPath = (name: string) => (currentPath === "/" ? `/${name}` : `${currentPath}/${name}`);
 
   const beginRename = (name: string) => {
+    setRevealName(name);
     setRenamingName(name);
     setRenameDraft(name);
     // Preselect the base name (without extension), like desktop file managers.
@@ -330,12 +352,11 @@ export function AdbExplorer({
       return;
     }
     if (e.shiftKey && lastClickedName) {
-      const names = visibleEntries.map((entry) => entry.name);
-      const from = names.indexOf(lastClickedName);
-      const to = names.indexOf(name);
-      if (from >= 0 && to >= 0) {
+      const from = entryIndices.get(lastClickedName);
+      const to = entryIndices.get(name);
+      if (from !== undefined && to !== undefined) {
         const [lo, hi] = from < to ? [from, to] : [to, from];
-        setSelectedNames(names.slice(lo, hi + 1));
+        setSelectedNames(visibleEntries.slice(lo, hi + 1).map((entry) => entry.name));
         return;
       }
     }
@@ -387,7 +408,7 @@ export function AdbExplorer({
     if (renamingName === item.name) {
       return (
         <span
-          className="inline-flex items-center gap-1"
+          className="inline-flex w-full min-w-0 items-center gap-1"
           onClick={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}
           onMouseDown={(e) => e.stopPropagation()}
@@ -399,7 +420,7 @@ export function AdbExplorer({
             onChange={(e) => setRenameDraft(e.target.value)}
             onBlur={commitRename}
             onKeyDown={handleRenameKeyDown}
-            className="w-full rounded border border-blue-500 bg-white px-1 py-0.5 text-xs text-slate-900 outline-none dark:bg-slate-900 dark:text-slate-100"
+            className="w-full min-w-0 rounded border border-blue-500 bg-white px-1 py-0.5 text-xs text-slate-900 outline-none dark:bg-slate-900 dark:text-slate-100"
           />
           <button
             title={t("common.save")}
@@ -541,10 +562,10 @@ export function AdbExplorer({
     }
   };
 
-  const folderCount = entries.filter((e) => e.is_dir).length;
+  const folderCount = useMemo(() => entries.filter((e) => e.is_dir).length, [entries]);
   const fileCount = entries.length - folderCount;
-  const selection = new Set(selectedNames);
-  const selectedEntries = visibleEntries.filter((entry) => selection.has(entry.name));
+  const selection = useMemo(() => new Set(selectedNames), [selectedNames]);
+  const selectedEntries = useMemo(() => visibleEntries.filter((entry) => selection.has(entry.name)), [selection, visibleEntries]);
   const allVisibleSelected = visibleEntries.length > 0 && selectedEntries.length === visibleEntries.length;
   const selectedPath = selectedEntries.length === 1 ? joinPath(selectedEntries[0].name) : "";
 
@@ -577,6 +598,14 @@ export function AdbExplorer({
   function sizeLabel(item: AdbDetailedFileEntry) {
     return item.is_dir ? "—" : (
       <span title={`${item.size.toLocaleString(i18n.language)} B`}>{formatFileSize(item.size, i18n.language)}</span>
+    );
+  }
+
+  function listSpacer(rows: number) {
+    return rows > 0 && (
+      <tr aria-hidden="true">
+        <td colSpan={5} style={{ height: rows * rowHeight }} />
+      </tr>
     );
   }
 
@@ -715,12 +744,10 @@ export function AdbExplorer({
       {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
 
       <div
-        ref={(el) => {
-          listWrapRef.current = el;
-          setListEl(el);
-        }}
+        ref={setListEl}
         onMouseDown={containerMouseDown}
-        className="ui-card relative flex-1 overflow-y-auto p-4"
+        onScroll={syncScroll}
+        className="ui-card relative min-h-0 flex-1 overflow-auto p-4 [overflow-anchor:none]"
       >
         <Selecto
           dragContainer={listEl ?? undefined}
@@ -763,19 +790,20 @@ export function AdbExplorer({
             <span>{serial ? t(search.trim() ? "adb.noSearchMatches" : "adb.emptyDir") : t("adb.waitConnect")}</span>
           </div>
         ) : viewMode === "grid" ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6">
-            {visibleEntries.map((item) => {
+          <div className="relative" style={{ height: gridHeight }}>
+            {windowEntries.map(({ item, index }) => {
               const editable = !item.is_dir && isEditableTextFile(item.name);
               const checked = selection.has(item.name);
               return (
                 <div
                   key={item.name}
                   data-item-name={item.name}
+                  style={gridCardStyle(index)}
                   tabIndex={0}
                   onClick={(event) => selectItem(event, item.name)}
                   onDoubleClick={(event) => openOnDoubleClick(event, item)}
                   onKeyDown={(event) => handleItemKeyDown(event, item)}
-                  className={`group relative flex cursor-pointer flex-col items-center rounded-lg border p-2.5 text-center transition ${
+                  className={`group absolute flex cursor-pointer flex-col items-center rounded-lg border p-2.5 text-center transition-colors ${
                     checked
                       ? "border-blue-500 bg-blue-500/10"
                       : "border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/70"
@@ -812,9 +840,16 @@ export function AdbExplorer({
             })}
           </div>
         ) : (
-          <table className="w-full text-left">
+          <table className="w-full min-w-[32rem] table-fixed text-left" aria-rowcount={visibleEntries.length + 1}>
+            <colgroup>
+              <col />
+              <col className="w-[15%]" />
+              <col className="w-[26%]" />
+              <col className="w-[17%]" />
+              <col className="w-[12%]" />
+            </colgroup>
             <thead className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-semibold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-950/50 dark:text-slate-400">
-              <tr>
+              <tr aria-rowindex={1}>
                 {sortHeader("name", t("sector.name"))}
                 {sortHeader("size", t("adb.size"))}
                 {sortHeader("time", t("adb.modifiedTime"))}
@@ -822,36 +857,42 @@ export function AdbExplorer({
                 <th className="px-3 py-2 text-right">{t("sector.actions")}</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {visibleEntries.map((item) => {
+            <tbody>
+              {windowEntries.map(({ item, index }, position) => {
                 const editable = !item.is_dir && isEditableTextFile(item.name);
                 const checked = selection.has(item.name);
+                const previousIndex = windowEntries[position - 1]?.index ?? -1;
                 return (
-                  <tr
-                    key={item.name}
-                    data-item-name={item.name}
-                    tabIndex={0}
-                    onClick={(event) => selectItem(event, item.name)}
-                    onDoubleClick={(event) => openOnDoubleClick(event, item)}
-                    onKeyDown={(event) => handleItemKeyDown(event, item)}
-                    className={`cursor-pointer ${checked ? "bg-blue-500/10 hover:bg-blue-500/15" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}`}
-                  >
-                    <td className="px-3 py-1.5 font-medium text-slate-800 dark:text-slate-100">
-                      {renderItemName(item, item.is_dir ? `${item.name}/` : item.name)}
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{sizeLabel(item)}</td>
-                    <td className="px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.modified_time || "-"}</td>
-                    <td className="px-3 py-1.5 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.permissions || "-"}</td>
-                    <td className="space-x-2 whitespace-nowrap px-3 py-1.5 text-right" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
-                      {editable && (
-                        <button onClick={() => handleOpenFile(item.name)} className="text-blue-600 hover:underline dark:text-blue-400">
-                          {t("common.edit")}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+                  <Fragment key={item.name}>
+                    {listSpacer(index - previousIndex - 1)}
+                    <tr
+                      data-item-name={item.name}
+                      aria-rowindex={index + 2}
+                      style={{ height: rowHeight }}
+                      tabIndex={0}
+                      onClick={(event) => selectItem(event, item.name)}
+                      onDoubleClick={(event) => openOnDoubleClick(event, item)}
+                      onKeyDown={(event) => handleItemKeyDown(event, item)}
+                      className={`cursor-pointer border-b border-slate-200 dark:border-slate-800 ${checked ? "bg-blue-500/10 hover:bg-blue-500/15" : "hover:bg-slate-50 dark:hover:bg-slate-800/40"}`}
+                    >
+                      <td title={item.name} className="truncate px-3 font-medium text-slate-800 dark:text-slate-100">
+                        {renderItemName(item, item.is_dir ? `${item.name}/` : item.name)}
+                      </td>
+                      <td className="truncate px-3 font-mono tabular-nums text-slate-500 dark:text-slate-400">{sizeLabel(item)}</td>
+                      <td title={item.modified_time} className="truncate px-3 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.modified_time || "-"}</td>
+                      <td title={item.permissions} className="truncate px-3 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.permissions || "-"}</td>
+                      <td className="whitespace-nowrap px-3 text-right" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+                        {editable && (
+                          <button onClick={() => handleOpenFile(item.name)} className="text-blue-600 hover:underline dark:text-blue-400">
+                            {t("common.edit")}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  </Fragment>
                 );
               })}
+              {listSpacer(visibleEntries.length - (windowEntries[windowEntries.length - 1]?.index ?? -1) - 1)}
             </tbody>
           </table>
         )}

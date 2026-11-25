@@ -314,7 +314,16 @@ fn parse_ls_line(line: &str) -> Option<AdbDetailedFileEntry> {
 }
 
 #[tauri::command]
-pub fn adb_list_dir_detailed(
+pub async fn adb_list_dir_detailed(
+    serial: String,
+    remote_path: String,
+) -> Result<Vec<AdbDetailedFileEntry>, String> {
+    tauri::async_runtime::spawn_blocking(move || list_dir_detailed(serial, remote_path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn list_dir_detailed(
     serial: String,
     remote_path: String,
 ) -> Result<Vec<AdbDetailedFileEntry>, String> {
