@@ -67,6 +67,16 @@ pub struct IncidentReport {
     pub action_results: Vec<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TriggerTestPreview {
+    pub matched: bool,
+    pub connected: bool,
+    pub condition_result: String,
+    pub session_id: String,
+    pub port_name: String,
+    pub matched_text: String,
+}
+
 static RULES_CACHE: OnceLock<Mutex<Vec<TriggerRule>>> = OnceLock::new();
 static COUNTERS: OnceLock<Mutex<HashMap<(String, String), u32>>> = OnceLock::new();
 static REGEX_CACHE: OnceLock<Mutex<HashMap<String, Regex>>> = OnceLock::new();
@@ -122,6 +132,26 @@ fn line_matches_pattern(pattern: &str, line: &str, case_sensitive: bool) -> bool
     } else {
         line.to_lowercase().contains(&pattern.to_lowercase())
     }
+}
+
+fn preview_line_condition(
+    condition: &TriggerCondition,
+    sample_line: &str,
+    current_count: u32,
+) -> Result<bool, String> {
+    Ok(match condition.kind.as_str() {
+        "contains" => line_matches_pattern(&condition.pattern, sample_line, false),
+        "contains_cs" => line_matches_pattern(&condition.pattern, sample_line, true),
+        "regex" => Regex::new(&condition.pattern)
+            .map_err(|e| format!("Invalid trigger regex: {e}"))?
+            .is_match(sample_line),
+        "count" => {
+            let hit = condition.pattern.trim().is_empty()
+                || line_matches_pattern(&condition.pattern, sample_line, false);
+            hit && current_count.saturating_add(1) >= condition.count_threshold.max(1)
+        }
+        other => return Err(format!("Condition {other} requires live session state")),
+    })
 }
 
 fn render_prompt_template(
@@ -617,12 +647,12 @@ pub fn save_rule_draft(app: &AppHandle, mut rule: TriggerRule) -> Result<Trigger
 
 #[tauri::command]
 pub async fn trigger_test_rule(
-    app: AppHandle,
+    _app: AppHandle,
     state: State<'_, AppState>,
     rule_id: String,
     sample_line: String,
 ) -> Result<IncidentReport, String> {
-    let mut rule = {
+    let rule = {
         let guard = rules_mutex()
             .lock()
             .map_err(|_| "Trigger rules lock poisoned".to_string())?;
@@ -632,10 +662,6 @@ pub async fn trigger_test_rule(
             .cloned()
             .ok_or_else(|| format!("Trigger rule not found: {}", rule_id))?
     };
-
-    if rule.draft {
-        return Err("Enable and save the draft before testing it".to_string());
-    }
 
     let (session_id, port_name) = {
         let guard = state
@@ -654,15 +680,227 @@ pub async fn trigger_test_rule(
             (String::new(), String::new())
         }
     };
+    let (matched, condition_result) =
+        preview_test_condition(&rule, &sample_line, &session_id, &state)?;
+    if !matched {
+        return Err(format!("Rule condition does not match: {condition_result}"));
+    }
+    let now = epoch_secs();
+    Ok(IncidentReport {
+        id: format!("preview-{}", epoch_ms()),
+        rule_id: rule.id,
+        rule_name: rule.name,
+        session_id,
+        port_name,
+        matched_text: sample_line,
+        prompt: String::new(),
+        log_tail: Vec::new(),
+        created_at: now,
+        action_results: rule
+            .actions
+            .iter()
+            .map(|action| format!("{}: preview only; action not executed", action.kind))
+            .collect(),
+    })
+}
 
-    rule.trigger_count += 1;
-    let matched_text = if sample_line.trim().is_empty() {
-        format!("[test] {}", rule.name)
-    } else {
-        sample_line
+fn preview_test_condition(
+    rule: &TriggerRule,
+    sample_line: &str,
+    session_id: &str,
+    state: &AppState,
+) -> Result<(bool, String), String> {
+    if !rule.target_session_id.is_empty() && rule.target_session_id != session_id {
+        return Ok((
+            false,
+            format!(
+                "Rule is scoped to serial session {}",
+                rule.target_session_id
+            ),
+        ));
+    }
+    let matched = match rule.condition.kind.as_str() {
+        "contains" | "contains_cs" | "regex" | "count" => {
+            let current = counters_mutex()
+                .lock()
+                .map_err(|_| "Trigger counters lock poisoned".to_string())?
+                .get(&(rule.id.clone(), session_id.to_string()))
+                .copied()
+                .unwrap_or(0);
+            preview_line_condition(&rule.condition, sample_line, current)?
+        }
+        "timeout" => {
+            let sessions = state
+                .serial_sessions
+                .lock()
+                .map_err(|_| "Serial sessions lock poisoned".to_string())?;
+            let session = sessions
+                .get(session_id)
+                .filter(|session| session.connected.load(Ordering::Relaxed));
+            session
+                .map(|session| {
+                    epoch_ms().saturating_sub(session.last_rx_epoch_ms.load(Ordering::Relaxed))
+                        >= rule.condition.timeout_secs.saturating_mul(1000)
+                })
+                .unwrap_or(false)
+        }
+        other => return Err(format!("Unknown trigger condition: {other}")),
     };
+    let detail = if matched {
+        "Condition matches".to_string()
+    } else if rule.condition.kind == "timeout" {
+        format!(
+            "Serial session has not been silent for {} seconds",
+            rule.condition.timeout_secs
+        )
+    } else if rule.condition.kind == "count" {
+        format!(
+            "The next matching line does not reach the count threshold of {}",
+            rule.condition.count_threshold.max(1)
+        )
+    } else {
+        "Sample text does not match the condition".to_string()
+    };
+    Ok((matched, detail))
+}
 
-    Ok(execute_rule_and_report(app, rule, session_id, port_name, matched_text).await)
+#[cfg(test)]
+mod preview_tests {
+    use super::{preview_line_condition, TriggerCondition};
+
+    fn condition(kind: &str, pattern: &str, count_threshold: u32) -> TriggerCondition {
+        TriggerCondition {
+            kind: kind.to_string(),
+            pattern: pattern.to_string(),
+            timeout_secs: 0,
+            count_threshold,
+        }
+    }
+
+    #[test]
+    fn preview_matches_literal_and_regex_conditions() {
+        assert!(
+            preview_line_condition(&condition("contains", "kernel", 0), "Kernel panic", 0).unwrap()
+        );
+        assert!(
+            !preview_line_condition(&condition("contains_cs", "kernel", 0), "Kernel panic", 0)
+                .unwrap()
+        );
+        assert!(preview_line_condition(
+            &condition("regex", r"Kernel\s+panic", 0),
+            "Kernel panic",
+            0
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn preview_count_checks_next_hit_without_advancing_counter() {
+        let threshold = condition("count", "panic", 3);
+        let current_count = 1;
+        assert!(!preview_line_condition(&threshold, "panic", current_count).unwrap());
+        assert!(preview_line_condition(&threshold, "panic", current_count + 1).unwrap());
+        assert_eq!(current_count, 1);
+    }
+}
+
+#[tauri::command]
+pub fn trigger_preview_rule(
+    state: State<'_, AppState>,
+    rule: TriggerRule,
+    sample_line: String,
+    session_id: String,
+) -> Result<TriggerTestPreview, String> {
+    if rule.condition.kind == "regex" {
+        Regex::new(&rule.condition.pattern).map_err(|e| format!("Invalid trigger regex: {e}"))?;
+    }
+    let session_id = if session_id.is_empty() {
+        rule.target_session_id.clone()
+    } else {
+        session_id
+    };
+    let (port_name, connected) = {
+        let sessions = state
+            .serial_sessions
+            .lock()
+            .map_err(|_| "Serial sessions lock poisoned".to_string())?;
+        sessions
+            .get(&session_id)
+            .map(|session| {
+                (
+                    session.port_name.clone(),
+                    session.connected.load(Ordering::Relaxed),
+                )
+            })
+            .unwrap_or_default()
+    };
+    let (matched, condition_result) =
+        preview_test_condition(&rule, &sample_line, &session_id, &state)?;
+    Ok(TriggerTestPreview {
+        matched,
+        connected,
+        condition_result,
+        session_id,
+        port_name,
+        matched_text: sample_line,
+    })
+}
+
+#[tauri::command]
+pub async fn trigger_execute_test_rule(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    rule: TriggerRule,
+    sample_line: String,
+    session_id: String,
+    confirmed_session_id: String,
+    confirmed_port_name: String,
+    action_indexes: Vec<usize>,
+) -> Result<IncidentReport, String> {
+    if confirmed_session_id != session_id {
+        return Err("Confirmed target changed after preview".to_string());
+    }
+    let (matched, condition_result) =
+        preview_test_condition(&rule, &sample_line, &session_id, &state)?;
+    if !matched {
+        return Err(format!(
+            "Rule condition no longer matches: {condition_result}"
+        ));
+    }
+    if action_indexes.is_empty() {
+        return Err("Select at least one action to execute".to_string());
+    }
+    let mut indexes = action_indexes;
+    indexes.sort_unstable();
+    indexes.dedup();
+    let actions = rule
+        .actions
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| indexes.binary_search(index).is_ok())
+        .map(|(_, action)| action.clone())
+        .collect::<Vec<_>>();
+    if actions.len() != indexes.len() {
+        return Err("An action changed after preview".to_string());
+    }
+    let port_name = {
+        let sessions = state
+            .serial_sessions
+            .lock()
+            .map_err(|_| "Serial sessions lock poisoned".to_string())?;
+        sessions
+            .get(&session_id)
+            .filter(|session| session.connected.load(Ordering::Relaxed))
+            .map(|session| session.port_name.clone())
+            .ok_or_else(|| "Selected serial session is no longer connected".to_string())?
+    };
+    if port_name != confirmed_port_name {
+        return Err("Confirmed serial port changed after preview".to_string());
+    }
+    let mut executable_rule = rule;
+    executable_rule.actions = actions;
+    executable_rule.trigger_count = executable_rule.trigger_count.saturating_add(1);
+    Ok(execute_rule_and_report(app, executable_rule, session_id, port_name, sample_line).await)
 }
 
 #[tauri::command]

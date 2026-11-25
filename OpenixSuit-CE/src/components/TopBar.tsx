@@ -6,6 +6,7 @@ export interface FelDevice {
   id: string;
   chip: string;
   mode: string;
+  usb_path?: string | null;
 }
 
 export interface AdbDevice {
@@ -26,8 +27,12 @@ export function resolveAdbDevice(value: string, devices: readonly AdbDevice[]): 
   return legacy.length === 1 ? legacy[0] : undefined;
 }
 
-function adbDeviceLabel(device: AdbDevice): string {
-  return `ADB: ${device.serial}${device.usb_path ? ` · ${device.usb_path}` : ""} (${device.state})`;
+export function efexDeviceLabel(device: FelDevice): string {
+  return [device.chip, device.usb_path || device.id, device.mode].join(" · ");
+}
+
+export function adbDeviceLabel(device: AdbDevice, name?: string): string {
+  return `ADB: ${name ? `${name} · ` : ""}${device.serial}${device.usb_path ? ` · ${device.usb_path}` : ""} (${device.state})`;
 }
 
 export function adbDeviceOnline(device?: AdbDevice): boolean {
@@ -42,6 +47,7 @@ interface TopBarProps {
   felDevices: FelDevice[];
   adbDevices: AdbDevice[];
   selectedAdbTarget: string;
+  adbNames?: ReadonlyMap<string, string>;
   unavailableAdbTarget: boolean;
   aiSyncStatus?: string | null;
   switchingEfex?: boolean;
@@ -58,6 +64,7 @@ export function TopBar({
   felDevices,
   adbDevices,
   selectedAdbTarget,
+  adbNames,
   unavailableAdbTarget,
   aiSyncStatus,
   switchingEfex = false,
@@ -146,8 +153,9 @@ export function TopBar({
         {adbDevices.length > 0 ? (
           <select
             value={selectedAdbTarget}
+            disabled={switchingEfex}
             onChange={(e) => onSelectAdbSerial(e.target.value)}
-            title={selectedDevice ? adbDeviceLabel(selectedDevice) : undefined}
+            title={selectedDevice ? adbDeviceLabel(selectedDevice, adbNames?.get(adbDeviceKey(selectedDevice))) : undefined}
             className="ui-select max-w-[min(16rem,26vw)] font-medium text-blue-700 dark:text-blue-300"
           >
             <option value="" disabled>
@@ -158,7 +166,7 @@ export function TopBar({
                 key={adbDeviceKey(d)}
                 value={adbDeviceKey(d)}
               >
-                {adbDeviceLabel(d)}
+                {adbDeviceLabel(d, adbNames?.get(adbDeviceKey(d)))}
               </option>
             ))}
           </select>
@@ -192,7 +200,7 @@ export function TopBar({
           <>
             <button
               onClick={onAdbRoot}
-              disabled={!adbReady}
+              disabled={actionsBlocked || !adbReady}
               className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-600 transition hover:bg-emerald-500/20 dark:text-emerald-400"
             >
               <Shield className="h-3.5 w-3.5" />
@@ -200,7 +208,7 @@ export function TopBar({
             </button>
             <button
               onClick={onAdbReboot}
-              disabled={!adbReady}
+              disabled={actionsBlocked || !adbReady}
               className="ui-btn-secondary"
             >
               <RotateCw className="h-3.5 w-3.5" />
@@ -212,7 +220,7 @@ export function TopBar({
         {(adbDevices.length > 0 || switchingEfex) && (
           <button
             onClick={onSwitchEfex}
-            disabled={switchingEfex || !adbReady}
+            disabled={actionsBlocked || !adbReady}
             className="ui-btn-primary"
           >
             {switchingEfex ? (
@@ -246,7 +254,7 @@ export function TopBar({
               >
                 <option value="" disabled>{t("fesExit.selectDevice")}</option>
                 {fesDevices.map((device) => (
-                  <option key={device.id} value={device.id}>{device.chip} · {device.id}</option>
+                  <option key={device.id} value={device.id}>{efexDeviceLabel(device)}</option>
                 ))}
               </select>
             </label>

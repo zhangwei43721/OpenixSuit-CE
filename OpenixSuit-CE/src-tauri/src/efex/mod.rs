@@ -30,6 +30,8 @@ pub struct DeviceInfo {
     pub chip: String,
     pub mode: String,
     pub backend: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usb_path: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -247,14 +249,38 @@ pub fn scan_devices_with_backend(backend: &UsbBackend) -> Vec<DeviceInfo> {
     scan_devices_with_probe(backend, false)
 }
 
+fn efex_usb_paths() -> BTreeMap<(u8, u8), Option<String>> {
+    let mut paths = BTreeMap::new();
+    if let Ok(devices) = rusb::devices() {
+        for device in devices.iter() {
+            if !device.device_descriptor().is_ok_and(|desc| {
+                desc.vendor_id() == 0x1f3a && desc.product_id() == 0xefe8
+            }) {
+                continue;
+            }
+            let bus = device.bus_number();
+            let port = device.port_number();
+            let path = device.port_numbers().ok().filter(|ports| !ports.is_empty()).map(|ports| {
+                let ports = ports.iter().map(u8::to_string).collect::<Vec<_>>().join(".");
+                format!("usb:{bus}-{ports}")
+            });
+            // 相同的末级端口号可能出现在不同集线器上。
+            paths.entry((bus, port)).and_modify(|value| *value = None).or_insert(path);
+        }
+    }
+    paths
+}
+
 fn scan_devices_with_probe(backend: &UsbBackend, probe_details: bool) -> Vec<DeviceInfo> {
     let backend_name = format!("{:?}", backend);
+    let paths = efex_usb_paths();
     if let Ok(libefex_devs) = EfexContext::scan_usb_devices() {
         if !libefex_devs.is_empty() {
             return libefex_devs
                 .into_iter()
                 .map(|d| {
                     let id = efex_device_id(d.bus, d.port);
+                    let usb_path = paths.get(&(d.bus, d.port)).cloned().flatten();
                     if probe_details {
                         if let Ok(ctx) = open_efex_session(Some(d.bus), Some(d.port)) {
                             let chip_id = unsafe { (*ctx.as_ptr()).resp.id };
@@ -271,6 +297,7 @@ fn scan_devices_with_probe(backend: &UsbBackend, probe_details: bool) -> Vec<Dev
                                 chip: format!("{} (0x{:08x})", mode_str, chip_id),
                                 mode: mode_label.into(),
                                 backend: backend_name.clone(),
+                                usb_path,
                             };
                         }
                     }
@@ -279,6 +306,7 @@ fn scan_devices_with_probe(backend: &UsbBackend, probe_details: bool) -> Vec<Dev
                         chip: "Sunxi SoC (0x1f3a:0xefe8)".into(),
                         mode: "FEL/FES".into(),
                         backend: backend_name.clone(),
+                        usb_path,
                     }
                 })
                 .collect();
@@ -291,6 +319,7 @@ fn scan_devices_with_probe(backend: &UsbBackend, probe_details: bool) -> Vec<Dev
             chip: "Sunxi SoC (0x1f3a:0xefe8)".into(),
             mode: "FEL/FES".into(),
             backend: backend_name.clone(),
+            usb_path: None,
         })
         .collect()
 }
@@ -303,14 +332,41 @@ pub fn set_usb_backend(backend: UsbBackend, state: State<'_, AppState>) -> Resul
 }
 
 pub fn efel_read_sync(address: u32, length: usize) -> Result<Vec<u8>, String> {
+    efel_read_target(address, length, None)
+}
+
+pub(crate) fn efel_read_target(
+    address: u32,
+    length: usize,
+    device_id: Option<&str>,
+) -> Result<Vec<u8>, String> {
     if length == 0 || length > 1024 * 1024 {
         return Err("读取长度必须在 1B ~ 1MB 之间".into());
     }
-    let ctx = open_efex_session(None, None)?;
+    let ctx = if let Some(device_id) = device_id {
+        let devices = EfexContext::scan_usb_devices().map_err(|error| error.to_string())?;
+        let (bus, port) = exit::select_target(&devices, device_id)?;
+        open_efex_session(Some(bus), Some(port))?
+    } else {
+        open_efex_session(None, None)?
+    };
     require_fel_mode(&ctx)?;
     let mut buf = vec![0u8; length];
     ctx.fel_read(address, &mut buf).map_err(|e| e.to_string())?;
     Ok(buf)
+}
+
+#[tauri::command]
+pub(crate) fn open_partition_output_folder(app: AppHandle, directory: PathBuf) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let directory = directory.canonicalize().map_err(|error| error.to_string())?;
+    if !directory.is_dir() {
+        return Err(format!("{} 不是文件夹", directory.display()));
+    }
+    app.opener()
+        .open_path(directory.to_string_lossy().into_owned(), None::<String>)
+        .map_err(|error| error.to_string())
 }
 
 pub fn efel_write_sync(address: u32, data: Vec<u8>) -> Result<(), String> {

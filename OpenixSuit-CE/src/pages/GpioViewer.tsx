@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Check,
@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { efexDeviceLabel, type FelDevice } from "../components/TopBar";
 
 interface RuntimeGpioPin {
   pin_name: string;
@@ -73,14 +74,16 @@ const felToRow = (pin: PioPinState, portIdx: number): PortPinRow => ({
 
 export function GpioViewer({
   serial,
-  felConnected,
+  adbLabel,
+  felDevices,
   onLog,
 }: {
   serial: string;
-  felConnected: boolean;
+  adbLabel: string;
+  felDevices: FelDevice[];
   onLog: (msg: string) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [mode, setMode] = useState<"adb" | "fel">("adb");
   const [chipName, setChipName] = useState("-");
   const [adbPorts, setAdbPorts] = useState<PortGroup[]>([]);
@@ -97,11 +100,30 @@ export function GpioViewer({
   const [baseAddr, setBaseAddr] = useState(() => localStorage.getItem("gpio_base_addr") || "0x02000000");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [felSelection, setFelSelection] = useState("");
+  const [adbReadAt, setAdbReadAt] = useState<number | null>(null);
+  const [felReadAt, setFelReadAt] = useState<number | null>(null);
+  const [savingPin, setSavingPin] = useState(false);
+  const [writeResult, setWriteResult] = useState<{ text: string; failed?: boolean } | null>(null);
+  const felTargets = felDevices.filter((device) =>
+    device.mode.startsWith("FEL (") &&
+    felDevices.filter((candidate) => candidate.id === device.id).length === 1
+  );
+  const felTarget = felTargets.find((device) => device.id ===
+    (felSelection || (felTargets.length === 1 ? felTargets[0].id : "")));
+  const felId = felTarget?.id;
+  const felSnapshot = `${felId ?? ""}:${felTarget?.usb_path ?? ""}:${baseAddr}`;
+  const activeFelSnapshot = useRef(felSnapshot);
+  activeFelSnapshot.current = felSnapshot;
+  const readAt = mode === "adb" ? adbReadAt : felReadAt;
+  const pioBase = /^(?:0x)?[0-9a-f]{1,8}$/i.test(baseAddr.trim()) ? Number.parseInt(baseAddr, 16) : null;
+  const validPioBase = pioBase !== null && pioBase + PORTS.length * 0x24 <= 0x100000000;
 
   const loadRuntimeGpio = async (targetSerial = serial) => {
     if (!targetSerial) {
       setAdbPorts([]);
       setChipName("-");
+      setAdbReadAt(null);
       return;
     }
     setLoading(true);
@@ -126,13 +148,16 @@ export function GpioViewer({
         })),
       }));
       setAdbPorts(ports);
+      setAdbReadAt(Date.now());
       setExpandedPorts((prev) => {
         if (prev.size > 0) return prev;
         return ports.length > 0 ? new Set([ports[0].port_index]) : new Set();
       });
       onLog(`GPIO (${rep.chip}): ${rep.pins.length} pins`);
+      return rep.pins;
     } catch (err) {
       setAdbPorts([]);
+      setAdbReadAt(null);
       setErrorMsg(String(err));
     } finally {
       setLoading(false);
@@ -140,23 +165,26 @@ export function GpioViewer({
   };
 
   const loadFelPort = async (idx: number) => {
-    if (felLoadingPorts.has(idx)) return;
+    if (!felId || !validPioBase || felLoadingPorts.size > 0) return;
     setFelLoadingPorts((prev) => new Set(prev).add(idx));
     setErrorMsg(null);
     try {
       const res = await invoke<PioPinState[]>("read_pio_port", {
-        baseAddr: parseInt(baseAddr, 16) || 0x02000000,
+        baseAddr: pioBase,
         portIndex: idx,
         portName: PORTS[idx],
+        deviceId: felId,
       });
+      if (activeFelSnapshot.current !== felSnapshot) return;
       setFelPorts((prev) => {
         const next = prev.filter((p) => p.port_index !== idx);
         next.push({ port_index: idx, port_name: PORTS[idx], pins: res.map((p) => felToRow(p, idx)) });
         next.sort((a, b) => a.port_index - b.port_index);
         return next;
       });
+      setFelReadAt(Date.now());
     } catch (err) {
-      setErrorMsg(String(err));
+      if (activeFelSnapshot.current === felSnapshot) setErrorMsg(String(err));
     } finally {
       setFelLoadingPorts((prev) => {
         const next = new Set(prev);
@@ -175,9 +203,18 @@ export function GpioViewer({
     } else {
       setChipName("-");
     }
-  }, [serial, mode, felConnected]);
+  }, [serial, mode]);
+
+  useEffect(() => {
+    setFelPorts([]);
+    setFelReadAt(null);
+    if (mode === "fel") setExpandedPorts(new Set());
+  }, [felSnapshot]);
 
   const saveEditPin = async (pinName: string) => {
+    if (!serial || savingPin || loading) return;
+    setSavingPin(true);
+    setWriteResult(null);
     try {
       await invoke("adb_set_gpio", {
         serial,
@@ -188,9 +225,16 @@ export function GpioViewer({
       });
       onLog(`Updated ${pinName}`);
       setEditingPin(null);
-      await loadRuntimeGpio(serial);
+      const pin = (await loadRuntimeGpio(serial))?.find((item) => item.pin_name === pinName);
+      setWriteResult({
+        text: pin ? t("gpio.writeReadback", { pin: pinName, function: pin.function, pull: pin.pull, drive: pin.drv })
+          : t("gpio.writeNoReadback", { pin: pinName }),
+        failed: !pin,
+      });
     } catch (err) {
-      setErrorMsg(String(err));
+      setWriteResult({ text: t("gpio.writeFailed", { pin: pinName, error: String(err) }), failed: true });
+    } finally {
+      setSavingPin(false);
     }
   };
 
@@ -213,7 +257,7 @@ export function GpioViewer({
     if (
       willExpand &&
       mode === "fel" &&
-      felConnected &&
+      felId &&
       !felPorts.some((p) => p.port_index === idx)
     ) {
       void loadFelPort(idx);
@@ -223,34 +267,36 @@ export function GpioViewer({
   const allPortsExpanded =
     groups.length > 0 && groups.every((g) => expandedPorts.has(g.port_index));
 
-  const toggleAllPorts = () => {
+  const toggleAllPorts = async () => {
     if (allPortsExpanded) {
       setExpandedPorts(new Set());
       return;
     }
     setExpandedPorts(new Set(groups.map((g) => g.port_index)));
-    if (mode === "fel" && felConnected) {
+    if (mode === "fel" && felId) {
       for (const g of groups) {
+        if (activeFelSnapshot.current !== felSnapshot) break;
         if (!felPorts.some((p) => p.port_index === g.port_index)) {
-          void loadFelPort(g.port_index);
+          await loadFelPort(g.port_index);
         }
       }
     }
   };
 
-  const refreshCurrent = () => {
+  const refreshCurrent = async () => {
     if (mode === "adb") {
       void loadRuntimeGpio(serial);
     } else {
       for (const g of groups) {
-        if (felPorts.some((p) => p.port_index === g.port_index)) {
-          void loadFelPort(g.port_index);
+        if (activeFelSnapshot.current !== felSnapshot) break;
+        if (expandedPorts.has(g.port_index) || felPorts.some((p) => p.port_index === g.port_index)) {
+          await loadFelPort(g.port_index);
         }
       }
     }
   };
 
-  const canRefresh = mode === "adb" ? !!serial && !loading : felConnected;
+  const canRefresh = mode === "adb" ? !!serial && !loading && !savingPin : !!felId && validPioBase && felLoadingPorts.size === 0;
 
   const renderPinRow = (pin: PortPinRow, editable: boolean) => {
     const isEditing = editable && editingPin === pin.pin_name;
@@ -330,12 +376,16 @@ export function GpioViewer({
             <div className="inline-flex items-center gap-1">
               <button
                 onClick={() => saveEditPin(pin.pin_name)}
+                disabled={savingPin || loading}
+                aria-label={t("gpio.savePin")}
                 className="inline-flex items-center justify-center rounded-md bg-emerald-500/20 p-1.5 text-emerald-600 transition hover:bg-emerald-500/30 dark:text-emerald-400"
               >
                 <Check className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={() => setEditingPin(null)}
+                disabled={savingPin}
+                aria-label={t("gpio.cancelEdit")}
                 className="inline-flex items-center justify-center rounded-md bg-rose-500/20 p-1.5 text-rose-500 transition hover:bg-rose-500/30"
               >
                 <X className="h-3.5 w-3.5" />
@@ -343,6 +393,8 @@ export function GpioViewer({
             </div>
           ) : editable ? (
             <button
+              disabled={savingPin || loading}
+              aria-label={t("gpio.editPin", { pin: pin.pin_name })}
               onClick={() => {
                 setEditingPin(pin.pin_name);
                 setEditDraft({ mux: pin.mux, pull: pin.pull, drv: pin.drv });
@@ -377,7 +429,7 @@ export function GpioViewer({
                 {port.port_name}
               </span>
               <span className="rounded-md bg-white/80 px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-slate-500 dark:bg-slate-900/80 dark:text-slate-400">
-                {unread && felConnected ? t("gpio.tapToRead") : `${port.pins.length} pins`}
+                {unread && felId ? t("gpio.tapToRead") : t("gpio.pinCount", { count: port.pins.length })}
               </span>
             </div>
           </td>
@@ -400,6 +452,7 @@ export function GpioViewer({
         <div className="flex flex-wrap items-center gap-2">
           <select
             value={mode}
+            disabled={savingPin}
             onChange={(e) => setMode(e.target.value as "adb" | "fel")}
             className="ui-select"
           >
@@ -409,21 +462,23 @@ export function GpioViewer({
 
           {mode === "adb" ? (
             <span className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 font-mono text-xs tabular-nums text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
-              Chip: {chipName}
+              {t("gpio.chip", { chip: chipName })}
             </span>
           ) : (
             <label className="flex items-center gap-1.5">
               <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                PIO Base
+                {t("gpio.pioBase")}
               </span>
               <input
                 value={baseAddr}
+                disabled={felLoadingPorts.size > 0}
+                aria-invalid={!validPioBase}
                 onChange={(e) => {
                   setBaseAddr(e.target.value);
                   localStorage.setItem("gpio_base_addr", e.target.value);
                   setFelPorts([]);
                 }}
-                title="PIO base address"
+                title={t("gpio.pioBase")}
                 className="ui-input w-32 font-mono tabular-nums"
               />
             </label>
@@ -432,7 +487,7 @@ export function GpioViewer({
 
         <div className="flex items-center gap-2">
           {groups.length > 0 && (
-            <button onClick={toggleAllPorts} className="ui-btn-secondary">
+            <button onClick={() => void toggleAllPorts()} disabled={felLoadingPorts.size > 0} className="ui-btn-secondary">
               {allPortsExpanded ? (
                 <ChevronsDownUp className="h-3.5 w-3.5" />
               ) : (
@@ -453,25 +508,39 @@ export function GpioViewer({
         </div>
       </div>
 
-      {mode === "fel" && !felConnected && (
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-slate-500 dark:text-slate-400">
+        {mode === "fel" && (felTargets.length > 0 || felSelection) ? (
+          <label className="flex flex-wrap items-center gap-2">
+            {t("gpio.device")}
+            <select className="ui-select min-w-0 max-w-full" value={felTarget?.id ?? ""} disabled={felLoadingPorts.size > 0}
+              onChange={(event) => setFelSelection(event.target.value)}>
+              <option value="">{t("gpio.selectFel")}</option>
+              {felTargets.map((device) => <option key={device.id} value={device.id}>{efexDeviceLabel(device)}</option>)}
+            </select>
+          </label>
+        ) : <span>{t("gpio.target", { device: (mode === "adb" && adbLabel) || t("gpio.noDevice") })}</span>}
+        <span>{t("gpio.lastRead", { time: readAt === null ? "—" : new Date(readAt).toLocaleTimeString(i18n.language) })}</span>
+        {mode === "fel" && <span>{t("gpio.readOnly")}</span>}
+      </div>
+      {mode === "fel" && !felId && (
         <div className="ui-alert-warn">
-          当前未检测到处于 FEL 模式的设备；如果板卡当前为 ADB 在线，可先点击右上角「切烧录模式」或手动进入 FEL 模式。
+          {t(felTargets.length > 0 ? "gpio.selectFel" : "gpio.noFel")}
         </div>
       )}
+      {mode === "fel" && !validPioBase && <div className="ui-alert-warn">{t("gpio.invalidBase")}</div>}
 
       {errorMsg && <div className="ui-alert-err">{errorMsg}</div>}
+      {mode === "adb" && writeResult && (
+        <div role="status" className={writeResult.failed ? "ui-alert-err" : "ui-alert-ok"}>{writeResult.text}</div>
+      )}
 
       <div className="ui-card flex-1 min-h-0 overflow-y-auto">
         <table className="w-full text-left">
           <thead className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50/95 text-[11px] font-semibold uppercase tracking-wider text-slate-500 backdrop-blur-sm dark:border-slate-800 dark:bg-slate-950/95 dark:text-slate-400">
             <tr>
-              <th className="px-3 py-2.5">GPIO Pin</th>
-              <th className="px-3 py-2.5">GPIO ID</th>
-              <th className="px-3 py-2.5">Pin Function</th>
-              <th className="px-3 py-2.5">Pin MUX</th>
-              <th className="px-3 py-2.5">Pin Pull</th>
-              <th className="px-3 py-2.5">Pin Driver</th>
-              <th className="px-3 py-2.5">Pin Data</th>
+              {["pin", "pinId", "function", "mux", "pull", "drive", "level"].map((column) =>
+                <th key={column} className="px-3 py-2.5">{t(`gpio.columns.${column}`)}</th>
+              )}
               <th className="px-3 py-2.5 text-right">{t("sector.actions")}</th>
             </tr>
           </thead>
@@ -489,8 +558,7 @@ export function GpioViewer({
         </table>
       </div>
       <div className="flex items-center justify-between px-1 font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
-        <span>{totalPins} pins</span>
-        <span>Editing: {editingPin ? 1 : 0} pins</span>
+        <span>{t("gpio.pinCount", { count: totalPins })}</span>
       </div>
     </div>
   );

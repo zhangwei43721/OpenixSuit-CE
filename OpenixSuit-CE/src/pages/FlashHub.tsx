@@ -347,6 +347,7 @@ export function FlashHub({
             <GenericFlash
               active={subTab === "generic"}
               isFlashing={isFlashing}
+              felDevices={felDevices}
               onFlashingChange={onFlashingChange}
               onLog={onLog}
             />

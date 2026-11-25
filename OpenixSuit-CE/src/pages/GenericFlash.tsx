@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { LogMarkedText } from "../utils/ansi";
+import { efexDeviceLabel, type FelDevice } from "../components/TopBar";
 
 interface PartitionEntry {
   index: number;
@@ -25,11 +26,13 @@ interface GenericImageInfo {
 export function GenericFlash({
   active = true,
   isFlashing,
+  felDevices,
   onFlashingChange,
   onLog,
 }: {
   active?: boolean;
   isFlashing: boolean;
+  felDevices: FelDevice[];
   onFlashingChange: (v: boolean) => void;
   onLog: (msg: string) => void;
 }) {
@@ -38,7 +41,17 @@ export function GenericFlash({
   const [genericImage, setGenericImage] = useState("");
   const [mode, setMode] = useState<"logic-offset" | "command">("logic-offset");
   const [storageType, setStorageType] = useState<"sdmmc" | "nor" | "ufs">("sdmmc");
-  const [logicOffset, setLogicOffset] = useState(40960);
+  const [logicOffset, setLogicOffset] = useState("40960");
+  const [selectedTarget, setSelectedTarget] = useState("");
+  const targetId = selectedTarget || (felDevices.length === 1 ? felDevices[0].id : "");
+  const targets = felDevices.filter((device) => device.id === targetId);
+  const target = targets.length === 1 ? targets[0] : undefined;
+  const targetPair = /^bus:(\d+)-port:(\d+)$/.exec(targetId);
+  const offset = Number(logicOffset);
+  const validOffset = /^\d+$/.test(logicOffset.trim()) && Number.isInteger(offset) && offset <= 0x100000000;
+  const flashBlock = !bootImage ? "generic.pickBootHint" : !genericImage ? "generic.pickDiskHint"
+    : !target || !targetPair ? "flash.pickTargetHint"
+    : mode === "logic-offset" && !validOffset ? "generic.invalidOffset" : null;
   const [diskInfo, setDiskInfo] = useState<GenericImageInfo | null>(null);
   const [progress, setProgress] = useState<{ partition: string; percent: number } | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -95,6 +108,7 @@ export function GenericFlash({
       const file = await open({ filters: [{ name: "Raw Disk Image", extensions: ["img", "bin", "raw"] }] });
       if (typeof file !== "string") return;
       setGenericImage(file);
+      setDiskInfo(null);
       const info = await invoke<GenericImageInfo>("read_partition_table", { diskImagePath: file });
       setDiskInfo(info);
       pushLog(`Parsed ${info.image_type}: ${info.partitions.length} partitions`);
@@ -105,24 +119,31 @@ export function GenericFlash({
 
   const changeStorage = (val: "sdmmc" | "nor" | "ufs") => {
     setStorageType(val);
-    setLogicOffset(val === "nor" ? 2106 : 40960);
+    setLogicOffset(val === "nor" ? "2106" : "40960");
   };
 
   const startFlash = async () => {
-    if (!bootImage || !genericImage) return;
+    if (isFlashing || flashBlock || !targetPair || !target) return;
     onFlashingChange(true);
-    setErrorMsg(null);
-    setProgress(null);
-    pushLog(`Raw flash: ${mode}, ${storageType}, offset=${logicOffset}`);
     try {
+      const confirmed = await ask(t("generic.confirmDetails", {
+        target: efexDeviceLabel(target),
+        storage: storageType.toUpperCase(),
+        mode: t(mode === "logic-offset" ? "generic.modeLogic" : "generic.modeCmd"),
+        offset: mode === "logic-offset" ? t("generic.offsetValue", { offset }) : t("generic.offsetUnused"),
+      }), { kind: "warning", title: t("generic.startFlash") });
+      if (!confirmed) return;
+      setErrorMsg(null);
+      setProgress(null);
+      pushLog(`Raw flash: ${mode}, ${storageType}, offset=${logicOffset}`);
       const res = await invoke<string | void>("raw_flash_image", {
         bootFirmware: bootImage,
         rawImage: genericImage,
         mode,
         storage: storageType,
-        logicOffset,
-        bus: null,
-        port: null,
+        logicOffset: mode === "logic-offset" ? offset : null,
+        bus: Number(targetPair[1]),
+        port: Number(targetPair[2]),
       });
       if (typeof res === "string" && res) pushLog(res);
       pushLog("Raw flash completed");
@@ -202,12 +223,26 @@ export function GenericFlash({
               <option value="ufs">UFS</option>
               <option value="nor">SPI NOR</option>
             </select>
-            <input
-              type="number"
-              value={logicOffset}
-              onChange={(e) => setLogicOffset(Number(e.target.value))}
-              className="ui-input w-full font-mono tabular-nums"
-            />
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              {t(mode === "logic-offset" ? "generic.modeLogicHint" : "generic.modeCmdHint")}
+            </p>
+            {mode === "logic-offset" && (
+              <label className="block space-y-1 text-xs">
+                <span>{t("generic.offsetLabel")}</span>
+                <input type="number" min={0} max={4294967296} step={1} value={logicOffset}
+                  aria-invalid={!validOffset}
+                  onChange={(event) => setLogicOffset(event.target.value)}
+                  className="ui-input w-full font-mono tabular-nums" />
+              </label>
+            )}
+            <label className="block space-y-1 text-xs">
+              <span>{t("flash.felTarget")}</span>
+              <select className="ui-select w-full" value={targetId} disabled={isFlashing}
+                onChange={(event) => setSelectedTarget(event.target.value)}>
+                <option value="">{t("flash.selectDevice")}</option>
+                {felDevices.map((device, index) => <option key={`${device.id}-${index}`} value={device.id}>{efexDeviceLabel(device)}</option>)}
+              </select>
+            </label>
           </div>
         </div>
 
@@ -226,7 +261,7 @@ export function GenericFlash({
 
           <div className="flex gap-2">
             <button
-              disabled={isFlashing || !bootImage || !genericImage}
+              disabled={isFlashing || Boolean(flashBlock)}
               onClick={startFlash}
               className="ui-btn-success flex-1 py-2"
             >
@@ -243,6 +278,7 @@ export function GenericFlash({
           </div>
         </div>
 
+        {!isFlashing && flashBlock && <p className="text-xs text-slate-600 dark:text-slate-300">{t(flashBlock)}</p>}
         {errorMsg && <div className="ui-alert-warn">{errorMsg}</div>}
       </div>
 

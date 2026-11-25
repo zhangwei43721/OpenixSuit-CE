@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useTranslation } from "react-i18next";
 import { getFirstSidebarTab, Sidebar, TabKey } from "./components/Sidebar";
-import { AdbDevice, adbDeviceKey, adbDeviceOnline, adbSerialAmbiguous, resolveAdbDevice, FelDevice, TopBar } from "./components/TopBar";
+import { AdbDevice, adbDeviceKey, adbDeviceLabel, efexDeviceLabel, adbDeviceOnline, adbSerialAmbiguous, resolveAdbDevice, FelDevice, TopBar } from "./components/TopBar";
 import { LogDrawer } from "./components/LogDrawer";
 import { AppSettings, loadSettings, saveSettings, ThemeMode } from "./store/settings";
 import { FlashHub } from "./pages/FlashHub";
@@ -106,12 +106,21 @@ export default function App() {
   const [collapsed, setCollapsed] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
   const [switchingEfex, setSwitchingEfex] = useState(false);
+  const [efexSwitchNotice, setEfexSwitchNotice] = useState<{ text: string; failed?: boolean } | null>(null);
   const [aiSyncStatus, setAiSyncStatus] = useState<string | null>(null);
   const [felDevices, setFelDevices] = useState<FelDevice[]>([]);
   const [adbDevices, setAdbDevices] = useState<AdbDevice[]>([]);
   const [preferredAdbTarget, setPreferredAdbTarget] = useState(
     () => localStorage.getItem(STORAGE_ADB_SERIAL_KEY) || ""
   );
+  const adbNames = useMemo(() => {
+    const names = new Map<string, string>();
+    for (const workspace of workspaces) {
+      const device = resolveAdbDevice(workspace.adb_serial, adbDevices);
+      if (device && workspace.name) names.set(adbDeviceKey(device), workspace.name);
+    }
+    return names;
+  }, [workspaces, adbDevices]);
   const selectedAdbDevice = resolveAdbDevice(preferredAdbTarget, adbDevices);
   const selectedAdbTarget = selectedAdbDevice ? adbDeviceKey(selectedAdbDevice) : "";
   const selectedAdbSerial = adbDeviceOnline(selectedAdbDevice) ? selectedAdbTarget : "";
@@ -298,18 +307,33 @@ export default function App() {
   };
 
   const handleSwitchEfex = async () => {
-    if (!selectedAdbSerial || switchingEfex) return;
+    if (!selectedAdbSerial || !selectedAdbDevice || switchingEfex || isFlashing) return;
+    const label = adbDeviceLabel(selectedAdbDevice, adbNames.get(selectedAdbSerial));
+    const usbPath = selectedAdbDevice.usb_path;
     setSwitchingEfex(true);
+    setEfexSwitchNotice({ text: i18n.t("status.waitEfexTarget", { label }) });
     try {
       const res = await invoke<string>("adb_reboot_efex", { serial: selectedAdbSerial });
-      appendLog(res || `已发送重启进入烧录模式指令 -> ${selectedAdbSerial}`);
-      for (let i = 0; i < 8; i++) {
-        await new Promise((r) => setTimeout(r, 750));
-        const { felList } = await refreshAllDevices();
-        if (felList.length > 0) break;
+      appendLog(res);
+      if (!usbPath || !/^usb:\d+-\d+(?:\.\d+)*$/.test(usbPath)) {
+        setEfexSwitchNotice({ text: i18n.t("status.unverifiedEfexTarget", { label }) });
+        await refreshAllDevices();
+        return;
       }
-    } catch (err) {
-      appendLog(`切换烧录模式失败: ${String(err)}`);
+      for (let attempt = 0; attempt < 12; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        const { felList } = await refreshAllDevices();
+        const match = felList.find((device) => device.usb_path === usbPath);
+        if (match && (match.mode.startsWith("FEL (") || match.mode.startsWith("FES ("))) {
+          setEfexSwitchNotice({ text: i18n.t("status.verifiedEfexTarget", { label, device: efexDeviceLabel(match) }) });
+          return;
+        }
+      }
+      setEfexSwitchNotice({ text: i18n.t("status.efexTargetTimeout", { label }), failed: true });
+    } catch (error) {
+      const text = i18n.t("status.efexTargetFailed", { label, error: String(error) });
+      appendLog(text);
+      setEfexSwitchNotice({ text, failed: true });
     } finally {
       setSwitchingEfex(false);
     }
@@ -389,6 +413,7 @@ export default function App() {
         felDevices={felDevices}
         adbDevices={adbDevices}
         selectedAdbTarget={selectedAdbTarget}
+        adbNames={adbNames}
         unavailableAdbTarget={!!preferredAdbTarget && !selectedAdbDevice}
         aiSyncStatus={aiSyncStatus}
         switchingEfex={switchingEfex}
@@ -400,6 +425,15 @@ export default function App() {
         onSwitchEfex={handleSwitchEfex}
         onExitFes={handleExitFes}
       />
+      {efexSwitchNotice && (
+        <div role={efexSwitchNotice.failed ? "alert" : "status"}
+          className={`flex items-center justify-between gap-3 border-b px-4 py-1.5 text-xs ${efexSwitchNotice.failed ? "text-rose-700 dark:text-rose-300" : "text-slate-700 dark:text-slate-200"}`}>
+          <span>{efexSwitchNotice.text}</span>
+          {!switchingEfex && <button type="button" className="ui-btn-secondary py-1" onClick={() => setEfexSwitchNotice(null)}>
+            {i18n.t("common.close")}
+          </button>}
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         <Sidebar
@@ -482,7 +516,8 @@ export default function App() {
               <GpioViewer
                 key={selectedAdbSerial}
                 serial={selectedAdbSerial}
-                felConnected={felDevices.length > 0}
+                adbLabel={selectedAdbDevice ? adbDeviceLabel(selectedAdbDevice, adbNames.get(selectedAdbSerial)) : selectedAdbSerial}
+                felDevices={felDevices}
                 onLog={appendLog}
               />
             </div>

@@ -1,6 +1,11 @@
 {
   "appTitle": "OpenixSuit-CE",
   "status": {
+    "waitEfexTarget": "正在切换 {{label}}，等待该 USB 端口进入烧录模式…",
+    "unverifiedEfexTarget": "已向 {{label}} 发送切换指令。请在固件工具确认目标设备。",
+    "verifiedEfexTarget": "{{label}} 已进入烧录模式 · {{device}}",
+    "efexTargetTimeout": "等待 {{label}} 进入烧录模式超时。请检查板卡状态和 USB 连接。",
+    "efexTargetFailed": "切换 {{label}} 失败：{{error}}",
     "connected": "FEL/FES 已连接",
     "adbOnline": "ADB 在线",
     "disconnected": "未连接设备",
@@ -250,6 +255,8 @@
     "loading": "加载中..."
   },
   "partitionRead": {
+    "readTableHint": "请先读取目标设备的分区表。",
+    "openFolder": "打开导出文件夹",
     "title": "读取分区",
     "device": "读取目标",
     "pickDevice": "选择 FEL/FES 设备",
@@ -269,6 +276,10 @@
     "savedFiles": "已导出 {{count}} 个镜像"
   },
   "flash": {
+    "pickFirmwareHint": "请先选择并解析固件包。",
+    "pickTargetHint": "请选择可唯一识别的目标设备。",
+    "noTargetHint": "请连接处于烧录模式的设备。",
+    "pickPartitionsHint": "请至少勾选一个分区。",
     "firmwareSelection": "固件选择",
     "selectFirmware": "选择固件",
     "filePath": "文件路径",
@@ -364,6 +375,15 @@
     "filePlaceholder": "下载文件名"
   },
   "generic": {
+    "pickBootHint": "请选择用于初始化设备的启动包。",
+    "pickDiskHint": "请选择要写入的裸盘镜像。",
+    "invalidOffset": "请输入 0～4,294,967,296 之间的整扇区偏移。",
+    "confirmDetails": "此操作将擦除目标介质并写入所选镜像。\n\n设备：{{target}}\n介质：{{storage}}\n模式：{{mode}}\n{{offset}}\n\n确认后开始刷写。",
+    "offsetValue": "逻辑地址补偿：{{offset}}（每扇区 512 字节）",
+    "offsetUnused": "从物理扇区 0 开始写入。",
+    "modeLogicHint": "全盘擦除后，按填写的偏移补偿设备的逻辑地址，把镜像写到盘首。",
+    "modeCmdHint": "擦除目标介质，从物理扇区 0 开始写入镜像。",
+    "offsetLabel": "逻辑偏移补偿（512 字节扇区）",
     "bootImage": "引导固件 (Boot Image)",
     "genericImage": "通用裸镜像 (Generic Image)",
     "modeAndOffset": "刷写模式与逻辑偏移",
@@ -402,6 +422,15 @@
     "ufsDesc": "转换为 UFS 烧录器原始镜像"
   },
   "efel": {
+    "addressHex": "地址（十六进制）",
+    "lengthBytes": "读取长度（字节）",
+    "invalidAddress": "请输入 1～8 位十六进制地址，可带 0x 前缀。",
+    "invalidLength": "读取长度应为 1～1,048,576 字节。",
+    "invalidRange": "读取范围超过 32 位地址上限。",
+    "targetAddress": "实际地址 {{address}}",
+    "readSuccess": "从 {{address}} 读取了 {{bytes}} 字节。",
+    "writeSuccess": "向 {{address}} 写入了 {{bytes}} 字节。",
+    "jumpSuccess": "已向 {{address}} 发出跳转指令。",
     "deviceSel": "设备扫描",
     "scan": "扫描设备",
     "memRead": "读取内存",
@@ -489,6 +518,33 @@
     "invalidName": "无效的文件名"
   },
   "gpio": {
+    "device": "设备",
+    "target": "设备 {{device}}",
+    "noDevice": "未连接",
+    "lastRead": "最近读取 {{time}}",
+    "readOnly": "FEL 只读",
+    "selectFel": "选择 FEL 设备",
+    "noFel": "请连接处于 FEL 模式的设备。",
+    "chip": "芯片 {{chip}}",
+    "pioBase": "PIO 基地址",
+    "invalidBase": "请输入有效的 32 位十六进制 PIO 基地址。",
+    "pinCount_one": "{{count}} 个引脚",
+    "pinCount_other": "{{count}} 个引脚",
+    "savePin": "写入引脚配置",
+    "cancelEdit": "取消编辑",
+    "editPin": "编辑 {{pin}}",
+    "writeReadback": "已写入 {{pin}}。内核报告：功能 {{function}}、上下拉 {{pull}}、驱动 {{drive}}。",
+    "writeNoReadback": "{{pin}} 已写入，未读取到结果。",
+    "writeFailed": "写入 {{pin}} 失败：{{error}}",
+    "columns": {
+      "pin": "引脚",
+      "pinId": "编号",
+      "function": "功能",
+      "mux": "复用",
+      "pull": "上下拉",
+      "drive": "驱动",
+      "level": "电平"
+    },
     "adbMode": "ADB 运行时模式",
     "felMode": "FEL 物理寄存器模式",
     "noAdb": "无 ADB 设备",

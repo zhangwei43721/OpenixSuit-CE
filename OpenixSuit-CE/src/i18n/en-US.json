@@ -1,6 +1,11 @@
 {
   "appTitle": "OpenixSuit-CE",
   "status": {
+    "waitEfexTarget": "Switching {{label}}. Waiting for the same USB port to enter flash mode…",
+    "unverifiedEfexTarget": "Switch requested for {{label}}. Confirm the target in Firmware Tools.",
+    "verifiedEfexTarget": "{{label}} entered flash mode · {{device}}",
+    "efexTargetTimeout": "Timed out waiting for {{label}} to enter flash mode. Check the board and USB connection.",
+    "efexTargetFailed": "Could not switch {{label}}: {{error}}",
     "connected": "FEL/FES Connected",
     "adbOnline": "ADB Online (Not in FEL)",
     "disconnected": "No FEL/ADB Device",
@@ -251,6 +256,8 @@
     "loading": "Loading..."
   },
   "partitionRead": {
+    "readTableHint": "Read the target device’s partition table first.",
+    "openFolder": "Open export folder",
     "title": "Read Partitions",
     "device": "Target device",
     "pickDevice": "Select a FEL/FES device",
@@ -270,6 +277,10 @@
     "savedFiles": "Exported images ({{count}})"
   },
   "flash": {
+    "pickFirmwareHint": "Select a firmware package first.",
+    "pickTargetHint": "Choose an unambiguous target device.",
+    "noTargetHint": "Connect a device in flash mode.",
+    "pickPartitionsHint": "Select at least one partition.",
     "firmwareSelection": "Firmware Selection",
     "selectFirmware": "Select Firmware",
     "filePath": "File Path",
@@ -365,6 +376,15 @@
     "filePlaceholder": "Download filename"
   },
   "generic": {
+    "pickBootHint": "Select a boot package to initialize the device.",
+    "pickDiskHint": "Select a raw disk image.",
+    "invalidOffset": "Enter a whole sector offset from 0 to 4,294,967,296.",
+    "confirmDetails": "This erases the target medium and writes the selected image.\n\nDevice: {{target}}\nMedium: {{storage}}\nMode: {{mode}}\n{{offset}}\n\nConfirm to start flashing.",
+    "offsetValue": "Logical address compensation: {{offset}} (512 bytes per sector)",
+    "offsetUnused": "Writing starts at physical sector 0.",
+    "modeLogicHint": "Erase the medium and write the image at the start of the disk using the specified logical address compensation.",
+    "modeCmdHint": "Erase the target medium and write the image starting at physical sector 0.",
+    "offsetLabel": "Logical offset compensation (512-byte sectors)",
     "bootImage": "Boot Image",
     "genericImage": "Generic Image",
     "modeAndOffset": "Flash Mode & Logic Offset",
@@ -403,6 +423,15 @@
     "ufsDesc": "Convert firmware to UFS programmer format"
   },
   "efel": {
+    "addressHex": "Address (hex)",
+    "lengthBytes": "Read length (bytes)",
+    "invalidAddress": "Enter a 1–8 digit hexadecimal address with an optional 0x prefix.",
+    "invalidLength": "Enter a whole number from 1 to 1,048,576 bytes.",
+    "invalidRange": "The read would extend past the 32-bit address limit.",
+    "targetAddress": "Effective address {{address}}",
+    "readSuccess": "Read {{bytes}} bytes from {{address}}.",
+    "writeSuccess": "Wrote {{bytes}} bytes to {{address}}.",
+    "jumpSuccess": "Sent a jump command to {{address}}.",
     "deviceSel": "Device Selection",
     "scan": "Scan Devices",
     "memRead": "Memory Read",
@@ -490,6 +519,33 @@
     "invalidName": "Invalid file name"
   },
   "gpio": {
+    "device": "Device",
+    "target": "Device {{device}}",
+    "noDevice": "Disconnected",
+    "lastRead": "Last read {{time}}",
+    "readOnly": "FEL is read-only",
+    "selectFel": "Select a FEL device",
+    "noFel": "Connect a device in FEL mode.",
+    "chip": "Chip {{chip}}",
+    "pioBase": "PIO base address",
+    "invalidBase": "Enter a valid 32-bit hexadecimal PIO base address.",
+    "pinCount_one": "{{count}} pin",
+    "pinCount_other": "{{count}} pins",
+    "savePin": "Write pin settings",
+    "cancelEdit": "Cancel editing",
+    "editPin": "Edit {{pin}}",
+    "writeReadback": "Wrote {{pin}}. Kernel reports: function {{function}}, pull {{pull}}, drive {{drive}}.",
+    "writeNoReadback": "Wrote {{pin}}. Readback unavailable.",
+    "writeFailed": "Could not write {{pin}}: {{error}}",
+    "columns": {
+      "pin": "Pin",
+      "pinId": "ID",
+      "function": "Function",
+      "mux": "Mux",
+      "pull": "Pull",
+      "drive": "Drive",
+      "level": "Level"
+    },
     "adbMode": "ADB Runtime Mode",
     "felMode": "FEL Register Mode",
     "noAdb": "No ADB device",

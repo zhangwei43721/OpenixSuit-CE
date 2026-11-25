@@ -1,5 +1,5 @@
 use crate::adb::adb_exec_shell;
-use crate::efex::{efel_read_sync, efel_write_sync};
+use crate::efex::{efel_read_sync, efel_read_target, efel_write_sync};
 use crate::state::AppState;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -161,10 +161,11 @@ pub fn read_pio_port(
     base_addr: u32,
     port_index: u8,
     port_name: String,
+    device_id: Option<String>,
 ) -> Result<Vec<PioPinState>, String> {
     let _busy = state.try_acquire_busy("read_pio_port")?;
     let port_addr = base_addr.saturating_add((port_index as u32) * 0x24);
-    let regs = efel_read_sync(port_addr, 36)?;
+    let regs = efel_read_target(port_addr, 36, device_id.as_deref())?;
     if regs.len() < 36 {
         return Err("PIO 寄存器读取长度不足 36 字节".into());
     }
@@ -296,13 +297,16 @@ pub fn adb_set_gpio(
         "if [ -w /sys/kernel/debug/sunxi_pinctrl/sunxi_pin_configure ]; then \
          echo '{0} {1}' > /sys/kernel/debug/sunxi_pinctrl/function && \
          echo '{0} {2}' > /sys/kernel/debug/sunxi_pinctrl/pull && \
-         echo '{0} {3}' > /sys/kernel/debug/sunxi_pinctrl/dlevel; \
+         echo '{0} {3}' > /sys/kernel/debug/sunxi_pinctrl/dlevel && echo 'GPIO_WRITE_OK'; \
          else echo 'UNSUPPORTED'; fi",
         pin_name, mux, pull_val, drv_val
     );
     let res = adb_exec_shell(serial, cmd)?;
     if res.trim() == "UNSUPPORTED" {
         return Err("当前内核未暴露 /sys/kernel/debug/sunxi_pinctrl 写接口，仅支持只读查看".into());
+    }
+    if !res.lines().any(|line| line.trim() == "GPIO_WRITE_OK") {
+        return Err(format!("GPIO 写入未完成：{}", res.trim()));
     }
     Ok(res)
 }

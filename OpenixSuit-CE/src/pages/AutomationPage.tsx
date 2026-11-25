@@ -48,7 +48,8 @@ function createEmptyRule(idx: number): TriggerRule {
   return {
     id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     name: `Rule ${idx + 1}`,
-    enabled: true,
+    enabled: false,
+    draft: true,
     target_session_id: "",
     condition: {
       kind: "contains",
@@ -116,6 +117,18 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
   const [incidents, setIncidents] = useState<IncidentReport[]>([]);
   const [expandedIncidentId, setExpandedIncidentId] = useState<string | null>(null);
   const [testSampleText, setTestSampleText] = useState("Kernel panic - not syncing: VFS");
+  const [testTargetSessionId, setTestTargetSessionId] = useState("");
+  const [testPreview, setTestPreview] = useState<{
+    matched: boolean;
+    connected: boolean;
+    condition_result: string;
+    session_id: string;
+    port_name: string;
+    matched_text: string;
+  } | null>(null);
+  const [executionArmed, setExecutionArmed] = useState(false);
+  const [showExecutionConfirmation, setShowExecutionConfirmation] = useState(false);
+  const [confirmedActionIndexes, setConfirmedActionIndexes] = useState<number[]>([]);
   const [savingRules, setSavingRules] = useState(false);
   const [testingRule, setTestingRule] = useState(false);
   const removedRuleIds = useRef(new Set<string>());
@@ -157,6 +170,11 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
     );
     setSelectedProfileId((prev) =>
       prev && safeProfiles.some((p) => p.id === prev) ? prev : safeProfiles[0]?.id || ""
+    );
+    setTestTargetSessionId((prev) =>
+      prev && sessRes.some((session) => session.id === prev && session.connected)
+        ? prev
+        : sessRes.find((session) => session.connected)?.id || ""
     );
   }, []);
 
@@ -217,6 +235,9 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
 
   const updateSelectedRule = (patch: Partial<TriggerRule>) => {
     if (!selectedRule) return;
+    setTestPreview(null);
+    setExecutionArmed(false);
+    setShowExecutionConfirmation(false);
     setRules((prev) => prev.map((r) => (r.id === selectedRule.id ? { ...r, ...patch } : r)));
   };
 
@@ -271,35 +292,65 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
   };
 
   const handleTestRule = async () => {
-    if (!selectedRule || selectedRule.draft) return;
+    if (!selectedRule || testingRule) return;
     setTestingRule(true);
     setStatusBanner(null);
     try {
-      await saveRules();
-      const result = await invoke<unknown>("trigger_test_rule", {
-        ruleId: selectedRule.id,
+      const result = await invoke<{
+        matched: boolean;
+        connected: boolean;
+        condition_result: string;
+        session_id: string;
+        port_name: string;
+        matched_text: string;
+      }>("trigger_preview_rule", {
+        rule: selectedRule,
         sampleLine: testSampleText,
+        sessionId: testTargetSessionId,
       });
+      setTestPreview(result);
+      setExecutionArmed(false);
+      setShowExecutionConfirmation(false);
+      setConfirmedActionIndexes([]);
       setStatusBanner({
-        type: "ok",
-        text:
-          typeof result === "string" && result
-            ? result
-            : isEn
-            ? `Test executed for "${selectedRule.name}"`
-            : `已触发规则「${selectedRule.name}」模拟测试`,
+        type: result.matched ? "ok" : "err",
+        text: result.matched
+          ? (isEn ? "Condition matched." : "条件匹配。")
+          : (isEn ? result.condition_result : "样本未满足当前条件。"),
       });
-      const updatedIncidents = await invoke<IncidentReport[]>("trigger_list_incidents").catch(
-        () => []
-      );
-      if (Array.isArray(updatedIncidents)) {
-        setIncidents(updatedIncidents);
-      }
-      onLog(`Tested rule ${selectedRule.name}`);
+      onLog(isEn ? `Previewed rule ${selectedRule.name}: ${result.matched ? "matched" : "not matched"}` : `已预览规则 ${selectedRule.name}：${result.matched ? "条件匹配" : "条件不匹配"}`);
     } catch (err) {
       const msg = String(err);
       setStatusBanner({ type: "err", text: msg });
-      onLog(`trigger_test_rule error: ${msg}`);
+      onLog(`trigger_preview_rule error: ${msg}`);
+    } finally {
+      setTestingRule(false);
+    }
+  };
+
+  const handleExecutePreview = async () => {
+    if (!selectedRule || !testPreview?.matched || !testPreview.connected || !executionArmed || confirmedActionIndexes.length === 0) return;
+    setTestingRule(true);
+    setStatusBanner(null);
+    try {
+      const report = await invoke<IncidentReport>("trigger_execute_test_rule", {
+        rule: selectedRule,
+        sampleLine: testSampleText,
+        sessionId: testPreview.session_id,
+        confirmedSessionId: testPreview.session_id,
+        confirmedPortName: testPreview.port_name,
+        actionIndexes: confirmedActionIndexes,
+      });
+      setIncidents((previous) => [report, ...previous.filter((item) => item.id !== report.id)].slice(0, 200));
+      setTestPreview(null);
+      setExecutionArmed(false);
+      setShowExecutionConfirmation(false);
+      setStatusBanner({ type: "ok", text: isEn ? "Confirmed actions executed" : "已按确认执行所选动作" });
+      onLog(isEn ? `Executed confirmed actions for ${selectedRule.name}` : `已执行 ${selectedRule.name} 的确认动作`);
+    } catch (err) {
+      const msg = String(err);
+      setStatusBanner({ type: "err", text: msg });
+      onLog(`trigger_execute_test_rule error: ${msg}`);
     } finally {
       setTestingRule(false);
     }
@@ -431,7 +482,9 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
       case "adb_reboot":
         return {
           title: isEn ? "ADB Reboot Device" : "ADB 重启设备",
-          detail: isEn ? "Execute adb reboot" : "执行 adb reboot 重启板卡",
+          detail: action.serial_data.trim()
+            ? (isEn ? `Device ${action.serial_data.trim()} · adb reboot` : `设备 ${action.serial_data.trim()} · adb reboot`)
+            : (isEn ? "Default ADB device · adb reboot" : "默认 ADB 设备 · adb reboot"),
           badge: "border-blue-500/40 bg-blue-500/10 text-blue-600 dark:text-blue-300",
           icon: <RotateCcw className="w-4 h-4 text-blue-500" />,
         };
@@ -520,6 +573,9 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                     const nextRule = createEmptyRule(rules.length);
                     setRules((prev) => [...prev, nextRule]);
                     setSelectedRuleId(nextRule.id);
+                    setTestPreview(null);
+                    setExecutionArmed(false);
+                    setShowExecutionConfirmation(false);
                   }}
                   className="ui-btn-primary px-2.5 py-1"
                 >
@@ -538,7 +594,13 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                     return (
                       <div
                         key={r.id}
-                        onClick={() => setSelectedRuleId(r.id)}
+                        onClick={() => {
+                          setSelectedRuleId(r.id);
+                          if (r.target_session_id) setTestTargetSessionId(r.target_session_id);
+                          setTestPreview(null);
+                          setExecutionArmed(false);
+                          setShowExecutionConfirmation(false);
+                        }}
                         className={`flex cursor-pointer items-start justify-between gap-2 px-3.5 py-2.5 transition ${
                           active
                             ? "border-l-2 border-l-blue-500 bg-blue-500/10"
@@ -618,7 +680,7 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
 
                   <div className="flex flex-1 flex-col gap-4 p-4">
                     {selectedRule.draft && (
-                      <p className="text-xs text-slate-600 dark:text-slate-300">{t("automationDraft.ruleReview")}</p>
+                      <p className="text-xs text-slate-600 dark:text-slate-300">{isEn ? "Unsaved draft: kept in this page until you save all rules." : "未保存草稿：仅保留在当前页面，点击“保存全部规则”后才会启用持久化。"}</p>
                     )}
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                       <div className="flex flex-col gap-1.5">
@@ -908,24 +970,118 @@ export function AutomationPage({ onLog }: AutomationPageProps) {
                     </div>
 
                     {/* Test Rule Box */}
-                    <div className="flex items-center gap-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+                    <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-3 dark:border-slate-800">
+                      <select
+                        value={testTargetSessionId}
+                        onChange={(e) => {
+                          setTestTargetSessionId(e.target.value);
+                          setTestPreview(null);
+                          setExecutionArmed(false);
+                          setShowExecutionConfirmation(false);
+                        }}
+                        className="ui-select max-w-48"
+                        aria-label={isEn ? "Preview serial target" : "预览串口目标"}
+                      >
+                        <option value="">{isEn ? "Use the rule’s target" : "使用规则目标"}</option>
+                        {sessions.filter((session) => session.connected).map((session) => (
+                          <option key={session.id} value={session.id}>{session.port_name}</option>
+                        ))}
+                      </select>
                       <input
                         type="text"
                         value={testSampleText}
-                        onChange={(e) => setTestSampleText(e.target.value)}
+                        onChange={(e) => {
+                          setTestSampleText(e.target.value);
+                          setTestPreview(null);
+                          setExecutionArmed(false);
+                          setShowExecutionConfirmation(false);
+                        }}
                         placeholder={isEn ? "Sample log line for test..." : "模拟测试日志文本..."}
                         className="ui-input flex-1 font-mono"
                       />
                       <button
                         type="button"
                         onClick={handleTestRule}
-                        disabled={testingRule || selectedRule.draft}
+                        disabled={testingRule || (!testTargetSessionId && !selectedRule.target_session_id && selectedRule.condition.kind === "timeout")}
                         className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition hover:bg-amber-600 disabled:pointer-events-none disabled:opacity-45"
                       >
                         <Play className="h-3.5 w-3.5" />
-                        {testingRule ? (isEn ? "Testing..." : "测试中...") : isEn ? "Test Rule" : "测试规则"}
+                        {testingRule ? (isEn ? "Checking..." : "检查中...") : isEn ? "Preview" : "预览条件"}
                       </button>
                     </div>
+                    {testPreview && (
+                      <div className="ui-subcard space-y-2 p-3" aria-live="polite">
+                        <div className={`text-xs font-semibold ${testPreview.matched ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                          {testPreview.matched ? (isEn ? "Condition matched" : "条件匹配") : (isEn ? "Condition not matched" : "条件不匹配")}
+                        </div>
+                        {!testPreview.connected && (
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300">
+                            {isEn ? "Connect the serial target to run actions." : "连接目标串口后可执行动作。"}
+                          </p>
+                        )}
+                        <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                          {isEn ? "Target:" : "目标："} {testPreview.port_name || testPreview.session_id || (isEn ? "None" : "无")}
+                        </div>
+                        {testPreview.matched && (
+                          <>
+                            <div className="space-y-1 border-t border-slate-200 pt-2 dark:border-slate-700">
+                              <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">{isEn ? "Actions that can run" : "可执行动作"}</div>
+                              {selectedRule.actions.map((action, index) => {
+                                const meta = actionMeta(action);
+                                const checked = confirmedActionIndexes.includes(index);
+                                return (
+                                  <label key={`${index}-${action.kind}`} className="flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 text-[11px] hover:bg-slate-100 dark:hover:bg-slate-800">
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      disabled={!testPreview.connected}
+                                      onChange={(event) => {
+                                        setConfirmedActionIndexes((previous) => event.target.checked ? [...previous, index] : previous.filter((item) => item !== index));
+                                        setExecutionArmed(false);
+                                      }}
+                                      className="mt-0.5 accent-blue-600"
+                                    />
+                                    <span>{meta.title}: <span className="break-all font-mono">{meta.detail}</span></span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            {!showExecutionConfirmation ? (
+                              <button
+                                type="button"
+                                onClick={() => setShowExecutionConfirmation(true)}
+                                disabled={confirmedActionIndexes.length === 0}
+                                className="ui-btn-secondary w-full"
+                              >
+                                {isEn ? "Review selected actions" : "进入执行确认"}
+                              </button>
+                            ) : (
+                              <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5">
+                                <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+                                  {isEn ? `Execution confirmation · ${testPreview.port_name}` : `执行确认 · ${testPreview.port_name}`}
+                                </div>
+                                <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                                  {confirmedActionIndexes.map((index) => `${index + 1}. ${actionMeta(selectedRule.actions[index]).title}`).join(" · ")}
+                                </div>
+                                <label className="flex items-start gap-2 text-[11px] text-slate-700 dark:text-slate-200">
+                                  <input type="checkbox" checked={executionArmed} onChange={(event) => setExecutionArmed(event.target.checked)} className="mt-0.5 accent-amber-600" />
+                                  {isEn ? "I confirm this target and these actions may affect a real device or external service." : "我确认允许对该目标执行以上动作；这些动作可能影响真实设备或外部服务。"}
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={handleExecutePreview}
+                                  disabled={testingRule || !executionArmed || confirmedActionIndexes.length === 0}
+                                  className="ui-btn-danger w-full"
+                                >
+                                  <Play className="h-3.5 w-3.5" />
+                                  {testingRule ? (isEn ? "Executing..." : "执行中...") : (isEn ? "Confirm and execute" : "确认并执行所选动作")}
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </>
               ) : (

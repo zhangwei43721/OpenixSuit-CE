@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { FlashPlanDialog, type FlashPlan } from "./FlashPlanDialog";
-import type { FelDevice } from "../components/TopBar";
+import { efexDeviceLabel, type FelDevice } from "../components/TopBar";
 import { useTranslation } from "react-i18next";
 import { SharedImageInspectResult } from "./FlashHub";
 import { SectorFlash } from "./SectorFlash";
@@ -112,14 +112,19 @@ function StandardFlash({
   });
   const partitionOnly = mode === "partition";
   const [felTarget, setFelTarget] = useState("");
-  const deviceId = felDevices.length === 1 ? felDevices[0].id : felTarget;
+  const deviceId = felTarget || (felDevices.length === 1 ? felDevices[0].id : "");
   const devicePair = /^bus:(\d+)-port:(\d+)$/.exec(deviceId);
-  const targetSelected = felDevices.length <= 1 || felDevices.some((device) => device.id === deviceId);
+  const targetDevice = felDevices.find((device) => device.id === deviceId);
+  const targetSelected = Boolean(devicePair && felDevices.filter((device) => device.id === deviceId).length === 1);
   const [verify, setVerify] = useState(true);
   const [postAction, setPostAction] = useState<"reboot" | "poweroff">("reboot");
   const bootSettings = useBootCheckSettings();
   const bootSettingsPending = postAction === "reboot" && bootSettings.dirty;
-  const canStart = !isFlashing && !bootSettingsPending && firmwarePath && mode && targetSelected && (!partitionOnly || selected.length > 0);
+  const startBlock = !firmwarePath ? "flash.pickFirmwareHint"
+    : !mode ? "flash.selectMode"
+    : !targetSelected ? (felDevices.length > 0 ? "flash.pickTargetHint" : "flash.noTargetHint")
+    : partitionOnly && selected.length === 0 ? "flash.pickPartitionsHint" : null;
+  const canStart = !isFlashing && !bootSettingsPending && !startBlock;
   const [result, setResult] = useState<FlashResult | null>(null);
   const [writing, setWriting] = useState(false);
   const [verifyingBoot, setVerifyingBoot] = useState(false);
@@ -192,7 +197,7 @@ function StandardFlash({
   }, [flashLogs]);
 
   const startFlash = async () => {
-    if (!canStart) return;
+    if (!canStart || !mode) return;
     onFlashingChange(true);
     setErrorMsg(null);
     setResult(null);
@@ -208,7 +213,7 @@ function StandardFlash({
     };
     try {
       const plan = await invoke<FlashPlan>("flash_firmware_plan", { options });
-      setPending({ plan, options, deviceId });
+      setPending({ plan, options, deviceId: targetDevice ? efexDeviceLabel(targetDevice) : deviceId });
     } catch (err) {
       setErrorMsg(String(err));
       onFlashingChange(false);
@@ -332,12 +337,12 @@ function StandardFlash({
                 <option value="poweroff">{t("flash.poweroff")}</option>
               </select>
             </div>
-            {felDevices.length > 1 && (
+            {(felDevices.length > 0 || felTarget) && (
               <label className="space-y-1">
                 <span>{t("flash.felTarget")}</span>
-                <select className="ui-select w-full" value={felTarget} disabled={isFlashing} onChange={(e) => setFelTarget(e.target.value)}>
+                <select className="ui-select w-full" value={deviceId} disabled={isFlashing} onChange={(e) => setFelTarget(e.target.value)}>
                   <option value="">{t("flash.selectDevice")}</option>
-                  {felDevices.map((device) => <option key={device.id} value={device.id}>{device.id} · {device.chip}</option>)}
+                  {felDevices.map((device) => <option key={device.id} value={device.id}>{efexDeviceLabel(device)}</option>)}
                 </select>
               </label>
             )}
@@ -391,6 +396,7 @@ function StandardFlash({
                 </button>
               )}
             </div>
+            {!isFlashing && startBlock && <p className="text-xs text-slate-600 dark:text-slate-300">{t(startBlock)}</p>}
             {bootSettingsPending && (
               <p className="text-xs text-amber-700 dark:text-amber-400" role="status">{t("flash.bootSetup.pending")}</p>
             )}

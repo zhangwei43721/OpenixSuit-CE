@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
-import type { FelDevice } from "../components/TopBar";
+import { efexDeviceLabel, type FelDevice } from "../components/TopBar";
 
 interface PartitionTable {
   device_id: string;
@@ -51,11 +51,16 @@ export function PartitionReadPage({ devices, deviceBusy, onBusyChange }: {
   const [cancelPending, setCancelPending] = useState(false);
   const [progress, setProgress] = useState<ReadProgress | null>(null);
   const [files, setFiles] = useState<FileResult[]>([]);
+  const [outputDirectory, setOutputDirectory] = useState("");
   const [error, setError] = useState("");
   const deviceId = selectedDevice || (devices.length === 1 ? devices[0].id : "");
   const device = devices.find((item) => item.id === deviceId);
   const needsLoader = Boolean(device?.mode.startsWith("FEL"));
   const current = table?.device_id === deviceId ? table : null;
+  const listBlock = !device ? (devices.length ? "partitionRead.pickDevice" : "flash.noTargetHint")
+    : needsLoader && !bootFirmware ? "partitionRead.loaderHint" : null;
+  const exportBlock = listBlock || (!current ? "partitionRead.readTableHint"
+    : !selected.length ? "flash.pickPartitionsHint" : null);
 
   useEffect(() => {
     if (operation !== "export") return;
@@ -70,6 +75,7 @@ export function PartitionReadPage({ devices, deviceBusy, onBusyChange }: {
     setSelected([]);
     setProgress(null);
     setFiles([]);
+    setOutputDirectory("");
     setError("");
   }
 
@@ -86,8 +92,8 @@ export function PartitionReadPage({ devices, deviceBusy, onBusyChange }: {
   }
 
   async function run(action: "list" | "export") {
-    if (deviceBusy || !device || (needsLoader && !bootFirmware)) return;
-    if (action === "export" && (!current || !selected.length)) return;
+    if (deviceBusy || listBlock) return;
+    if (action === "export" && exportBlock) return;
     // 锁定实际选中的设备，让它在 FEL 到 FES 的重连过程中保持选中。
     setSelectedDevice(deviceId);
     setOperation(action);
@@ -96,6 +102,7 @@ export function PartitionReadPage({ devices, deviceBusy, onBusyChange }: {
     setError("");
     setProgress(null);
     setFiles([]);
+    setOutputDirectory("");
     const target = { device_id: deviceId, boot_firmware: bootFirmware || null };
     try {
       if (action === "list") {
@@ -108,6 +115,7 @@ export function PartitionReadPage({ devices, deviceBusy, onBusyChange }: {
           request: { ...target, table_id: current.table_id, partition_ids: selected, out_dir: outDir },
         });
         setFiles(result.files);
+        if (result.files.length) setOutputDirectory(outDir);
         setError(result.error ?? "");
       }
     } catch (reason) {
@@ -143,11 +151,11 @@ export function PartitionReadPage({ devices, deviceBusy, onBusyChange }: {
               <option value="">{t("partitionRead.pickDevice")}</option>
               {deviceId && !device && <option value={deviceId} disabled>{deviceId} · {t("partitionRead.disconnected")}</option>}
               {devices.map((item) => (
-                <option key={item.id} value={item.id}>{item.id} · {item.chip} · {item.mode}</option>
+                <option key={item.id} value={item.id}>{efexDeviceLabel(item)}</option>
               ))}
             </select>
           </label>
-          <button type="button" className="ui-btn-secondary" disabled={deviceBusy || !device || (needsLoader && !bootFirmware)} onClick={() => void run("list")}>
+          <button type="button" className="ui-btn-secondary" disabled={deviceBusy || Boolean(listBlock)} onClick={() => void run("list")}>
             {t("partitionRead.readTable")}
           </button>
         </div>
@@ -163,11 +171,15 @@ export function PartitionReadPage({ devices, deviceBusy, onBusyChange }: {
         )}
       </section>
 
+      {!operation && exportBlock && !(needsLoader && !bootFirmware) && (
+        <p className="px-1 text-slate-600 dark:text-slate-300">{t(exportBlock)}</p>
+      )}
+
       {current && (
         <section className="ui-card overflow-hidden">
           <div className="ui-card-header">
             <span className="ui-title">{current.format === "gpt" ? "GPT" : t("partitionRead.sunxiMbr")} · {sizeText(current.reported_sectors * 512)}</span>
-            <button type="button" className="ui-btn-primary" disabled={deviceBusy || !device || !selected.length || (needsLoader && !bootFirmware)} onClick={() => void run("export")}>
+            <button type="button" className="ui-btn-primary" disabled={deviceBusy || Boolean(exportBlock)} onClick={() => void run("export")}>
               {t("partitionRead.export", { count: selected.length })}
             </button>
           </div>
@@ -227,7 +239,12 @@ export function PartitionReadPage({ devices, deviceBusy, onBusyChange }: {
       {error && <p className="ui-alert-err break-all" role="alert">{error}</p>}
       {files.length > 0 && (
         <section className="ui-card space-y-2 p-3" aria-live="polite">
-          <h3 className="ui-title">{t("partitionRead.savedFiles", { count: files.length })}</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="ui-title">{t("partitionRead.savedFiles", { count: files.length })}</h3>
+            {outputDirectory && <button type="button" className="ui-btn-secondary" onClick={() => {
+              void invoke("open_partition_output_folder", { directory: outputDirectory }).catch((failure) => setError(String(failure)));
+            }}>{t("partitionRead.openFolder")}</button>}
+          </div>
           {files.map((file) => (
             <div key={file.partition_id} className="space-y-0.5 break-all">
               <p>{file.path} · {file.bytes.toLocaleString()} B</p>

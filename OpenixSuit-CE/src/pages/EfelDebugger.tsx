@@ -18,6 +18,15 @@ interface DeviceInfo {
   mode: string;
 }
 
+function parseAddress(input: string): number | null {
+  const raw = input.trim();
+  return /^(?:0x)?[0-9a-f]{1,8}$/i.test(raw) ? Number.parseInt(raw, 16) : null;
+}
+
+function addressText(value: number) {
+  return `0x${value.toString(16).padStart(8, "0")}`;
+}
+
 export function EfelDebugger({
   theme,
   onLog,
@@ -30,14 +39,23 @@ export function EfelDebugger({
   const [address, setAddress] = useState(() => localStorage.getItem("efel_address") || "0x001003c8");
   const [length, setLength] = useState(() => Number(localStorage.getItem("efel_length")) || 256);
   const [arch, setArch] = useState(() => localStorage.getItem("efel_arch") || "riscv32");
-  const [writeAddr, setWriteAddr] = useState("0x00000000");
+  const [writeAddr, setWriteAddr] = useState("");
   const [writeFilePath, setWriteFilePath] = useState("");
   const [initFilePath, setInitFilePath] = useState("");
-  const [jumpAddr, setJumpAddr] = useState("0x00000000");
+  const [jumpAddr, setJumpAddr] = useState("");
   const [rawBytes, setRawBytes] = useState<number[]>([]);
   const [viewText, setViewText] = useState("; Hex + ASCII + Disassembly");
   const [opLogs, setOpLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [result, setResult] = useState<{ text: string; failed?: boolean } | null>(null);
+  const readAddress = parseAddress(address);
+  const writeAddress = parseAddress(writeAddr);
+  const jumpAddress = parseAddress(jumpAddr);
+  const invalidLength = !Number.isInteger(length) || length < 1 || length > 1024 * 1024;
+  const invalidReadRange = readAddress !== null && readAddress + length > 0x100000000;
+  const busy = loading || actionBusy;
+
 
   const pushLog = (msg: string) => {
     setOpLogs((p) => [...p.slice(-99), `[${new Date().toLocaleTimeString()}] ${msg}`]);
@@ -60,12 +78,14 @@ export function EfelDebugger({
   };
 
   const readAndDisasm = async () => {
+    if (busy || readAddress === null || invalidLength || invalidReadRange) return;
     setLoading(true);
+    setResult(null);
     localStorage.setItem("efel_address", address);
     localStorage.setItem("efel_length", String(length));
     localStorage.setItem("efel_arch", arch);
     try {
-      const addrNum = parseInt(address, 16) || 0;
+      const addrNum = readAddress;
       const bytes = await invoke<number[]>("fel_read_mem", { address: addrNum, length });
       setRawBytes(bytes);
       const insns = await invoke<DisasmInsn[]>("disassemble_bytes", {
@@ -84,8 +104,11 @@ export function EfelDebugger({
         lines.push(`${curAddr}  ${hex}  ${ascii.padEnd(5)}  ${asm}`);
       }
       setViewText(lines.join("\n"));
-      pushLog(`Read success: ${bytes.length} bytes at ${address} (${arch})`);
+      const text = t("efel.readSuccess", { address: addressText(addrNum), bytes: bytes.length });
+      setResult({ text });
+      pushLog(text);
     } catch (err) {
+      setResult({ text: String(err), failed: true });
       pushLog(String(err));
     } finally {
       setLoading(false);
@@ -105,38 +128,44 @@ export function EfelDebugger({
     }
   };
 
-  const doWriteFile = async () => {
-    if (!writeFilePath) return;
+  async function runAction(action: () => Promise<string>) {
+    if (busy) return;
+    setActionBusy(true);
+    setResult(null);
     try {
-      const addrNum = parseInt(writeAddr, 16) || 0;
-      const written = await invoke<number>("fel_write_file", {
-        address: addrNum,
-        filePath: writeFilePath,
-      });
-      pushLog(`Write success: ${written} bytes -> ${writeAddr}`);
+      const text = await action();
+      setResult({ text });
+      pushLog(text);
     } catch (err) {
+      setResult({ text: String(err), failed: true });
       pushLog(String(err));
+    } finally {
+      setActionBusy(false);
     }
+  }
+
+  const doWriteFile = () => {
+    if (!writeFilePath || writeAddress === null) return;
+    void runAction(async () => {
+      const bytes = await invoke<number>("fel_write_file", { address: writeAddress, filePath: writeFilePath });
+      return t("efel.writeSuccess", { address: addressText(writeAddress), bytes });
+    });
   };
 
-  const doInitDram = async () => {
+  const doInitDram = () => {
     if (!initFilePath) return;
-    try {
+    void runAction(async () => {
       const lines = await invoke<string[]>("fel_init_dram", { filePath: initFilePath });
-      lines.forEach(pushLog);
-    } catch (err) {
-      pushLog(String(err));
-    }
+      return lines.join("\n");
+    });
   };
 
-  const doJump = async () => {
-    try {
-      const addrNum = parseInt(jumpAddr, 16) || 0;
-      await invoke("fel_exec", { address: addrNum });
-      pushLog(`Executed jump -> ${jumpAddr}`);
-    } catch (err) {
-      pushLog(String(err));
-    }
+  const doJump = () => {
+    if (jumpAddress === null) return;
+    void runAction(async () => {
+      await invoke("fel_exec", { address: jumpAddress });
+      return t("efel.jumpSuccess", { address: addressText(jumpAddress) });
+    });
   };
 
   return (
@@ -201,29 +230,39 @@ export function EfelDebugger({
             <div className="grid grid-cols-2 gap-2.5">
               <label className="flex flex-col gap-1.5">
                 <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                  Address (Hex)
+                  {t("efel.addressHex")}
                 </span>
                 <input
                   value={address}
+                  aria-invalid={readAddress === null}
+                  placeholder="0x001003C8"
                   onChange={(e) => setAddress(e.target.value)}
                   className="ui-input w-full font-mono tabular-nums"
                 />
               </label>
               <label className="flex flex-col gap-1.5">
                 <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                  Length (Bytes)
+                  {t("efel.lengthBytes")}
                 </span>
                 <input
                   type="number"
+                  min={1}
+                  max={1048576}
+                  aria-invalid={invalidLength || invalidReadRange}
                   value={length}
                   onChange={(e) => setLength(Number(e.target.value))}
                   className="ui-input w-full font-mono tabular-nums"
                 />
               </label>
             </div>
+            {(readAddress === null || invalidLength || invalidReadRange) && (
+              <p className="text-rose-600 dark:text-rose-400">
+                {t(readAddress === null ? "efel.invalidAddress" : invalidLength ? "efel.invalidLength" : "efel.invalidRange")}
+              </p>
+            )}
             <div className="flex gap-2">
               <button
-                disabled={loading}
+                disabled={busy || readAddress === null || invalidLength || invalidReadRange}
                 onClick={readAndDisasm}
                 className="ui-btn-primary flex-1"
               >
@@ -247,14 +286,21 @@ export function EfelDebugger({
           <div className="space-y-3 p-4">
             <label className="flex flex-col gap-1.5">
               <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
-                Address (Hex)
+                {t("efel.addressHex")}
               </span>
               <input
                 value={writeAddr}
+                aria-invalid={Boolean(writeAddr) && writeAddress === null}
+                placeholder="0x001003C8"
                 onChange={(e) => setWriteAddr(e.target.value)}
                 className="ui-input w-full font-mono tabular-nums"
               />
             </label>
+            {(writeAddr || writeAddress !== null) && (
+              <p className={writeAddress === null ? "text-rose-600 dark:text-rose-400" : "font-mono text-slate-600 dark:text-slate-300"}>
+                {writeAddress === null ? t("efel.invalidAddress") : t("efel.targetAddress", { address: addressText(writeAddress) })}
+              </p>
+            )}
             <div className="flex gap-2">
               <input
                 readOnly
@@ -277,7 +323,7 @@ export function EfelDebugger({
               </button>
             </div>
             <button
-              disabled={!writeFilePath}
+              disabled={busy || !writeFilePath || writeAddress === null}
               onClick={doWriteFile}
               className="ui-btn-primary w-full"
             >
@@ -313,7 +359,7 @@ export function EfelDebugger({
               </button>
             </div>
             <button
-              disabled={!initFilePath}
+              disabled={busy || !initFilePath}
               onClick={doInitDram}
               className="ui-btn-primary w-full"
             >
@@ -330,18 +376,27 @@ export function EfelDebugger({
             <div className="flex gap-2">
               <input
                 value={jumpAddr}
+                aria-label={t("efel.addressHex")}
+                aria-invalid={Boolean(jumpAddr) && jumpAddress === null}
+                placeholder="0x001003C8"
                 onChange={(e) => setJumpAddr(e.target.value)}
                 className="ui-input flex-1 font-mono tabular-nums"
               />
-              <button onClick={doJump} className="ui-btn-primary shrink-0">
+              <button disabled={busy || jumpAddress === null} onClick={doJump} className="ui-btn-primary shrink-0">
                 {t("efel.jump")}
               </button>
             </div>
+            {(jumpAddr || jumpAddress !== null) && (
+              <p className={jumpAddress === null ? "text-rose-600 dark:text-rose-400" : "font-mono text-slate-600 dark:text-slate-300"}>
+                {jumpAddress === null ? t("efel.invalidAddress") : t("efel.targetAddress", { address: addressText(jumpAddress) })}
+              </p>
+            )}
           </div>
         </div>
       </div>
 
       <div className="col-span-8 flex min-h-0 flex-col gap-4">
+        {result && <div role={result.failed ? "alert" : "status"} className={`${result.failed ? "ui-alert-err" : "ui-alert-ok"} whitespace-pre-wrap break-all`}>{result.text}</div>}
         <div className="ui-toolbar">
           <div className="flex items-center gap-2">
             <span className="ui-title">{t("efel.memView")}</span>
