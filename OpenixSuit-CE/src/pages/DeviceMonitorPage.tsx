@@ -182,19 +182,21 @@ export function DeviceMonitorPage({
   });
   const onLogRef = useRef(onLog);
   onLogRef.current = onLog;
-  const fetchingRef = useRef(false);
+  const fetchingRef = useRef<symbol | null>(null);
   const lastErrRef = useRef<string | null>(null);
   const previousSerialRef = useRef(serial);
 
   const fetchMetrics = useCallback(
     async (forceSlow = false) => {
       if (!serial || fetchingRef.current) return;
-      fetchingRef.current = true;
+      const request = Symbol();
+      fetchingRef.current = request;
       setLoading(true);
       try {
         const now = Date.now();
         const needStatic = !cachedSlowRef.current.kernel;
         const needSlow = forceSlow || now - cachedSlowRef.current.lastSlowAt >= 10000;
+        if (needSlow) cachedSlowRef.current.lastSlowAt = now;
         const data = await invoke<DeviceMetrics>("adb_get_metrics", {
           serial,
           prevSnapshot: prevSnapshotRef.current,
@@ -202,6 +204,7 @@ export function DeviceMonitorPage({
           includeStorage: needSlow,
           includeTop: needSlow,
         });
+        if (fetchingRef.current !== request) return;
         prevSnapshotRef.current = data.snapshot;
         if (needStatic && data.kernel) {
           cachedSlowRef.current.kernel = data.kernel;
@@ -210,7 +213,6 @@ export function DeviceMonitorPage({
           cachedSlowRef.current.storage = data.storage;
           cachedSlowRef.current.battery = data.battery;
           cachedSlowRef.current.top_output = data.top_output;
-          cachedSlowRef.current.lastSlowAt = now;
         }
         const merged: DeviceMetrics = {
           ...data,
@@ -234,6 +236,7 @@ export function DeviceMonitorPage({
         setError(null);
         lastErrRef.current = null;
       } catch (err) {
+        if (fetchingRef.current !== request) return;
         const msg = String(err);
         setError(msg);
         if (lastErrRef.current !== msg) {
@@ -241,8 +244,10 @@ export function DeviceMonitorPage({
           onLogRef.current(`adb_get_metrics error: ${msg}`);
         }
       } finally {
-        fetchingRef.current = false;
-        setLoading(false);
+        if (fetchingRef.current === request) {
+          fetchingRef.current = null;
+          setLoading(false);
+        }
       }
     },
     [serial]
@@ -280,6 +285,7 @@ export function DeviceMonitorPage({
 
   // Reset samples when serial changes
   useEffect(() => {
+    setLoading(false);
     if (serial) {
       if (previousSerialRef.current && previousSerialRef.current !== serial) {
         setSamples([]);
@@ -298,6 +304,9 @@ export function DeviceMonitorPage({
       setError(null);
       fetchMetrics(true);
     }
+    return () => {
+      fetchingRef.current = null;
+    };
   }, [serial, fetchMetrics]);
 
   // Poll at configured interval

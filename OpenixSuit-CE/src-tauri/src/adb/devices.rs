@@ -1,7 +1,11 @@
-use adb_client::{ADBServer, ADBServerDevice, DeviceState};
+use adb_client::{ADBServer, ADBServerDevice, DeviceState, TCPServerTransport};
 use serde::Serialize;
 use std::io::ErrorKind;
+use std::net::SocketAddrV4;
 use std::process::Command;
+use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 
 #[derive(Serialize)]
 pub struct AdbDevice {
@@ -32,6 +36,13 @@ impl AdbDevice {
         ADBServerDevice::new(self.server_selector().to_owned(), None)
     }
 
+    pub(super) fn transport_request(&self) -> String {
+        match self.transport_id {
+            Some(id) => format!("host:transport-id:{id}"),
+            None => format!("host:transport:{}", self.server_selector()),
+        }
+    }
+
     pub(crate) fn command(&self) -> Command {
         let mut adb = adb_command();
         if let Some(id) = self.transport_id {
@@ -56,10 +67,15 @@ pub(crate) fn adb_command() -> Command {
 }
 
 pub(crate) fn parse_devices(output: &str) -> Vec<AdbDevice> {
-    output
-        .lines()
-        .skip_while(|line| !line.starts_with("List of devices attached"))
-        .skip(1)
+    parse_device_lines(
+        output.lines()
+            .skip_while(|line| !line.starts_with("List of devices attached"))
+            .skip(1),
+    )
+}
+
+pub(super) fn parse_device_lines<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<AdbDevice> {
+    lines
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let serial = fields.next()?.to_owned();
@@ -148,9 +164,91 @@ pub(super) fn get_server_device(selector: &str) -> Result<ADBServerDevice, Strin
     Ok(resolve_device(selector)?.server_device())
 }
 
+pub(crate) async fn monitor_shell(serial: &str, script: &str) -> Result<String, String> {
+    let address = TCPServerTransport::default().get_socketaddr();
+    run_with_deadline(address, serial, script, Duration::from_secs(5)).await
+}
+
+async fn run_with_deadline(
+    address: SocketAddrV4,
+    serial: &str,
+    script: &str,
+    deadline: Duration,
+) -> Result<String, String> {
+    // 超时后丢弃本次采集的连接，下一轮重新连接。
+    tokio::time::timeout(deadline, run_shell(address, serial, script))
+        .await
+        .map_err(|_| {
+            format!(
+                "ADB metrics collection timed out ({} s)",
+                deadline.as_secs()
+            )
+        })?
+}
+
+async fn run_shell(address: SocketAddrV4, serial: &str, script: &str) -> Result<String, String> {
+    let mut connection = connect(address).await?;
+    request(&mut connection, "host:devices-l").await?;
+    let listing = read_body(&mut connection).await?;
+    let devices = parse_device_lines(String::from_utf8_lossy(&listing).lines());
+    let device = select_device(devices, serial.trim())?;
+
+    let mut shell = connect(address).await?;
+    request(&mut shell, &device.transport_request()).await?;
+    // 全志的旧版 adbd 同样支持 shell: 服务。
+    request(&mut shell, &format!("shell:{script}")).await?;
+    let mut output = Vec::new();
+    shell
+        .read_to_end(&mut output)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(String::from_utf8_lossy(&output).into_owned())
+}
+
+async fn connect(address: SocketAddrV4) -> Result<TcpStream, String> {
+    TcpStream::connect(address)
+        .await
+        .map_err(|error| format!("ADB server connection failed: {error}"))
+}
+
+async fn request(stream: &mut TcpStream, service: &str) -> Result<(), String> {
+    let length = u16::try_from(service.len()).map_err(|_| "ADB request is too long".to_string())?;
+    stream
+        .write_all(format!("{length:04x}{service}").as_bytes())
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut status = [0; 4];
+    stream
+        .read_exact(&mut status)
+        .await
+        .map_err(|error| error.to_string())?;
+    match &status {
+        b"OKAY" => Ok(()),
+        b"FAIL" => Err(String::from_utf8_lossy(&read_body(stream).await?).into_owned()),
+        _ => Err("Invalid response from ADB server".into()),
+    }
+}
+
+async fn read_body(stream: &mut TcpStream) -> Result<Vec<u8>, String> {
+    let mut length = [0; 4];
+    stream
+        .read_exact(&mut length)
+        .await
+        .map_err(|error| error.to_string())?;
+    let length = std::str::from_utf8(&length).map_err(|error| error.to_string())?;
+    let length = u16::from_str_radix(length, 16).map_err(|error| error.to_string())?;
+    let mut body = vec![0; usize::from(length)];
+    stream
+        .read_exact(&mut body)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
 
     const TWO_DEVICES: &str = "List of devices attached\n\
         20080411 device usb:1-3 product:\u{fffd} model:____ transport_id:383\n\
@@ -183,5 +281,47 @@ mod tests {
             Some(402)
         );
         assert!(select_device(replacement, target).is_err());
+    }
+
+    async fn expect_request(stream: &mut TcpStream, expected: &str) {
+        assert_eq!(read_body(stream).await.unwrap(), expected.as_bytes());
+    }
+
+    async fn accept_sample(listener: &TcpListener) -> TcpStream {
+        let (mut listing, _) = listener.accept().await.unwrap();
+        expect_request(&mut listing, "host:devices-l").await;
+        let devices = "same device usb:1-1 transport_id:41\nsame device usb:1-2 transport_id:42\n";
+        let reply = format!("OKAY{:04x}{devices}", devices.len());
+        listing.write_all(reply.as_bytes()).await.unwrap();
+        let (mut shell, _) = listener.accept().await.unwrap();
+        expect_request(&mut shell, "host:transport-id:42").await;
+        shell.write_all(b"OKAY").await.unwrap();
+        expect_request(&mut shell, "shell:echo sample").await;
+        shell.write_all(b"OKAY").await.unwrap();
+        shell
+    }
+
+    #[tokio::test]
+    async fn timeout_closes_stalled_sample_and_next_sample_can_connect() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let std::net::SocketAddr::V4(address) = listener.local_addr().unwrap() else {
+            unreachable!();
+        };
+        let server = tokio::spawn(async move {
+            let mut stalled = accept_sample(&listener).await;
+            assert_eq!(stalled.read(&mut [0]).await.unwrap(), 0);
+            let mut next = accept_sample(&listener).await;
+            next.write_all(b"sample\n").await.unwrap();
+        });
+        let serial = "adb-usb:usb:1-2#same";
+        let error = run_with_deadline(address, serial, "echo sample", Duration::from_millis(200))
+            .await
+            .unwrap_err();
+        assert!(error.contains("timed out"));
+        let result = run_with_deadline(address, serial, "echo sample", Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(result, "sample\n");
+        server.await.unwrap();
     }
 }

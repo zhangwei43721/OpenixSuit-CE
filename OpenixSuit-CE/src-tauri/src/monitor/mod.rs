@@ -548,7 +548,7 @@ fn round_pct(val: f64) -> f64 {
 }
 
 #[tauri::command]
-pub fn adb_get_metrics(
+pub async fn adb_get_metrics(
     serial: String,
     prev_snapshot: Option<CpuSnapshot>,
     include_static: Option<bool>,
@@ -584,7 +584,11 @@ pub fn adb_get_metrics(
         script.push_str("echo '===TOP==='; (top -bn1 2>/dev/null || ps -A 2>/dev/null || ps 2>/dev/null) | head -n 35");
     }
 
-    let raw = adb::adb_exec_shell(serial, script)?;
+    const COMPLETE: &str = "===OPENIX_METRICS_DONE===";
+    script.push_str("\nprintf '\\n===OPENIX_METRICS_DONE===\\n'");
+    let output = adb::monitor_shell(&serial, &script).await?;
+    let raw = output.trim_end().strip_suffix(COMPLETE)
+        .ok_or_else(|| "ADB shell closed before metrics collection completed".to_string())?;
     let markers = [
         "===KERNEL===",
         "===STAT===",

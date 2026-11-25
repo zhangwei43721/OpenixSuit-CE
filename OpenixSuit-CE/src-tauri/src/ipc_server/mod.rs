@@ -219,19 +219,16 @@ async fn sample_metrics(
     } else {
         serial
     };
-    let first_serial = serial.clone();
-    let first = run_blocking(move || {
-        monitor::adb_get_metrics(first_serial, None, Some(false), Some(false), Some(false))
-    })
-    .await?;
+    let first = monitor::adb_get_metrics(serial.clone(), None, Some(false), Some(false), Some(false))
+        .await
+        .map_err(map_op_error)?;
     let first_time = first.snapshot.timestamp_ms;
     let first_cpu_total = first.snapshot.total;
     let first_uptime = first.uptime_s;
     tokio::time::sleep(Duration::from_millis(sample_ms)).await;
-    let second = run_blocking(move || {
-        monitor::adb_get_metrics(serial, Some(first.snapshot), None, None, None)
-    })
-    .await?;
+    let second = monitor::adb_get_metrics(serial, Some(first.snapshot), None, None, None)
+        .await
+        .map_err(map_op_error)?;
     let interval_ms = second.snapshot.timestamp_ms.saturating_sub(first_time);
     if interval_ms == 0
         || first_cpu_total == 0
@@ -1351,9 +1348,9 @@ async fn dispatch(app: &AppHandle, req: HttpRequest) -> (u16, Value) {
                     Err((c, e)) => (c, json!({ "ok": false, "error": e })),
                 };
             }
-            let res =
-                run_blocking(move || monitor::adb_get_metrics(serial, None, None, None, None))
-                    .await;
+            let res = monitor::adb_get_metrics(serial, None, None, None, None)
+                .await
+                .map_err(map_op_error);
             match res {
                 Ok(metrics) => (200, json!({ "ok": true, "metrics": metrics })),
                 Err((c, e)) => (c, json!({ "ok": false, "error": e })),

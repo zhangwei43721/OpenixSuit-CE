@@ -20,7 +20,7 @@ mod devices;
 pub(crate) mod file_download;
 pub use devices::AdbDevice;
 use devices::get_server_device;
-pub(crate) use devices::{adb_command, parse_devices, resolve_device, select_device};
+pub(crate) use devices::{adb_command, monitor_shell, parse_devices, resolve_device, select_device};
 
 #[derive(Serialize)]
 pub struct AdbFileEntry {
