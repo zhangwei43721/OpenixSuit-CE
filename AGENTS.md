@@ -1,16 +1,16 @@
 # AGENTS.md
 
-本文件为 AI 编码助手在 `OpenixSuit-CE` 项目中提供工程规范与架构参考。
+本文件说明 `OpenixCLI` 仓库中 `OpenixSuit-CE/` 桌面端的开发约定。下文的桌面端路径和命令以 `OpenixSuit-CE/` 为基准。
 
 ## 1. 项目概述
 
 `OpenixSuit-CE` 是面向全志（Allwinner / Sunxi）芯片设备的跨平台桌面端工具套件（支持 Windows、Linux、macOS），位于 `OpenixCLI` 仓库的 `OpenixSuit-CE/` 目录下。
 
 - **前端**：React 19 + TypeScript 5.6 + Vite 6 + Tailwind CSS 3.4 + Lucide Icons + `i18next` / `react-i18next` + `@monaco-editor/react`
-- **后端**：Rust (Edition 2021) + Tauri 2 + Tokio (`full`) + `openixcli`（本地 crate，路径 `../..`）
+- **后端**：Rust (Edition 2021) + Tauri 2 + Tokio (`full`) + 仓库根目录的本地 `openixcli` crate
 - **可执行产物（`src-tauri/Cargo.toml`）**：
-  - `openixsuit-ce`（`src/main.rs`）：Tauri 桌面端主程序（默认运行目标）
-  - `openixsuit-ai`（`src/bin/openixsuit-ai.rs`）：独立 CLI 桥接工具，通过本地 TCP IPC（`127.0.0.1:28765`）与运行中的桌面端通信
+  - `openixsuit-ce`（`src-tauri/src/main.rs`）：Tauri 桌面端主程序（默认运行目标）
+  - `openixsuit-ai`（`src-tauri/src/bin/openixsuit-ai.rs`）：独立 CLI 桥接工具，通过本地 TCP IPC（`127.0.0.1:28765`）与运行中的桌面端通信
 
 ## 2. Tauri 配置（`src-tauri/tauri.conf.json`）
 
@@ -111,4 +111,5 @@ cargo tauri build
 
 - **严格类型检查**：`npm run build` 会执行 `tsc && vite build`。修改数据结构时，需确保 `src/types/workbench.ts`、`src/types/plugin.ts` 与 Rust `Serialize`/`Deserialize` 结构体一致，且所有类型导入完整。
 - **IPC 对齐**：新增或修改 `#[tauri::command]` 函数时，须同步更新 `src-tauri/src/lib.rs` 中的 `tauri::generate_handler![]` 以及前端对应的 `invoke(...)` 调用。
+- 每次测试结束后，主动清理本次生成的代码副本、构建产物、测试日志和其他临时文件。清理前核对文件归属和进程占用，确保正在运行的程序及其数据不受影响。
 - **Git 操作红线**：严禁执行任何修改 Git 状态的命令（如 `git add`、`git commit`、`git reset`、`git checkout`、`git push` 等），所有版本控制操作均由用户手动完成。
