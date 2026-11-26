@@ -31,6 +31,7 @@ import { useAdbFileViewport } from "./useAdbFileViewport";
 
 const STORAGE_PATHS_KEY = "adb_paths_by_serial";
 const VIEW_MODE_KEY = "adb_file_view_mode";
+const ONLINE_TEXT_LIMIT = 2 * 1024 * 1024;
 
 const TEXT_EXTS = new Set([
   "txt", "conf", "cfg", "ini", "json", "xml", "yaml", "yml", "sh", "bash", "zsh",
@@ -144,6 +145,7 @@ export function AdbExplorer({
   }
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const reqIdRef = useRef(0);
+  const openFileRequestRef = useRef(0);
   const serialRef = useRef(serial);
   const currentPathRef = useRef(currentPath);
 
@@ -367,7 +369,7 @@ export function AdbExplorer({
   const openItem = (item: AdbDetailedFileEntry) => {
     if (renamingName === item.name) return;
     if (item.is_dir) void loadDir(serial, joinPath(item.name));
-    else void handleOpenFile(item.name);
+    else void handleOpenFile(item);
   };
 
   const openOnDoubleClick = (event: ReactMouseEvent, item: AdbDetailedFileEntry) => {
@@ -493,18 +495,27 @@ export function AdbExplorer({
     }
   }
 
-  const handleOpenFile = async (name: string) => {
+  const handleOpenFile = async ({ name, size }: AdbDetailedFileEntry) => {
     if (!serial) return;
+    const request = ++openFileRequestRef.current;
     if (!isEditableTextFile(name)) {
       setErrorMsg(`${name}: ${t("adb.nonTextHint")}`);
       return;
     }
+    if (size > ONLINE_TEXT_LIMIT) {
+      setErrorMsg(`${name}: ${t("adb.textTooLarge")}`);
+      return;
+    }
     const remotePath = joinPath(name);
+    const directoryRequest = reqIdRef.current;
+    const isCurrent = () => openFileRequestRef.current === request &&
+      reqIdRef.current === directoryRequest && serialRef.current === serial;
+    setErrorMsg(null);
     try {
       const content = await invoke<string>("adb_read_text", { serial, remotePath });
-      setEditingFile({ path: remotePath, content, originalContent: content, serial });
+      if (isCurrent()) setEditingFile({ path: remotePath, content, originalContent: content, serial });
     } catch (err) {
-      setErrorMsg(String(err));
+      if (isCurrent()) setErrorMsg(String(err));
     }
   };
 
@@ -792,7 +803,7 @@ export function AdbExplorer({
         ) : viewMode === "grid" ? (
           <div className="relative" style={{ height: gridHeight }}>
             {windowEntries.map(({ item, index }) => {
-              const editable = !item.is_dir && isEditableTextFile(item.name);
+              const editable = !item.is_dir && item.size <= ONLINE_TEXT_LIMIT && isEditableTextFile(item.name);
               const checked = selection.has(item.name);
               return (
                 <div
@@ -828,7 +839,7 @@ export function AdbExplorer({
                       aria-label={t("common.edit")}
                       title={t("common.edit")}
                       onMouseDown={(event) => event.stopPropagation()}
-                      onClick={(event) => { event.stopPropagation(); void handleOpenFile(item.name); }}
+                      onClick={(event) => { event.stopPropagation(); void handleOpenFile(item); }}
                       onDoubleClick={(event) => event.stopPropagation()}
                       className="pointer-events-none absolute right-1 top-1 rounded-md border border-slate-200 bg-white p-1 text-slate-600 opacity-0 shadow-sm transition-opacity hover:text-blue-600 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
                     >
@@ -859,7 +870,7 @@ export function AdbExplorer({
             </thead>
             <tbody>
               {windowEntries.map(({ item, index }, position) => {
-                const editable = !item.is_dir && isEditableTextFile(item.name);
+                const editable = !item.is_dir && item.size <= ONLINE_TEXT_LIMIT && isEditableTextFile(item.name);
                 const checked = selection.has(item.name);
                 const previousIndex = windowEntries[position - 1]?.index ?? -1;
                 return (
@@ -883,7 +894,7 @@ export function AdbExplorer({
                       <td title={item.permissions} className="truncate px-3 font-mono tabular-nums text-slate-500 dark:text-slate-400">{item.permissions || "-"}</td>
                       <td className="whitespace-nowrap px-3 text-right" onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
                         {editable && (
-                          <button onClick={() => handleOpenFile(item.name)} className="text-blue-600 hover:underline dark:text-blue-400">
+                          <button onClick={() => void handleOpenFile(item)} className="text-blue-600 hover:underline dark:text-blue-400">
                             {t("common.edit")}
                           </button>
                         )}

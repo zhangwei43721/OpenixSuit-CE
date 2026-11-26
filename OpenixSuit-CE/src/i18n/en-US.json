@@ -491,6 +491,7 @@
     "editorTab": "Editor",
     "ansiTab": "ANSI View",
     "nonTextHint": "Binary/image files cannot be edited as text. Use Download instead.",
+    "textTooLarge": "This file exceeds 2 MB. Download it to view locally.",
     "size": "Size",
     "gridView": "Grid View",
     "listView": "List View",

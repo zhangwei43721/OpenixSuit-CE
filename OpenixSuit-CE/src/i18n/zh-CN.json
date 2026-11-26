@@ -490,6 +490,7 @@
     "editorTab": "编辑器",
     "ansiTab": "ANSI 视图",
     "nonTextHint": "二进制或图片文件不支持文本编辑，请使用下载功能",
+    "textTooLarge": "文件超过 2 MB，请下载到本地查看",
     "size": "大小",
     "gridView": "网格视图",
     "listView": "列表视图",

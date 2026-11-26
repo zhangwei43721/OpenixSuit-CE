@@ -145,19 +145,54 @@ pub fn adb_copy(serial: String, src_path: String, dst_path: String) -> Result<St
     adb_exec_shell(serial, format!("cp -r '{}' '{}'", src_path, dst_path))
 }
 
+const ONLINE_TEXT_LIMIT: usize = 2 * 1024 * 1024;
+const ONLINE_TEXT_TOO_LARGE: &str = "文件超过 2MB，不支持在线文本编辑，请下载到本地查看";
+const ONLINE_TEXT_BINARY: &str = "检测到二进制或图片文件，不支持文本编辑，请使用下载功能";
+
+#[derive(Default)]
+struct OnlineTextBuffer {
+    bytes: Vec<u8>,
+    too_large: bool,
+}
+
+impl Write for OnlineTextBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if bytes.len() > ONLINE_TEXT_LIMIT - self.bytes.len() {
+            self.too_large = true;
+            return Err(std::io::Error::other(ONLINE_TEXT_TOO_LARGE));
+        }
+        self.bytes.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 #[tauri::command]
-pub fn adb_read_text(serial: String, remote_path: String) -> Result<String, String> {
-    let mut device = get_server_device(&serial)?;
-    let mut buf = Vec::new();
-    device.pull(&remote_path, &mut buf).map_err(|e| e.to_string())?;
-    if buf.len() > 2 * 1024 * 1024 {
-        return Err("文件超过 2MB，不支持在线文本编辑，请下载到本地查看".into());
+pub async fn adb_read_text(serial: String, remote_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || read_online_text(&serial, &remote_path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn read_online_text(serial: &str, remote_path: &str) -> Result<String, String> {
+    let mut device = get_server_device(serial)?;
+    if device.stat(remote_path).is_ok_and(|stat| stat.file_size as usize > ONLINE_TEXT_LIMIT) {
+        return Err(ONLINE_TEXT_TOO_LARGE.into());
     }
-    let sample = &buf[..buf.len().min(8192)];
-    if sample.contains(&0) || std::str::from_utf8(&buf).is_err() {
-        return Err("检测到二进制或图片文件，不支持文本编辑，请使用下载功能".into());
+
+    let mut buffer = OnlineTextBuffer::default();
+    let transfer = device.pull(&remote_path, &mut buffer);
+    // 库内缓冲区析构时可能忽略最后一次写入错误。
+    if buffer.too_large {
+        return Err(ONLINE_TEXT_TOO_LARGE.into());
     }
-    Ok(String::from_utf8_lossy(&buf).to_string())
+    transfer.map_err(|error| error.to_string())?;
+    if buffer.bytes[..buffer.bytes.len().min(8192)].contains(&0) {
+        return Err(ONLINE_TEXT_BINARY.into());
+    }
+    String::from_utf8(buffer.bytes).map_err(|_| ONLINE_TEXT_BINARY.into())
 }
 
 #[tauri::command]
@@ -861,7 +896,22 @@ pub fn adb_input_keyevent(serial: String, keycode: i32) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_ls_line;
+    use super::{parse_ls_line, OnlineTextBuffer, ONLINE_TEXT_LIMIT};
+    use std::io::{BufWriter, Write};
+
+    #[test]
+    fn online_text_stops_at_the_limit_even_if_the_transfer_ignores_a_flush_error() {
+        let mut buffer = OnlineTextBuffer::default();
+        buffer.write_all(&vec![b'a'; ONLINE_TEXT_LIMIT]).unwrap();
+        assert!(!buffer.too_large);
+        {
+            let mut pending = BufWriter::new(&mut buffer);
+            pending.write_all(b"one more line").unwrap();
+        }
+        assert!(buffer.too_large);
+        assert_eq!(buffer.bytes.len(), ONLINE_TEXT_LIMIT);
+        assert!(buffer.write_all(b"more data").is_err());
+    }
 
     #[test]
     fn parse_ls_line_strips_ansi_sequences() {
