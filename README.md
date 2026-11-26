@@ -18,8 +18,6 @@ OpenixSuit-CE 是基于 OpenixCLI 修改而来的跨平台桌面工具。感谢�
 
 [固件工具](#固件工具) · [设备联调](#设备联调) · [多路日志](#多路日志) · [事件与电源](#事件与电源) · [AI 与系统](#ai-与系统)
 
-截图使用演示数据，点击可查看原图。侧边栏支持拖动排序，顶部切换设备和工作区。
-
 ### 固件工具
 
 <table>
@@ -107,8 +105,9 @@ cargo tauri dev
 
 ## 构建与发布
 
+- **日常检查**。推送到 `main`，或向 `main` 发起、更新合并请求时，GitHub 在 Linux 上构建桌面前端并运行 Rust 测试。结果可在 Actions 查看。
 - **测试安装包**。手动运行桌面端构建工作流，从运行页面的 **Artifacts** 下载。 [OpenixSuit-CE Build](https://github.com/zhangwei43721/OpenixSuit-CE/actions/workflows/openixsuit-ce.yml)
-- **正式发版**。同步 `OpenixSuit-CE/package.json`、npm 锁文件、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的桌面版本，推送 `openixsuit-ce-v<版本>` 标签。工作流使用 Tauri 更新签名，生成安装包和更新清单，并上传到同一个 Release。
+- **正式发版**。同步 `OpenixSuit-CE/package.json`、npm 锁文件、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的桌面版本，再推送 `openixsuit-ce-v<版本>` 标签。工作流核对版本并通过日常检查后，构建各平台安装包，生成带签名的更新文件和更新清单，上传到同一个 GitHub Release。
 - **签名与更新**。在 GitHub Actions 配置仓库变量 `OPENIXSUIT_UPDATER_PUBLIC_KEY`、Secret `TAURI_SIGNING_PRIVATE_KEY`，私钥有密码时配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。发布后可在「系统设置 → 应用版本」检查更新。私有仓库的安装包可登录 GitHub 后从发布页下载。 [Tauri 更新签名说明](https://v2.tauri.app/plugin/updater/#signing-updates)
 
 ## 许可证

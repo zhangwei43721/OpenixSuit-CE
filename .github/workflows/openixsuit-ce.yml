@@ -2,9 +2,15 @@ name: OpenixSuit-CE Build
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
+    branches: [main]
     tags:
       - 'openixsuit-ce-v*'
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,14 +18,22 @@ env:
   OPENIXSUIT_RELEASE_REPO: ${{ github.repository }}
 
 jobs:
-  validate-release:
-    name: Validate desktop release tag
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+  check:
+    name: Check desktop code (Linux)
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - &setup_node
+        name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Check tag and desktop version
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         run: |
           set -euo pipefail
           version=$(node -p "require('./OpenixSuit-CE/src-tauri/tauri.conf.json').version")
@@ -32,11 +46,58 @@ jobs:
             exit 1
           fi
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-desktop-check-${{ hashFiles('OpenixSuit-CE/src-tauri/Cargo.toml', 'Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-desktop-check-
+
+      - name: Install Linux system dependencies
+        run: &install_linux_dependencies |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libusb-1.0-0-dev \
+            libudev-dev \
+            pkg-config
+
+      - &install_frontend_dependencies
+        name: Install frontend dependencies
+        working-directory: OpenixSuit-CE
+        run: npm ci
+
+      - name: Build desktop frontend
+        working-directory: OpenixSuit-CE
+        run: npm run build
+
+      - name: Run desktop Rust tests
+        run: cargo test --manifest-path OpenixSuit-CE/src-tauri/Cargo.toml
+
   build:
     name: Build (${{ matrix.platform }})
-    needs: [validate-release]
-    if: always() && (github.event_name == 'workflow_dispatch' || needs.validate-release.result == 'success')
+    needs: check
+    if: >-
+      !cancelled() && (github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'push' && github.ref_type == 'tag' && needs.check.result == 'success'))
     runs-on: ${{ matrix.runner }}
+    env:
+      DESKTOP_RELEASE: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     strategy:
       fail-fast: false
       matrix:
@@ -55,10 +116,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
+      - *setup_node
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -78,22 +136,7 @@ jobs:
 
       - name: Install Linux system dependencies
         if: matrix.runner == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libusb-1.0-0-dev \
-            libudev-dev \
-            pkg-config
+        run: *install_linux_dependencies
 
       - name: Install macOS dependencies
         if: matrix.runner == 'macos-latest'
@@ -105,15 +148,7 @@ jobs:
           vcpkg install libusb:x64-windows
           vcpkg integrate install
 
-      - name: Install frontend dependencies
-        working-directory: OpenixSuit-CE
-        shell: bash
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+      - *install_frontend_dependencies
 
       - name: Configure desktop updater
         working-directory: OpenixSuit-CE
@@ -122,7 +157,7 @@ jobs:
           OPENIXSUIT_UPDATER_PUBLIC_KEY: ${{ vars.OPENIXSUIT_UPDATER_PUBLIC_KEY }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+          if [[ "$DESKTOP_RELEASE" != true ]]; then
             printf '{}\n' > desktop-updater.conf.json
             exit 0
           fi
@@ -177,11 +212,11 @@ jobs:
         working-directory: OpenixSuit-CE
         shell: bash
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ env.DESKTOP_RELEASE == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ env.DESKTOP_RELEASE == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == push && -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+          if [[ "$DESKTOP_RELEASE" == true && -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
             echo "Configure TAURI_SIGNING_PRIVATE_KEY before publishing." >&2
             exit 1
           fi
@@ -215,7 +250,7 @@ jobs:
 
   release-upload:
     name: Upload Desktop Release Assets
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     needs: build
     runs-on: ubuntu-latest
     permissions:
